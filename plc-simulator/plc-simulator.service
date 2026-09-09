@@ -1,0 +1,16 @@
+[Unit]
+Description=MES test rig - S7 PLC simulator (no-wiring signal source)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/pi/mes/plc-simulator/plc_simulator.py
+Restart=on-failure
+RestartSec=2
+# Port 102 is the real S7comm port and needs root to bind on Linux. Set
+# TCP_PORT=1102 below (and match PLC_PORT on Pi #2) if you'd rather run
+# this as an unprivileged user instead.
+User=root
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+edge-agent-buffer.sqlite
+edge-agent-buffer.sqlite-*
+.DS_Store
+generated/

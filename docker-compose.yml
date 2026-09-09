@@ -1,0 +1,36 @@
+version: "3.8"
+
+# Local development infrastructure: Postgres (with the TimescaleDB extension
+# available, ready to enable once M1's time-series volume justifies it) and
+# an MQTT broker. Application packages (edge-agent, backend, frontend) run
+# directly on the host with `pnpm dev:*` so you get fast reload; only the
+# infrastructure they depend on is containerized.
+#
+# This mirrors how the sandbox environment used to build this skeleton ran
+# things (native postgres + mosquitto, no Docker daemon available there) —
+# either approach works, this file just makes the container path easy on a
+# machine that has Docker.
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mes
+      POSTGRES_PASSWORD: mes_dev_password
+      POSTGRES_DB: mes_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - mes_postgres_data:/var/lib/postgresql/data
+
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./infra/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+volumes:
+  mes_postgres_data:

@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/AuditLogPanel.tsx","./src/LoginForm.tsx","./src/MachineRegistryPanel.tsx","./src/ShiftSummaryPanel.tsx","./src/auth-context.tsx","./src/main.tsx","./src/vite-env.d.ts","../backend/src/password.ts","../backend/src/sessions-repository.ts","../backend/src/users-repository.ts","../backend/src/auth-plugin.ts"],"version":"5.9.3"}

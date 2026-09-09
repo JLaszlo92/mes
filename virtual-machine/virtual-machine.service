@@ -1,0 +1,13 @@
+[Unit]
+Description=MES test rig - virtual manufacturing machine (GPIO signal generator)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/pi/virtual-machine/virtual_machine.py
+Restart=on-failure
+RestartSec=2
+User=pi
+
+[Install]
+WantedBy=multi-user.target
