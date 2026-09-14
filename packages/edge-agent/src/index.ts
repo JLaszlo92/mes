@@ -6,6 +6,7 @@ import { config } from "./config.js";
 import { FileEventBuffer } from "./buffer.js";
 import { GpioSignalSource } from "./signal-sources/GpioSignalSource.js";
 import { S7SignalSource } from "./signal-sources/S7SignalSource.js";
+import { OpcUaSignalSource } from "./signal-sources/OpcUaSignalSource.js";
 import { SimulatedSignalSource } from "./signal-sources/SimulatedSignalSource.js";
 import type { SignalReading, SignalSource } from "./signal-sources/SignalSource.js";
 
@@ -15,14 +16,6 @@ const buffer = new FileEventBuffer(config.bufferFilePath);
 const topic = eventTopic(config.machineId);
 const myAckTopic = ackTopic(config.machineId);
 
-// SIGNAL_SOURCE points this agent at a real machine connection instead of
-// the in-process simulator — "s7" polls a Siemens S7 PLC (or its
-// simulator) over the network with no wiring at all (docs/pi-test-rig-s7-
-// mode.md, the recommended first pass), "gpio" reads real discrete I/O on
-// the physical 3-Pi rig (docs/pi-test-rig.md) or a real machine later.
-// Either way this is the only place that decision gets made; nothing
-// downstream (buffering, MQTT, the backend, the dashboard) knows or cares
-// which.
 function buildSignalSource(): SignalSource {
   switch (config.signalSource) {
     case "gpio":
@@ -47,26 +40,20 @@ function buildSignalSource(): SignalSource {
           ...(config.s7.pollIntervalMs ? { POLL_INTERVAL_MS: config.s7.pollIntervalMs } : {}),
         },
       });
+    case "opcua":
+      return new OpcUaSignalSource({
+        endpointUrl: config.opcua.endpointUrl,
+        goodCountNodeId: config.opcua.goodCountNodeId,
+        scrapCountNodeId: config.opcua.scrapCountNodeId,
+        statusNodeId: config.opcua.statusNodeId,
+        pollIntervalMs: config.opcua.pollIntervalMs ? parseInt(config.opcua.pollIntervalMs, 10) : undefined,
+      });
     default:
       return new SimulatedSignalSource();
   }
 }
 
 const source: SignalSource = buildSignalSource();
-
-/**
- * Delivery model: every event is written to the durable buffer the moment
- * it's generated — that write is the only thing that has to succeed for
- * the reading to be safe. Publishing is then attempted immediately (for
- * low latency in the normal case) AND retried on a fixed interval for
- * whatever is still sitting in the buffer. An event only leaves the buffer
- * when the backend's application-level ack for its sourceEventId arrives
- * (see mqtt-subscriber.ts on the backend). This is deliberately more
- * paranoid than trusting MQTT's own QoS1 ack: that only proves the broker
- * received the publish, not that the backend was actually subscribed and
- * processed it — see ROADMAP.md M0 verification notes for the reconnect
- * race this caught in practice.
- */
 
 function toMachineEvent(reading: SignalReading): MachineEvent {
   const envelope = {
@@ -103,8 +90,6 @@ function handleReading(reading: SignalReading): void {
     log.info({ status: event.status, sourceEventId: event.sourceEventId }, "machine status changed");
   }
 
-  // The buffer write is the durability guarantee. Everything after this is
-  // best-effort delivery of what's already safely on disk.
   buffer.enqueue(event);
   publishBestEffort(event);
 }
@@ -129,8 +114,6 @@ client.on("connect", () => {
   client.subscribe(myAckTopic, (err) => {
     if (err) log.error({ err }, "failed to subscribe to ack topic");
   });
-  // Whatever is still unacked from before this (re)connect gets a
-  // republish attempt right away, in addition to the periodic sweep.
   retryPending();
 });
 

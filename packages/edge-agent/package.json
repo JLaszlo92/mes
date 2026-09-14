@@ -12,6 +12,7 @@
   "dependencies": {
     "@mes/shared": "workspace:*",
     "mqtt": "^5.10.1",
+    "node-opcua": "^2.183.0",
     "pino": "^9.5.0"
   },
   "devDependencies": {

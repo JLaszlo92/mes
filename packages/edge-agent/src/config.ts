@@ -18,7 +18,7 @@ export const config = {
   // docs/pi-test-rig-s7-mode.md — the recommended first pass), or "gpio"
   // (the physical 3-Pi rig — see docs/pi-test-rig.md — or a real discrete
   // machine connection later).
-  signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7",
+  signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7" | "opcua",
 
   gpio: {
     pythonPath: process.env.GPIO_PYTHON_PATH ?? "python3",
@@ -37,4 +37,12 @@ export const config = {
     plcPort: optionalEnv("PLC_PORT"),
     pollIntervalMs: optionalEnv("POLL_INTERVAL_MS"),
   },
+  opcua: {
+    endpointUrl: process.env.OPCUA_ENDPOINT_URL ?? "opc.tcp://127.0.0.1:4334/mes-simulator",
+    goodCountNodeId: process.env.OPCUA_GOOD_NODE_ID ?? "ns=1;s=GoodCount",
+    scrapCountNodeId: process.env.OPCUA_SCRAP_NODE_ID ?? "ns=1;s=ScrapCount",
+    statusNodeId: process.env.OPCUA_STATUS_NODE_ID ?? "ns=1;s=Status",
+    pollIntervalMs: optionalEnv("OPCUA_POLL_INTERVAL_MS"),
+  },
+
 };
