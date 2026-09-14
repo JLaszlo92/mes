@@ -1,0 +1,11 @@
+{
+  "name": "opcua-simulator",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node opcua_simulator.js"
+  },
+  "dependencies": {
+    "node-opcua": "^2.182.2"
+  }
+}

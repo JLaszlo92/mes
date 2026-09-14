@@ -8,3 +8,5 @@ edge-agent-buffer.sqlite
 edge-agent-buffer.sqlite-*
 .DS_Store
 generated/
+__pycache__/
+*.pyc
