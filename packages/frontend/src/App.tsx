@@ -5,7 +5,9 @@ import MachineRegistryPanel from "./MachineRegistryPanel.js";
 import { useAuth } from "./auth-context.js";
 import LoginForm from "./LoginForm.js";
 import AuditLogPanel from "./AuditLogPanel";
-
+import WorkOrdersPanel from "./WorkOrdersPanel";
+import SchedulePanel from "./SchedulePanel";
+import TerminalUisPanel from "./TerminalUisPanel";
 
 interface MachineState {
   machineId: string;
@@ -178,6 +180,9 @@ export default function App() {
       <ShiftSummaryPanel />
       <MachineRegistryPanel />
       <AuditLogPanel />
+      <WorkOrdersPanel />
+      <SchedulePanel />
+      <TerminalUisPanel />
 
     </div>
   );

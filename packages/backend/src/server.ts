@@ -16,6 +16,29 @@ import { findUserByEmail } from "./users-repository.js";
 import { createSession, deleteSession } from "./sessions-repository.js";
 import { verifyPassword } from "./password.js";
 import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
+import {
+  listWorkOrders,
+  getWorkOrder,
+  createWorkOrder,
+  updateWorkOrder,
+  isUniqueViolation as isWorkOrderUniqueViolation,
+} from "./work-orders-repository.js";
+import {
+  listAssignments,
+  createAssignment,
+  deleteAssignment,
+  isForeignKeyViolation,
+  isCheckViolation,
+  listAssignmentsForMachine,
+} from "./work-order-assignments-repository.js";
+import {
+  listTerminalUis,
+  getTerminalUi,
+  createTerminalUi,
+  updateTerminalUi,
+  deleteTerminalUi,
+  isUniqueViolation as isTerminalUiUniqueViolation,
+} from "./terminal-uis-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -165,6 +188,214 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
     return { token: session.token, role: user.role, expiresAt: session.expiresAt };
   });
+
+  app.get("/api/work-orders", async () => listWorkOrders());
+
+  app.get<{ Params: { id: string } }>("/api/work-orders/:id", async (request, reply) => {
+    const workOrder = await getWorkOrder(request.params.id);
+    if (!workOrder) {
+      reply.code(404);
+      return { error: "unknown work order" };
+    }
+    return workOrder;
+  });
+
+  app.post<{
+    Body: {
+      orderNumber: string;
+      partName: string;
+      quantity: number;
+      expectedCycleTimeSeconds?: number;
+      dueDate?: string;
+      notes?: string;
+    };
+  }>("/api/work-orders", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    const { orderNumber, partName, quantity } = request.body;
+    if (!orderNumber || !partName || !quantity) {
+      reply.code(400);
+      return { error: "orderNumber, partName and quantity are required" };
+    }
+    try {
+      const workOrder = await createWorkOrder(request.body);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "work_order_created",
+        target: workOrder.id,
+        details: { orderNumber, partName, quantity },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return workOrder;
+    } catch (err) {
+      if (isWorkOrderUniqueViolation(err)) {
+        reply.code(409);
+        return { error: `work order with order number "${orderNumber}" already exists` };
+      }
+      throw err;
+    }
+  });
+
+  app.put<{
+    Params: { id: string };
+    Body: {
+      partName?: string;
+      quantity?: number;
+      expectedCycleTimeSeconds?: number;
+      dueDate?: string;
+      status?: "planned" | "released" | "in_progress" | "completed" | "cancelled";
+      notes?: string;
+    };
+  }>("/api/work-orders/:id", { preHandler: requireRole("admin", "manager", "operator") }, async (request, reply) => {
+    const workOrder = await updateWorkOrder(request.params.id, request.body);
+    if (!workOrder) {
+      reply.code(404);
+      return { error: "unknown work order" };
+    }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "work_order_updated",
+      target: workOrder.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
+    return workOrder;
+  });
+
+  app.get<{ Querystring: { machineId?: string } }>("/api/work-order-assignments", async (request) => {
+    if (request.query.machineId) return listAssignmentsForMachine(request.query.machineId);
+    return listAssignments();
+  });
+  app.post<{
+    Body: { workOrderId: string; machineId: string; plannedStart: string; plannedEnd: string };
+  }>("/api/work-order-assignments", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    const { workOrderId, machineId, plannedStart, plannedEnd } = request.body;
+    if (!workOrderId || !machineId || !plannedStart || !plannedEnd) {
+      reply.code(400);
+      return { error: "workOrderId, machineId, plannedStart and plannedEnd are required" };
+    }
+    try {
+      const assignment = await createAssignment(request.body);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "work_order_assigned",
+        target: assignment.id,
+        details: { workOrderId, machineId, plannedStart, plannedEnd },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return assignment;
+    } catch (err) {
+      if (isForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown work order or machine" };
+      }
+      if (isCheckViolation(err)) {
+        reply.code(400);
+        return { error: "plannedEnd must be after plannedStart" };
+      }
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/work-order-assignments/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteAssignment(request.params.id);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown assignment" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "work_order_unassigned",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+  app.get("/api/terminal-uis", async () => listTerminalUis());
+
+  app.get<{ Params: { id: string } }>("/api/terminal-uis/:id", async (request, reply) => {
+    const ui = await getTerminalUi(request.params.id);
+    if (!ui) {
+      reply.code(404);
+      return { error: "unknown terminal UI" };
+    }
+    return ui;
+  });
+
+  app.post<{ Body: { name: string; machineIds: string[] } }>(
+    "/api/terminal-uis",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const { name, machineIds } = request.body;
+      if (!name) {
+        reply.code(400);
+        return { error: "name is required" };
+      }
+      try {
+        const ui = await createTerminalUi(name, machineIds ?? []);
+        await recordAuditEvent({
+          actorId: request.user!.id,
+          action: "terminal_ui_created",
+          target: ui.id,
+          details: { name, machineIds },
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return ui;
+      } catch (err) {
+        if (isTerminalUiUniqueViolation(err)) {
+          reply.code(409);
+          return { error: `terminal UI with name "${name}" already exists` };
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.put<{ Params: { id: string }; Body: { name?: string; machineIds?: string[] } }>(
+    "/api/terminal-uis/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const ui = await updateTerminalUi(request.params.id, request.body);
+      if (!ui) {
+        reply.code(404);
+        return { error: "unknown terminal UI" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "terminal_ui_updated",
+        target: ui.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      return ui;
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/terminal-uis/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteTerminalUi(request.params.id);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown terminal UI" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "terminal_ui_deleted",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
 
   return app;
 }
