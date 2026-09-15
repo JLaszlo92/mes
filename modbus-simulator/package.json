@@ -1,0 +1,11 @@
+{
+  "name": "modbus-simulator",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "node modbus_simulator.js"
+  },
+  "dependencies": {
+    "modbus-serial": "^8.0.25"
+  }
+}
