@@ -9,6 +9,7 @@ import { S7SignalSource } from "./signal-sources/S7SignalSource.js";
 import { OpcUaSignalSource } from "./signal-sources/OpcUaSignalSource.js";
 import { SimulatedSignalSource } from "./signal-sources/SimulatedSignalSource.js";
 import type { SignalReading, SignalSource } from "./signal-sources/SignalSource.js";
+import { ModbusSignalSource } from "./signal-sources/ModbusSignalSource.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -48,6 +49,16 @@ function buildSignalSource(): SignalSource {
         statusNodeId: config.opcua.statusNodeId,
         pollIntervalMs: config.opcua.pollIntervalMs ? parseInt(config.opcua.pollIntervalMs, 10) : undefined,
       });
+      case "modbus":
+    return new ModbusSignalSource({
+      host: config.modbus.host,
+      port: config.modbus.port ? parseInt(config.modbus.port, 10) : undefined,
+      unitId: config.modbus.unitId ? parseInt(config.modbus.unitId, 10) : undefined,
+      goodCountRegister: config.modbus.goodCountRegister ? parseInt(config.modbus.goodCountRegister, 10) : undefined,
+      scrapCountRegister: config.modbus.scrapCountRegister ? parseInt(config.modbus.scrapCountRegister, 10) : undefined,
+      statusRegister: config.modbus.statusRegister ? parseInt(config.modbus.statusRegister, 10) : undefined,
+      pollIntervalMs: config.modbus.pollIntervalMs ? parseInt(config.modbus.pollIntervalMs, 10) : undefined,
+    });
     default:
       return new SimulatedSignalSource();
   }
