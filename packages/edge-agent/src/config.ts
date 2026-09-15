@@ -18,7 +18,7 @@ export const config = {
   // docs/pi-test-rig-s7-mode.md — the recommended first pass), or "gpio"
   // (the physical 3-Pi rig — see docs/pi-test-rig.md — or a real discrete
   // machine connection later).
-  signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7" | "opcua",
+signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7" | "opcua" | "modbus",
 
   gpio: {
     pythonPath: process.env.GPIO_PYTHON_PATH ?? "python3",
@@ -43,6 +43,15 @@ export const config = {
     scrapCountNodeId: process.env.OPCUA_SCRAP_NODE_ID ?? "ns=1;s=ScrapCount",
     statusNodeId: process.env.OPCUA_STATUS_NODE_ID ?? "ns=1;s=Status",
     pollIntervalMs: optionalEnv("OPCUA_POLL_INTERVAL_MS"),
+  },
+  modbus: {
+  host: process.env.MODBUS_HOST ?? "127.0.0.1",
+  port: optionalEnv("MODBUS_PORT"),
+  unitId: optionalEnv("MODBUS_UNIT_ID"),
+  goodCountRegister: optionalEnv("MODBUS_GOOD_REGISTER"),
+  scrapCountRegister: optionalEnv("MODBUS_SCRAP_REGISTER"),
+  statusRegister: optionalEnv("MODBUS_STATUS_REGISTER"),
+  pollIntervalMs: optionalEnv("MODBUS_POLL_INTERVAL_MS"),
   },
 
 };
