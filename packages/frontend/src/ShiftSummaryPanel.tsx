@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { MachineStatusValue } from "@mes/shared";
 
+
 interface ShiftSummary {
   shiftDate: string;
   shiftName: string;
@@ -13,6 +14,10 @@ interface ShiftSummary {
   changeoverSeconds: number;
   totalSeconds: number;
   productionRatio: number;
+  availability: number;
+  performance: number | null;
+  quality: number | null;
+  oee: number | null;
 }
 
 const STATUS_COLOR: Record<MachineStatusValue, string> = {
@@ -142,17 +147,12 @@ export default function ShiftSummaryPanel() {
                   );
                 })}
               </div>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontSize: 11,
-                  color: "#898781",
-                  marginTop: 4,
-                }}
-              >
-                <span>{Math.round(s.productionRatio * 100)}% gyártás</span>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#898781", marginTop: 4 }}>
+                <span>{Math.round(s.availability * 100)}% gyártás</span>
                 <span>{formatDuration(s.totalSeconds)}</span>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 600, marginTop: 6, color: s.oee !== null ? "#0b0b0b" : "#898781" }}>
+                OEE: {s.oee !== null ? `${Math.round(s.oee * 100)}%` : "— (nincs ideális ciklusidő beállítva)"}
               </div>
             </div>
           </div>

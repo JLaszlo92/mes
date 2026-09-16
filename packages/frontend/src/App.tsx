@@ -179,10 +179,10 @@ export default function App() {
       ))}
       <ShiftSummaryPanel />
       <MachineRegistryPanel />
-      <AuditLogPanel />
       <WorkOrdersPanel />
       <SchedulePanel />
       <TerminalUisPanel />
+      <AuditLogPanel />
 
     </div>
   );
