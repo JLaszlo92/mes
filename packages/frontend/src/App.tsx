@@ -8,6 +8,7 @@ import AuditLogPanel from "./AuditLogPanel";
 import WorkOrdersPanel from "./WorkOrdersPanel";
 import SchedulePanel from "./SchedulePanel";
 import TerminalUisPanel from "./TerminalUisPanel";
+import MfaSetup from "./MfaSetup.js";
 
 interface MachineState {
   machineId: string;
@@ -59,8 +60,7 @@ export default function App() {
   const [connected, setConnected] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
 
-  const { auth, logout } = useAuth();
-
+  const { auth, logout, mfaSetupRequired } = useAuth();
 
 
   useEffect(() => {
@@ -96,6 +96,10 @@ export default function App() {
       socketRef.current?.close();
     };
   }, []);
+
+  if (mfaSetupRequired) {
+    return <MfaSetup />;
+  }
   
   if (!auth) {
     return <LoginForm />;

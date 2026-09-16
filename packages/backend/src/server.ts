@@ -12,7 +12,7 @@ import {
   isUniqueViolation,
 } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
-import { findUserByEmail } from "./users-repository.js";
+import { findUserByEmail, getUserById } from "./users-repository.js";
 import { createSession, deleteSession } from "./sessions-repository.js";
 import { verifyPassword } from "./password.js";
 import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
@@ -39,6 +39,17 @@ import {
   deleteTerminalUi,
   isUniqueViolation as isTerminalUiUniqueViolation,
 } from "./terminal-uis-repository.js";
+import {
+  generateSecret,
+  buildOtpAuthUrl,
+  buildQrCodeDataUrl,
+  verifyToken,
+  setPendingMfaSecret,
+  confirmMfaEnrollment,
+  getMfaSecret,
+  createPendingLogin,
+  consumePendingLogin,
+} from "./mfa-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -167,26 +178,33 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
   });
 
-  app.post<{ Body: { email: string; password: string } }>("/api/auth/login", async (request, reply) => {
-    const { email, password } = request.body;
-    const user = await findUserByEmail(email);
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
-      await recordAuditEvent({
-        actorEmail: email,
-        action: "login_failed",
-        ipAddress: request.ip,
-      });
-      reply.code(401);
-      return { error: "invalid email or password" };
-    }
-    const session = await createSession(user.id);
-    await recordAuditEvent({
-      actorId: user.id,
-      actorEmail: user.email,
-      action: "login_success",
-      ipAddress: request.ip,
-    });
-    return { token: session.token, role: user.role, expiresAt: session.expiresAt };
+    app.post<{ Body: { email: string; password: string } }>("/api/auth/login", async (request, reply) => {
+  const { email, password } = request.body;
+  const user = await findUserByEmail(email);
+  if (!user || !(await verifyPassword(password, user.passwordHash))) {
+    await recordAuditEvent({ actorEmail: email, action: "login_failed", ipAddress: request.ip });
+    reply.code(401);
+    return { error: "invalid email or password" };
+  }
+
+  if (user.mfaEnabled) {
+    const pending = await createPendingLogin(user.id);
+    return { mfaRequired: true, pendingToken: pending.token, expiresAt: pending.expiresAt };
+  }
+
+  const session = await createSession(user.id);
+  await recordAuditEvent({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: "login_success",
+    ipAddress: request.ip,
+  });
+
+  // PRD 8.3: admin/manager esetén kötelező az MFA — ha még nincs
+  // beállítva, jelezzük, hogy a kliensnek azonnal be kell állítania.
+  const mfaSetupRequired = (user.role === "admin" || user.role === "manager") && !user.mfaEnabled;
+
+  return { token: session.token, role: user.role, expiresAt: session.expiresAt, mfaSetupRequired };
   });
 
   app.get("/api/work-orders", async () => listWorkOrders());
@@ -396,6 +414,66 @@ export async function buildServer(): Promise<FastifyInstance> {
       return null;
     },
   );
+
+  app.post<{ Body: { pendingToken: string; code: string } }>("/api/auth/mfa/login", async (request, reply) => {
+  const { pendingToken, code } = request.body;
+  const pending = await consumePendingLogin(pendingToken);
+  if (!pending) {
+    reply.code(401);
+    return { error: "invalid or expired login attempt — please sign in again" };
+  }
+  const secret = await getMfaSecret(pending.userId);
+  if (!secret || !verifyToken(secret, code)) {
+    await recordAuditEvent({ actorId: pending.userId, action: "mfa_failed", ipAddress: request.ip });
+    reply.code(401);
+    return { error: "invalid code" };
+  }
+  const user = await getUserById(pending.userId);
+  if (!user) {
+    reply.code(404);
+    return { error: "user not found" };
+  }
+  const session = await createSession(user.id);
+  await recordAuditEvent({
+    actorId: user.id,
+    actorEmail: user.email,
+    action: "login_success",
+    ipAddress: request.ip,
+  });
+  return { token: session.token, role: user.role, expiresAt: session.expiresAt };
+  });
+
+  app.post("/api/auth/mfa/enroll", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const secret = generateSecret();
+    await setPendingMfaSecret(request.user.id, secret);
+    const otpAuthUrl = buildOtpAuthUrl(request.user.email, secret);
+    const qrCodeDataUrl = await buildQrCodeDataUrl(otpAuthUrl);
+    return { secret, otpAuthUrl, qrCodeDataUrl };
+  });
+
+  app.post<{ Body: { code: string } }>("/api/auth/mfa/verify-enrollment", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const secret = await getMfaSecret(request.user.id);
+    if (!secret || !verifyToken(secret, request.body.code)) {
+      reply.code(400);
+      return { error: "invalid code" };
+    }
+    await confirmMfaEnrollment(request.user.id);
+    await recordAuditEvent({
+      actorId: request.user.id,
+      actorEmail: request.user.email,
+      action: "mfa_enabled",
+      ipAddress: request.ip,
+    });
+    return { success: true };
+  });
 
   return app;
 }
