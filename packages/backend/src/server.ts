@@ -50,6 +50,8 @@ import {
   createPendingLogin,
   consumePendingLogin,
 } from "./mfa-repository.js";
+import { listAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from "./alert-rules-repository.js";
+import { listAlerts, acknowledgeAlert } from "./alerts-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -473,6 +475,89 @@ export async function buildServer(): Promise<FastifyInstance> {
       ipAddress: request.ip,
     });
     return { success: true };
+  });
+
+  app.get("/api/alert-rules", { preHandler: requireRole("admin", "manager") }, async () => listAlertRules());
+
+  app.post<{
+    Body: { type: "machine_down" | "scrap_rate"; machineId?: string; threshold: number; notifyRoles?: string[] };
+  }>("/api/alert-rules", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    const { type, threshold } = request.body;
+    if (!type || threshold === undefined) {
+      reply.code(400);
+      return { error: "type and threshold are required" };
+    }
+    const rule = await createAlertRule(request.body);
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "alert_rule_created",
+      target: rule.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
+    reply.code(201);
+    return rule;
+  });
+
+  app.put<{ Params: { id: string }; Body: { threshold?: number; notifyRoles?: string[]; isActive?: boolean } }>(
+    "/api/alert-rules/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const rule = await updateAlertRule(request.params.id, request.body);
+      if (!rule) {
+        reply.code(404);
+        return { error: "unknown alert rule" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "alert_rule_updated",
+        target: rule.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      return rule;
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/alert-rules/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteAlertRule(request.params.id);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown alert rule" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "alert_rule_deleted",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+
+  app.get("/api/alerts", async () => listAlerts());
+
+  app.post<{ Params: { id: string } }>("/api/alerts/:id/acknowledge", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const alert = await acknowledgeAlert(request.params.id, request.user.id);
+    if (!alert) {
+      reply.code(404);
+      return { error: "unknown alert" };
+    }
+    await recordAuditEvent({
+      actorId: request.user.id,
+      action: "alert_acknowledged",
+      target: alert.id,
+      ipAddress: request.ip,
+    });
+    return alert;
   });
 
   return app;
