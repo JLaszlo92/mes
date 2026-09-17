@@ -20,6 +20,21 @@ interface Assignment {
   workOrderStatus: string;
 }
 
+interface FaultCode {
+  id: string;
+  machineId: string;
+  code: string;
+  name: string;
+  isActive: boolean;
+}
+
+interface FaultReport {
+  id: string;
+  machineId: string;
+  faultCode: string;
+  status: string;
+}
+
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
@@ -33,10 +48,26 @@ const startButtonStyle = {
   fontSize: 16,
 };
 
+const faultButtonStyle = {
+  padding: "14px 18px",
+  border: "1px solid #d03b3b",
+  borderRadius: 10,
+  background: "#fff",
+  color: "#d03b3b",
+  cursor: "pointer",
+  fontSize: 15,
+  fontWeight: 600,
+  minWidth: 120,
+  textAlign: "center" as const,
+};
+
 export default function TerminalPage({ terminalUiId }: { terminalUiId: string }) {
   const { auth, logout } = useAuth();
   const [ui, setUi] = useState<TerminalUi | null>(null);
   const [assignmentsByMachine, setAssignmentsByMachine] = useState<Record<string, Assignment[]>>({});
+  const [faultCodesByMachine, setFaultCodesByMachine] = useState<Record<string, FaultCode[]>>({});
+  const [recentReports, setRecentReports] = useState<FaultReport[]>([]);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   function load() {
@@ -48,19 +79,38 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       .then((data: TerminalUi) => {
         setUi(data);
         setError(null);
-        return Promise.all(
-          data.machineIds.map((machineId) =>
-            fetch(`${API_BASE}/api/work-order-assignments?machineId=${encodeURIComponent(machineId)}`)
-              .then((r) => r.json())
-              .then((assignments: Assignment[]) => [machineId, assignments] as const),
+        return Promise.all([
+          Promise.all(
+            data.machineIds.map((machineId) =>
+              fetch(`${API_BASE}/api/work-order-assignments?machineId=${encodeURIComponent(machineId)}`)
+                .then((r) => r.json())
+                .then((assignments: Assignment[]) => [machineId, assignments] as const),
+            ),
           ),
-        );
+          Promise.all(
+            data.machineIds.map((machineId) =>
+              fetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
+                .then((r) => r.json())
+                .then((codes: FaultCode[]) => [machineId, codes] as const),
+            ),
+          ),
+          auth
+            ? fetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth.token}` } }).then((r) =>
+                r.ok ? r.json() : [],
+              )
+            : Promise.resolve([]),
+        ]);
       })
-      .then((pairs) => {
-        if (!pairs) return;
+      .then(([assignmentPairs, faultCodePairs, reports]) => {
         const byMachine: Record<string, Assignment[]> = {};
-        for (const [machineId, assignments] of pairs) byMachine[machineId] = assignments;
+        for (const [machineId, assignments] of assignmentPairs) byMachine[machineId] = assignments;
         setAssignmentsByMachine(byMachine);
+
+        const codesByMachine: Record<string, FaultCode[]> = {};
+        for (const [machineId, codes] of faultCodePairs) codesByMachine[machineId] = codes.filter((c) => c.isActive);
+        setFaultCodesByMachine(codesByMachine);
+
+        setRecentReports(reports as FaultReport[]);
       })
       .catch((err) => setError(String(err)));
   }
@@ -86,6 +136,19 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     load();
   }
 
+  async function reportFault(machineId: string, faultCodeId: string, faultLabel: string) {
+    const res = await fetch(`${API_BASE}/api/fault-reports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
+      body: JSON.stringify({ machineId, faultCodeId, occurrenceCount: 1 }),
+    });
+    if (res.ok) {
+      setFeedback(`Reported: ${faultLabel}`);
+      setTimeout(() => setFeedback(null), 3000);
+      load();
+    }
+  }
+
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 900, margin: "20px auto", padding: "0 16px" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -96,13 +159,22 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       </header>
 
       {error && <p style={{ color: "#d03b3b" }}>{error}</p>}
+      {feedback && (
+        <p style={{ background: "#eafaea", color: "#0ca30c", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}>
+          ✓ {feedback}
+        </p>
+      )}
       {!ui && !error && <p style={{ color: "#898781" }}>Loading…</p>}
 
       {ui?.machineIds.map((machineId, i) => {
         const assignments = assignmentsByMachine[machineId] ?? [];
+        const faultCodes = faultCodesByMachine[machineId] ?? [];
+        const machineRecentReports = recentReports.filter((r) => r.machineId === machineId).slice(0, 5);
+
         return (
           <section key={machineId} style={{ marginTop: 24, border: "1px solid #e1e0d9", borderRadius: 12, padding: 16 }}>
             <h2 style={{ fontSize: 18, marginTop: 0 }}>{ui.machineNames[i]}</h2>
+
             {assignments.length === 0 && <p style={{ color: "#898781" }}>No work orders scheduled.</p>}
             {assignments.map((a) => (
               <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 16, padding: "12px 0", borderTop: "1px solid #e1e0d9" }}>
@@ -123,6 +195,31 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                 )}
               </div>
             ))}
+
+            {faultCodes.length > 0 && (
+              <div style={{ marginTop: 16, borderTop: "1px solid #e1e0d9", paddingTop: 12 }}>
+                <div style={{ fontSize: 13, color: "#898781", marginBottom: 8 }}>Report a fault</div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {faultCodes.map((fc) => (
+                    <button
+                      key={fc.id}
+                      style={faultButtonStyle}
+                      onClick={() => reportFault(machineId, fc.id, `${fc.code} — ${fc.name}`)}
+                    >
+                      {fc.code}
+                      <br />
+                      <span style={{ fontWeight: 400, fontSize: 12 }}>{fc.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {machineRecentReports.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, color: "#898781" }}>
+                Recent: {machineRecentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}
+              </div>
+            )}
           </section>
         );
       })}

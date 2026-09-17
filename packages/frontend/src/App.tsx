@@ -10,6 +10,8 @@ import SchedulePanel from "./SchedulePanel";
 import TerminalUisPanel from "./TerminalUisPanel";
 import MfaSetup from "./MfaSetup.js";
 import AlertsPanel from "./AlertsPanel.js";
+import MachineFaultCodesPanel from "./MachineFaultCodesPanel";
+import FaultReportsPanel from "./FaultReportsPanel";
 
 interface MachineState {
   machineId: string;
@@ -187,8 +189,11 @@ export default function App() {
       <WorkOrdersPanel />
       <SchedulePanel />
       <TerminalUisPanel />
-      <AuditLogPanel />
       <AlertsPanel />
+      <MachineFaultCodesPanel />
+      <FaultReportsPanel />
+      <AuditLogPanel />
+
     </div>
   );
 }

@@ -52,6 +52,20 @@ import {
 } from "./mfa-repository.js";
 import { listAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from "./alert-rules-repository.js";
 import { listAlerts, acknowledgeAlert } from "./alerts-repository.js";
+import {
+  listFaultCodes,
+  createFaultCode,
+  deactivateFaultCode,
+  FaultCodeLimitError,
+  isUniqueViolation as isFaultCodeUniqueViolation,
+  isForeignKeyViolation as isFaultCodeForeignKeyViolation,
+} from "./machine-fault-codes-repository.js";
+import {
+  listFaultReports,
+  createFaultReport,
+  reviewFaultReport,
+  isForeignKeyViolation as isFaultReportForeignKeyViolation,
+} from "./fault-reports-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -558,6 +572,128 @@ export async function buildServer(): Promise<FastifyInstance> {
       ipAddress: request.ip,
     });
     return alert;
+  });
+
+  app.get<{ Querystring: { machineId?: string } }>("/api/fault-codes", async (request) =>
+  listFaultCodes(request.query.machineId),
+  );
+
+  app.post<{ Body: { machineId: string; code: string; name: string; signalReference?: string } }>(
+    "/api/fault-codes",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const { machineId, code, name } = request.body;
+      if (!machineId || !code || !name) {
+        reply.code(400);
+        return { error: "machineId, code and name are required" };
+      }
+      try {
+        const faultCode = await createFaultCode(request.body);
+        await recordAuditEvent({
+          actorId: request.user!.id,
+          action: "fault_code_created",
+          target: faultCode.id,
+          details: request.body,
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return faultCode;
+      } catch (err) {
+        if (err instanceof FaultCodeLimitError) {
+          reply.code(409);
+          return { error: err.message };
+        }
+        if (isFaultCodeUniqueViolation(err)) {
+          reply.code(409);
+          return { error: `code "${code}" already exists for this machine` };
+        }
+        if (isFaultCodeForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown machine" };
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/fault-codes/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deactivated = await deactivateFaultCode(request.params.id);
+      if (!deactivated) {
+        reply.code(404);
+        return { error: "unknown fault code" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "fault_code_deactivated",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+
+  app.get("/api/fault-reports", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listFaultReports();
+  });
+
+  app.post<{ Body: { machineId: string; faultCodeId: string; occurrenceCount?: number; comment?: string } }>(
+    "/api/fault-reports",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { machineId, faultCodeId } = request.body;
+      if (!machineId || !faultCodeId) {
+        reply.code(400);
+        return { error: "machineId and faultCodeId are required" };
+      }
+      try {
+        const report = await createFaultReport({ ...request.body, reportedBy: request.user.id });
+        await recordAuditEvent({
+          actorId: request.user.id,
+          action: "fault_reported",
+          target: report.id,
+          details: request.body,
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return report;
+      } catch (err) {
+        if (isFaultReportForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown machine or fault code" };
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.put<{
+    Params: { id: string };
+    Body: { status: "confirmed" | "modified" | "rejected"; adjustedCount?: number; reviewerNote?: string };
+  }>("/api/fault-reports/:id/review", { preHandler: requireRole("manager", "admin") }, async (request, reply) => {
+    const report = await reviewFaultReport(request.params.id, request.user!.id, request.body);
+    if (!report) {
+      reply.code(404);
+      return { error: "unknown or already reviewed fault report" };
+    }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "fault_report_reviewed",
+      target: report.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
+    return report;
   });
 
   return app;

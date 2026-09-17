@@ -67,7 +67,14 @@ export default function AlertsPanel() {
     if (isAdmin) {
       calls.push(
         fetch(`${API_BASE}/api/alert-rules`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-          .then((r) => r.json())
+          .then((res) => {
+            if (res.status === 401) {
+              logout();
+              throw new Error("session expired — please sign in again");
+            }
+            if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+            return res.json();
+          })
           .then(setRules),
       );
     }
@@ -142,19 +149,27 @@ export default function AlertsPanel() {
   }
 
   async function toggleRuleActive(rule: AlertRule) {
-    await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
+    const res = await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ isActive: !rule.isActive }),
     });
+    if (res.status === 401) {
+      logout();
+      return;
+    }
     load();
   }
 
   async function removeRule(id: string) {
-    await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, {
+    const res = await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
+    if (res.status === 401) {
+      logout();
+      return;
+    }
     load();
   }
 
