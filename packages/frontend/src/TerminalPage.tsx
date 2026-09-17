@@ -136,6 +136,15 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     load();
   }
 
+  async function completeWorkOrder(workOrderId: string) {
+    await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
+      body: JSON.stringify({ status: "completed" }),
+    });
+    load();
+  }
+
   async function reportFault(machineId: string, faultCodeId: string, faultLabel: string) {
     const res = await fetch(`${API_BASE}/api/fault-reports`, {
       method: "POST",
@@ -185,14 +194,19 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                   </div>
                 </div>
                 {a.workOrderStatus === "in_progress" ? (
-                  <span style={{ color: "#0ca30c", fontWeight: 600 }}>● Aktív</span>
-                ) : a.workOrderStatus === "completed" ? (
-                  <span style={{ color: "#898781" }}>Kész</span>
-                ) : (
-                  <button style={startButtonStyle} onClick={() => startWorkOrder(a.workOrderId)}>
-                    Elkezdés
-                  </button>
-                )}
+                    <button
+                      style={{ ...startButtonStyle, background: "#0ca30c", borderColor: "#0ca30c" }}
+                      onClick={() => completeWorkOrder(a.workOrderId)}
+                    >
+                      Befejezés
+                    </button>
+                  ) : a.workOrderStatus === "completed" ? (
+                    <span style={{ color: "#898781" }}>Kész</span>
+                  ) : (
+                    <button style={startButtonStyle} onClick={() => startWorkOrder(a.workOrderId)}>
+                      Elkezdés
+                    </button>
+                  )}
               </div>
             ))}
 

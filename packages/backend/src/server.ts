@@ -66,6 +66,15 @@ import {
   reviewFaultReport,
   isForeignKeyViolation as isFaultReportForeignKeyViolation,
 } from "./fault-reports-repository.js";
+import { listLots, getLotForWorkOrder, generateLotForWorkOrder } from "./lots-repository.js";
+import {
+  listMaterialLots,
+  createMaterialLot,
+  listConsumptionForWorkOrder,
+  recordConsumption,
+  isUniqueViolation as isMaterialLotUniqueViolation,
+  isForeignKeyViolation as isMaterialLotForeignKeyViolation,
+} from "./material-lots-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -292,6 +301,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       details: request.body,
       ipAddress: request.ip,
     });
+    if (request.body.status === "completed") {
+      await generateLotForWorkOrder(workOrder.id);
+    }
     return workOrder;
   });
 
@@ -695,6 +707,108 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
     return report;
   });
+  app.get("/api/lots", async (request, reply) => {
+  if (!request.user) {
+    reply.code(401);
+    return { error: "authentication required" };
+  }
+  return listLots();
+  });
+
+  app.get<{ Params: { id: string } }>("/api/work-orders/:id/lot", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const lot = await getLotForWorkOrder(request.params.id);
+    if (!lot) {
+      reply.code(404);
+      return { error: "no lot generated yet for this work order" };
+    }
+    return lot;
+  });
+
+  app.get("/api/material-lots", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listMaterialLots();
+  });
+
+  app.post<{ Body: { materialName: string; lotNumber: string; supplier?: string; receivedAt?: string } }>(
+    "/api/material-lots",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { materialName, lotNumber } = request.body;
+      if (!materialName || !lotNumber) {
+        reply.code(400);
+        return { error: "materialName and lotNumber are required" };
+      }
+      try {
+        const lot = await createMaterialLot(request.body);
+        await recordAuditEvent({
+          actorId: request.user.id,
+          action: "material_lot_created",
+          target: lot.id,
+          details: request.body,
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return lot;
+      } catch (err) {
+        if (isMaterialLotUniqueViolation(err)) {
+          reply.code(409);
+          return { error: "this material name + lot number combination already exists" };
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/api/work-orders/:id/material-consumption", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listConsumptionForWorkOrder(request.params.id);
+  });
+
+  app.post<{ Params: { id: string }; Body: { materialLotId: string } }>(
+    "/api/work-orders/:id/material-consumption",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { materialLotId } = request.body;
+      if (!materialLotId) {
+        reply.code(400);
+        return { error: "materialLotId is required" };
+      }
+      try {
+        await recordConsumption(request.params.id, materialLotId, request.user.id);
+        await recordAuditEvent({
+          actorId: request.user.id,
+          action: "material_consumption_recorded",
+          target: request.params.id,
+          details: request.body,
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return { success: true };
+      } catch (err) {
+        if (isMaterialLotForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown work order or material lot" };
+        }
+        throw err;
+      }
+    },
+);
 
   return app;
 }

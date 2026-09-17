@@ -12,6 +12,8 @@ import MfaSetup from "./MfaSetup.js";
 import AlertsPanel from "./AlertsPanel.js";
 import MachineFaultCodesPanel from "./MachineFaultCodesPanel";
 import FaultReportsPanel from "./FaultReportsPanel";
+import MaterialLotsPanel from "./MaterialLotsPanel";
+import LotsPanel from "./LotsPanel";
 
 interface MachineState {
   machineId: string;
@@ -193,7 +195,8 @@ export default function App() {
       <MachineFaultCodesPanel />
       <FaultReportsPanel />
       <AuditLogPanel />
-
+      <MaterialLotsPanel />
+      <LotsPanel />
     </div>
   );
 }
