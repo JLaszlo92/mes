@@ -89,6 +89,17 @@ import {
   recordView,
   listViews,
 } from "./work-instructions-repository.js";
+import {
+  listMaintenanceWorkOrders,
+  getMaintenanceWorkOrder,
+  createMaintenanceWorkOrder,
+  updateMaintenanceWorkOrder,
+  listParts,
+  addPart,
+  listLabor,
+  addLabor,
+  isForeignKeyViolation as isMwoForeignKeyViolation,
+} from "./maintenance-work-orders-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -958,6 +969,105 @@ export async function buildServer(): Promise<FastifyInstance> {
     { preHandler: requireRole("admin", "manager", "supervisor") },
     async () => listViews(),
   );
+  app.get("/api/maintenance-work-orders", async (request, reply) => {
+  if (!request.user) {
+    reply.code(401);
+    return { error: "authentication required" };
+  }
+  return listMaintenanceWorkOrders();
+  });
 
+  app.post<{
+    Body: { machineId: string; title: string; description?: string; sourceType?: string; sourceId?: string };
+  }>("/api/maintenance-work-orders", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
+    const { machineId, title } = request.body;
+    if (!machineId || !title) {
+      reply.code(400);
+      return { error: "machineId and title are required" };
+    }
+    try {
+      const mwo = await createMaintenanceWorkOrder({ ...request.body, createdBy: request.user!.id });
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "maintenance_work_order_created",
+        target: mwo.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return mwo;
+    } catch (err) {
+      if (isMwoForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown machine" };
+      }
+      throw err;
+    }
+  });
+
+  app.put<{
+    Params: { id: string };
+    Body: { status?: "open" | "assigned" | "in_progress" | "closed"; assignedTo?: string };
+  }>("/api/maintenance-work-orders/:id", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
+    const mwo = await updateMaintenanceWorkOrder(request.params.id, request.body);
+    if (!mwo) {
+      reply.code(404);
+      return { error: "unknown maintenance work order" };
+    }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "maintenance_work_order_updated",
+      target: mwo.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
+    return mwo;
+  });
+
+  app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/parts", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listParts(request.params.id);
+  });
+
+  app.post<{ Params: { id: string }; Body: { partName: string; quantity?: number } }>(
+    "/api/maintenance-work-orders/:id/parts",
+    { preHandler: requireRole("maintenance", "manager", "admin") },
+    async (request, reply) => {
+      const { partName, quantity } = request.body;
+      if (!partName) {
+        reply.code(400);
+        return { error: "partName is required" };
+      }
+      await addPart(request.params.id, partName, quantity ?? 1);
+      reply.code(201);
+      return { success: true };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/labor", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listLabor(request.params.id);
+  });
+
+  app.post<{ Params: { id: string }; Body: { hours: number; notes?: string } }>(
+    "/api/maintenance-work-orders/:id/labor",
+    { preHandler: requireRole("maintenance", "manager", "admin") },
+    async (request, reply) => {
+      const { hours } = request.body;
+      if (!hours || hours <= 0) {
+        reply.code(400);
+        return { error: "hours must be a positive number" };
+      }
+      await addLabor(request.params.id, request.user!.id, hours, request.body.notes);
+      reply.code(201);
+      return { success: true };
+    },
+  );
   return app;
 }

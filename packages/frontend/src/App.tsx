@@ -15,6 +15,7 @@ import FaultReportsPanel from "./FaultReportsPanel";
 import MaterialLotsPanel from "./MaterialLotsPanel";
 import LotsPanel from "./LotsPanel";
 import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
+import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -41,6 +42,7 @@ const TABS = [
   { id: "overview", label: "Overview" },
   { id: "production", label: "Production" },
   { id: "quality", label: "Quality" },
+  { id: "maintenance", label: "Maintenance" },
   { id: "alerts", label: "Alerts" },
   { id: "admin", label: "Admin" },
 ] as const;
@@ -233,6 +235,11 @@ export default function App() {
           <MachineFaultCodesPanel />
           <FaultReportsPanel />
           <WorkInstructionsPanel />
+        </div>
+      )}
+      {activeTab === "maintenance" && (
+        <div>
+          <MaintenanceWorkOrdersPanel />
         </div>
       )}
 
