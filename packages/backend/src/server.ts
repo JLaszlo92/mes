@@ -81,6 +81,15 @@ import {
   signOffCorrectiveAction,
   isForeignKeyViolation as isCorrectiveActionForeignKeyViolation,
 } from "./corrective-actions-repository.js";
+import {
+  listCurrentInstructions,
+  getCurrentInstructionForPart,
+  listVersionsForPart,
+  createNewVersion,
+  recordView,
+  listViews,
+} from "./work-instructions-repository.js";
+
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -873,6 +882,81 @@ export async function buildServer(): Promise<FastifyInstance> {
       });
       return action;
     },
+    );
+
+      app.get("/api/work-instructions", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listCurrentInstructions();
+  });
+
+  app.get<{ Params: { partName: string } }>("/api/work-instructions/:partName", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const instruction = await getCurrentInstructionForPart(decodeURIComponent(request.params.partName));
+    if (!instruction) {
+      reply.code(404);
+      return { error: "no instructions for this part" };
+    }
+    return instruction;
+  });
+
+  app.get<{ Params: { partName: string } }>("/api/work-instructions/:partName/versions", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return listVersionsForPart(decodeURIComponent(request.params.partName));
+  });
+
+  app.post<{ Body: { partName: string; content: string; pdfUrl?: string } }>(
+    "/api/work-instructions",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const { partName, content } = request.body;
+      if (!partName || !content) {
+        reply.code(400);
+        return { error: "partName and content are required" };
+      }
+      const instruction = await createNewVersion({ ...request.body, createdBy: request.user!.id });
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "work_instruction_versioned",
+        target: instruction.id,
+        details: { partName, version: instruction.version },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return instruction;
+    },
+  );
+
+  app.post<{ Body: { workInstructionId: string; workOrderId?: string } }>(
+    "/api/work-instructions/view",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { workInstructionId, workOrderId } = request.body;
+      if (!workInstructionId) {
+        reply.code(400);
+        return { error: "workInstructionId is required" };
+      }
+      await recordView(workInstructionId, workOrderId ?? null, request.user.id);
+      reply.code(201);
+      return { success: true };
+    },
+  );
+
+  app.get(
+    "/api/work-instructions/views/log",
+    { preHandler: requireRole("admin", "manager", "supervisor") },
+    async () => listViews(),
   );
 
   return app;

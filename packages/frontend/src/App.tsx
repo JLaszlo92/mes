@@ -14,6 +14,7 @@ import MachineFaultCodesPanel from "./MachineFaultCodesPanel";
 import FaultReportsPanel from "./FaultReportsPanel";
 import MaterialLotsPanel from "./MaterialLotsPanel";
 import LotsPanel from "./LotsPanel";
+import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -231,6 +232,7 @@ export default function App() {
         <div>
           <MachineFaultCodesPanel />
           <FaultReportsPanel />
+          <WorkInstructionsPanel />
         </div>
       )}
 
