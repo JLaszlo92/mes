@@ -100,6 +100,13 @@ import {
   addLabor,
   isForeignKeyViolation as isMwoForeignKeyViolation,
 } from "./maintenance-work-orders-repository.js";
+import {
+  listSchedules,
+  createSchedule,
+  deactivateSchedule,
+  resetSchedule,
+  isForeignKeyViolation as isScheduleForeignKeyViolation,
+} from "./preventive-maintenance-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1021,6 +1028,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       details: request.body,
       ipAddress: request.ip,
     });
+    if (request.body.status === "closed" && mwo.sourceType === "preventive_schedule" && mwo.sourceId) {
+      await resetSchedule(mwo.sourceId);
+    }
     return mwo;
   });
 
@@ -1067,6 +1077,59 @@ export async function buildServer(): Promise<FastifyInstance> {
       await addLabor(request.params.id, request.user!.id, hours, request.body.notes);
       reply.code(201);
       return { success: true };
+    },
+  );
+  app.get(
+  "/api/preventive-schedules",
+  { preHandler: requireRole("maintenance", "manager", "admin") },
+  async () => listSchedules(),
+  );
+
+  app.post<{
+    Body: { machineId: string; triggerType: "calendar" | "usage_hours" | "part_count"; intervalValue: number; description: string };
+  }>("/api/preventive-schedules", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
+    const { machineId, triggerType, intervalValue, description } = request.body;
+    if (!machineId || !triggerType || !intervalValue || !description) {
+      reply.code(400);
+      return { error: "machineId, triggerType, intervalValue and description are required" };
+    }
+    try {
+      const schedule = await createSchedule(request.body);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "preventive_schedule_created",
+        target: schedule.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return schedule;
+    } catch (err) {
+      if (isScheduleForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown machine" };
+      }
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/preventive-schedules/:id",
+    { preHandler: requireRole("maintenance", "manager", "admin") },
+    async (request, reply) => {
+      const deactivated = await deactivateSchedule(request.params.id);
+      if (!deactivated) {
+        reply.code(404);
+        return { error: "unknown schedule" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "preventive_schedule_deactivated",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
     },
   );
   return app;

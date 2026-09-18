@@ -16,6 +16,7 @@ import MaterialLotsPanel from "./MaterialLotsPanel";
 import LotsPanel from "./LotsPanel";
 import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
 import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
+import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -240,7 +241,8 @@ export default function App() {
       {activeTab === "maintenance" && (
         <div>
           <MaintenanceWorkOrdersPanel />
-        </div>
+          <PreventiveSchedulesPanel />
+          </div>
       )}
 
       {activeTab === "alerts" && (

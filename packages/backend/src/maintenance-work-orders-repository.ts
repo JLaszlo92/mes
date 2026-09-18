@@ -93,7 +93,7 @@ export interface CreateMwoInput {
   description?: string;
   sourceType?: string;
   sourceId?: string;
-  createdBy: string;
+  createdBy?: string;
 }
 
 export async function createMaintenanceWorkOrder(input: CreateMwoInput): Promise<MaintenanceWorkOrder> {
