@@ -75,6 +75,12 @@ import {
   isUniqueViolation as isMaterialLotUniqueViolation,
   isForeignKeyViolation as isMaterialLotForeignKeyViolation,
 } from "./material-lots-repository.js";
+import {
+  listCorrectiveActions,
+  createCorrectiveAction,
+  signOffCorrectiveAction,
+  isForeignKeyViolation as isCorrectiveActionForeignKeyViolation,
+} from "./corrective-actions-repository.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true });
@@ -808,7 +814,66 @@ export async function buildServer(): Promise<FastifyInstance> {
         throw err;
       }
     },
-);
+  );
+  app.get("/api/corrective-actions", async (request, reply) => {
+  if (!request.user) {
+    reply.code(401);
+    return { error: "authentication required" };
+  }
+    return listCorrectiveActions();
+  });
+
+  app.post<{ Body: { faultReportId: string; description: string } }>(
+    "/api/corrective-actions",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { faultReportId, description } = request.body;
+      if (!faultReportId || !description) {
+        reply.code(400);
+        return { error: "faultReportId and description are required" };
+      }
+      try {
+        const action = await createCorrectiveAction({ faultReportId, description, performedBy: request.user.id });
+        await recordAuditEvent({
+          actorId: request.user.id,
+          action: "corrective_action_logged",
+          target: action.id,
+          details: { faultReportId, description },
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return action;
+      } catch (err) {
+        if (isCorrectiveActionForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown fault report" };
+        }
+        throw err;
+      }
+    },
+  );
+
+  app.put<{ Params: { id: string } }>(
+    "/api/corrective-actions/:id/sign-off",
+    { preHandler: requireRole("supervisor", "manager", "admin") },
+    async (request, reply) => {
+      const action = await signOffCorrectiveAction(request.params.id, request.user!.id);
+      if (!action) {
+        reply.code(404);
+        return { error: "unknown or already signed-off corrective action" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "corrective_action_signed_off",
+        target: action.id,
+        ipAddress: request.ip,
+      });
+      return action;
+    },
+  );
 
   return app;
 }

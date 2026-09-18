@@ -28,6 +28,16 @@ interface FaultReport {
   reviewerNote: string | null;
 }
 
+interface CorrectiveAction {
+  id: string;
+  faultReportId: string;
+  description: string;
+  performedByEmail: string | null;
+  performedAt: string;
+  signedOffByEmail: string | null;
+  signedOffAt: string | null;
+}
+
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
@@ -55,11 +65,14 @@ export default function FaultReportsPanel() {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [faultCodes, setFaultCodes] = useState<FaultCode[]>([]);
   const [reports, setReports] = useState<FaultReport[]>([]);
+  const [correctiveActions, setCorrectiveActions] = useState<CorrectiveAction[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState({ machineId: "", faultCodeId: "", occurrenceCount: "1", comment: "" });
   const [submitting, setSubmitting] = useState(false);
+  const [actionDrafts, setActionDrafts] = useState<Record<string, string>>({});
 
   const canReview = auth?.role === "manager" || auth?.role === "admin";
+  const canSignOff = auth?.role === "supervisor" || auth?.role === "manager" || auth?.role === "admin";
 
   function load() {
     Promise.all([
@@ -72,11 +85,21 @@ export default function FaultReportsPanel() {
         }
         return res.json();
       }),
+      fetch(`${API_BASE}/api/corrective-actions`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
+        (res) => {
+          if (res.status === 401) {
+            logout();
+            throw new Error("session expired — please sign in again");
+          }
+          return res.json();
+        },
+      ),
     ])
-      .then(([m, fc, fr]) => {
+      .then(([m, fc, fr, ca]) => {
         setMachines(m);
         setFaultCodes(fc);
         setReports(fr);
+        setCorrectiveActions(ca);
         setError(null);
       })
       .catch((err) => setError(String(err)));
@@ -131,8 +154,73 @@ export default function FaultReportsPanel() {
     load();
   }
 
+  async function addCorrectiveAction(faultReportId: string) {
+    const description = (actionDrafts[faultReportId] ?? "").trim();
+    if (!description) return;
+    const res = await fetch(`${API_BASE}/api/corrective-actions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+      body: JSON.stringify({ faultReportId, description }),
+    });
+    if (res.status === 401) {
+      logout();
+      return;
+    }
+    setActionDrafts((prev) => ({ ...prev, [faultReportId]: "" }));
+    load();
+  }
+
+  async function signOff(actionId: string) {
+    const res = await fetch(`${API_BASE}/api/corrective-actions/${encodeURIComponent(actionId)}/sign-off`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${auth?.token}` },
+    });
+    if (res.status === 401) {
+      logout();
+      return;
+    }
+    load();
+  }
+
   const pending = reports.filter((r) => r.status === "pending");
   const reviewed = reports.filter((r) => r.status !== "pending");
+
+  function renderCorrectiveActions(reportId: string) {
+    const actions = correctiveActions.filter((a) => a.faultReportId === reportId);
+    return (
+      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e1e0d9" }}>
+        <div style={{ fontSize: 11, color: "#898781", marginBottom: 6 }}>Corrective actions</div>
+        {actions.map((a) => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 4 }}>
+            <div style={{ flex: 1 }}>
+              {a.description}
+              <span style={{ color: "#898781" }}> — {a.performedByEmail ?? "—"}, {new Date(a.performedAt).toLocaleString()}</span>
+            </div>
+            {a.signedOffAt ? (
+              <span style={{ color: "#0ca30c" }}>✓ signed off by {a.signedOffByEmail}</span>
+            ) : canSignOff ? (
+              <button style={{ ...secondaryButtonStyle, padding: "3px 8px", fontSize: 11 }} onClick={() => signOff(a.id)}>
+                Sign off
+              </button>
+            ) : (
+              <span style={{ color: "#eda100" }}>pending sign-off</span>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
+          <input
+            placeholder="What was done about it…"
+            value={actionDrafts[reportId] ?? ""}
+            onChange={(e) => setActionDrafts((prev) => ({ ...prev, [reportId]: e.target.value }))}
+            style={{ ...inputStyle, flex: 1, fontSize: 12 }}
+          />
+          <button style={{ ...secondaryButtonStyle, padding: "4px 10px", fontSize: 12 }} onClick={() => addCorrectiveAction(reportId)}>
+            Log action
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <section style={{ marginTop: 32 }}>
@@ -174,48 +262,52 @@ export default function FaultReportsPanel() {
       {pending.length === 0 && <p style={{ color: "#898781" }}>No pending fault reports.</p>}
 
       {pending.map((r) => (
-        <div key={r.id} style={{ border: "1px solid #eda100", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 16, alignItems: "center" }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>
-              {r.machineName} — {r.faultCode} ({r.faultName}) × {r.occurrenceCount}
+        <div key={r.id} style={{ border: "1px solid #eda100", borderRadius: 10, padding: 12, marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600 }}>
+                {r.machineName} — {r.faultCode} ({r.faultName}) × {r.occurrenceCount}
+              </div>
+              {r.comment && <div style={{ fontSize: 13 }}>{r.comment}</div>}
+              <div style={{ fontSize: 11, color: "#898781" }}>
+                {r.reportedByEmail ?? "—"} · {new Date(r.reportedAt).toLocaleString()}
+              </div>
             </div>
-            {r.comment && <div style={{ fontSize: 13 }}>{r.comment}</div>}
-            <div style={{ fontSize: 11, color: "#898781" }}>
-              {r.reportedByEmail ?? "—"} · {new Date(r.reportedAt).toLocaleString()}
-            </div>
+            {canReview && (
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={secondaryButtonStyle} onClick={() => review(r.id, "confirmed")}>
+                  Confirm
+                </button>
+                <button
+                  style={secondaryButtonStyle}
+                  onClick={() => {
+                    const adjusted = window.prompt("Adjusted count:", String(r.occurrenceCount));
+                    if (adjusted !== null) review(r.id, "modified", Number(adjusted));
+                  }}
+                >
+                  Modify
+                </button>
+                <button style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }} onClick={() => review(r.id, "rejected")}>
+                  Reject
+                </button>
+              </div>
+            )}
           </div>
-          {canReview && (
-            <div style={{ display: "flex", gap: 6 }}>
-              <button style={secondaryButtonStyle} onClick={() => review(r.id, "confirmed")}>
-                Confirm
-              </button>
-              <button
-                style={secondaryButtonStyle}
-                onClick={() => {
-                  const adjusted = window.prompt("Adjusted count:", String(r.occurrenceCount));
-                  if (adjusted !== null) review(r.id, "modified", Number(adjusted));
-                }}
-              >
-                Modify
-              </button>
-              <button style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }} onClick={() => review(r.id, "rejected")}>
-                Reject
-              </button>
-            </div>
-          )}
+          {renderCorrectiveActions(r.id)}
         </div>
       ))}
 
       {reviewed.length > 0 && (
-        <details style={{ marginTop: 16 }}>
+        <details style={{ marginTop: 16 }} open>
           <summary style={{ fontSize: 13, color: "#898781", cursor: "pointer" }}>{reviewed.length} reviewed</summary>
           {reviewed.map((r) => (
-            <div key={r.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, opacity: 0.7 }}>
+            <div key={r.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8 }}>
               <div style={{ fontWeight: 600 }}>
                 {r.machineName} — {r.faultCode} × {r.occurrenceCount}{" "}
                 <span style={{ color: STATUS_COLOR[r.status], fontSize: 11 }}>{r.status}</span>
               </div>
               <div style={{ fontSize: 11, color: "#898781" }}>reviewed by {r.reviewedByEmail ?? "—"}</div>
+              {r.status !== "rejected" && renderCorrectiveActions(r.id)}
             </div>
           ))}
         </details>
