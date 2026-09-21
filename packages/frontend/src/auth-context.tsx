@@ -1,4 +1,3 @@
-
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 
 interface AuthState {
@@ -8,7 +7,11 @@ interface AuthState {
 
 interface AuthContextValue {
   auth: AuthState | null;
+  mfaPendingToken: string | null;
+  mfaSetupRequired: boolean;
   login: (email: string, password: string) => Promise<void>;
+  submitMfaCode: (code: string) => Promise<void>;
+  completeMfaSetup: () => void;
   logout: () => void;
 }
 
@@ -23,6 +26,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const raw = localStorage.getItem(STORAGE_KEY);
     return raw ? (JSON.parse(raw) as AuthState) : null;
   });
+  const [mfaPendingToken, setMfaPendingToken] = useState<string | null>(null);
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
 
   useEffect(() => {
     if (auth) localStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
@@ -40,22 +45,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error(body.error ?? `${res.status} ${res.statusText}`);
     }
     const data = await res.json();
+    if (data.mfaRequired) {
+      setMfaPendingToken(data.pendingToken);
+      return;
+    }
     setAuth({ token: data.token, role: data.role });
+    setMfaSetupRequired(Boolean(data.mfaSetupRequired));
   }, []);
+
+  const submitMfaCode = useCallback(
+    async (code: string) => {
+      const res = await fetch(`${API_BASE}/api/auth/mfa/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingToken: mfaPendingToken, code }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+      }
+      const data = await res.json();
+      setMfaPendingToken(null);
+      setAuth({ token: data.token, role: data.role });
+    },
+    [mfaPendingToken],
+  );
+
+  const completeMfaSetup = useCallback(() => setMfaSetupRequired(false), []);
 
   const logout = useCallback(() => {
     if (auth) {
-      // Best-effort — a szerver oldali session sort is töröljük, de a
-      // kijelentkezés a kliens oldalon akkor is megtörténik, ha ez elszáll.
       fetch(`${API_BASE}/api/auth/logout`, {
         method: "POST",
         headers: { Authorization: `Bearer ${auth.token}` },
       }).catch(() => {});
     }
     setAuth(null);
+    setMfaPendingToken(null);
+    setMfaSetupRequired(false);
   }, [auth]);
 
-  return <AuthContext.Provider value={{ auth, login, logout }}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider
+      value={{ auth, mfaPendingToken, mfaSetupRequired, login, submitMfaCode, completeMfaSetup, logout }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth(): AuthContextValue {

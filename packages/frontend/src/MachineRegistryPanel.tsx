@@ -6,6 +6,7 @@ interface Machine {
   name: string;
   assetType: string | null;
   location: string | null;
+  idealCycleTimeSeconds: number | null;
   isActive: boolean;
 }
 
@@ -34,10 +35,9 @@ export default function MachineRegistryPanel() {
   const [machines, setMachines] = useState<Machine[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ id: "", name: "", assetType: "", location: "" });
-  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({ id: "", name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });  const [submitting, setSubmitting] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", assetType: "", location: "" });
+  const [editForm, setEditForm] = useState({ name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });
   const [savingId, setSavingId] = useState<string | null>(null);
 
   function load() {
@@ -70,6 +70,7 @@ export default function MachineRegistryPanel() {
           name: form.name.trim(),
           assetType: form.assetType.trim() || undefined,
           location: form.location.trim() || undefined,
+          idealCycleTimeSeconds: form.idealCycleTimeSeconds ? Number(form.idealCycleTimeSeconds) : undefined,
         }),
       });
       if (res.status === 401) {
@@ -80,7 +81,7 @@ export default function MachineRegistryPanel() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `${res.status} ${res.statusText}`);
       }
-      setForm({ id: "", name: "", assetType: "", location: "" });
+      setForm({ id: "", name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });
       load();
     } catch (err) {
       setError(String(err));
@@ -91,7 +92,12 @@ export default function MachineRegistryPanel() {
 
   function startEdit(m: Machine) {
     setEditingId(m.id);
-    setEditForm({ name: m.name, assetType: m.assetType ?? "", location: m.location ?? "" });
+    setEditForm({
+      name: m.name,
+      assetType: m.assetType ?? "",
+      location: m.location ?? "",
+      idealCycleTimeSeconds: m.idealCycleTimeSeconds !== null ? String(m.idealCycleTimeSeconds) : "",
+    });
   }
 
   function cancelEdit() {
@@ -109,10 +115,11 @@ export default function MachineRegistryPanel() {
             Authorization: `Bearer ${auth?.token}`,
           },
           body: JSON.stringify({
-          name: editForm.name.trim(),
-          assetType: editForm.assetType.trim() || undefined,
-          location: editForm.location.trim() || undefined,
-        }),
+            name: editForm.name.trim(),
+            assetType: editForm.assetType.trim() || undefined,
+            location: editForm.location.trim() || undefined,
+            idealCycleTimeSeconds: editForm.idealCycleTimeSeconds ? Number(editForm.idealCycleTimeSeconds) : undefined,
+          }),
       });
       if (res.status === 401) {
         logout();
@@ -180,6 +187,10 @@ export default function MachineRegistryPanel() {
           Location<br />
           <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="Line 1" style={inputStyle} />
         </label>
+        <label style={{ fontSize: 12 }}>
+            Ideal cycle (s)<br />
+            <input type="number" step="0.1" value={form.idealCycleTimeSeconds} onChange={(e) => setForm((f) => ({ ...f, idealCycleTimeSeconds: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
+        </label>
         <button type="submit" disabled={submitting} style={buttonStyle}>
           {submitting ? "Adding…" : "Add machine"}
         </button>
@@ -209,6 +220,16 @@ export default function MachineRegistryPanel() {
                 Location<br />
                 <input value={editForm.location} onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))} style={inputStyle} />
               </label>
+              <label style={{ fontSize: 12 }}>
+                Ideal cycle (s)<br />
+                <input
+                  type="number"
+                  step="0.1"
+                  value={editForm.idealCycleTimeSeconds}
+                  onChange={(e) => setEditForm((f) => ({ ...f, idealCycleTimeSeconds: e.target.value }))}
+                  style={inputStyle}
+                />
+              </label>
               <button type="button" onClick={() => saveEdit(m.id)} disabled={isSaving} style={buttonStyle}>
                 {isSaving ? "Saving…" : "Save"}
               </button>
@@ -225,6 +246,10 @@ export default function MachineRegistryPanel() {
             <div><div style={{ fontSize: 12, color: "#898781" }}>Name</div><div style={{ fontWeight: 600 }}>{m.name}</div></div>
             <div><div style={{ fontSize: 12, color: "#898781" }}>Type</div><div>{m.assetType ?? "—"}</div></div>
             <div><div style={{ fontSize: 12, color: "#898781" }}>Location</div><div>{m.location ?? "—"}</div></div>
+            <div>
+              <div style={{ fontSize: 12, color: "#898781" }}>Ideal cycle</div>
+              <div>{m.idealCycleTimeSeconds ?? "—"}s</div>
+            </div>
             {!m.isActive && <div style={{ fontSize: 12, color: "#d03b3b" }}>inactive</div>}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button type="button" onClick={() => startEdit(m)} style={secondaryButtonStyle}>

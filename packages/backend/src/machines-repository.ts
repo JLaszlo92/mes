@@ -7,6 +7,7 @@ export interface Machine {
   name: string;
   assetType: string | null;
   location: string | null;
+  idealCycleTimeSeconds: number | null;
   isActive: boolean;
   createdAt: string;
   updatedAt: string;
@@ -20,6 +21,7 @@ type MachineRow = {
   is_active: boolean;
   created_at: string;
   updated_at: string;
+  ideal_cycle_time_seconds: string | null;
 };
 
 function toMachine(row: MachineRow): Machine {
@@ -31,6 +33,7 @@ function toMachine(row: MachineRow): Machine {
     isActive: row.is_active,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    idealCycleTimeSeconds: row.ideal_cycle_time_seconds ? Number(row.ideal_cycle_time_seconds) : null,
   };
 }
 
@@ -53,19 +56,18 @@ export interface CreateMachineInput {
   name: string;
   assetType?: string;
   location?: string;
+  idealCycleTimeSeconds?: number;
 }
 
 export async function createMachine(input: CreateMachineInput): Promise<Machine> {
   const result = await pool.query<MachineRow>(
-    `INSERT INTO machines (id, name, asset_type, location)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO machines (id, name, asset_type, location, ideal_cycle_time_seconds)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-    [input.id, input.name, input.assetType ?? null, input.location ?? null],
+    [input.id, input.name, input.assetType ?? null, input.location ?? null, input.idealCycleTimeSeconds ?? null],
   );
   const row = result.rows[0];
-  if (!row) {
-    throw new Error("INSERT ... RETURNING unexpectedly returned no row");
-  }
+  if (!row) throw new Error("INSERT ... RETURNING unexpectedly returned no row");
   return toMachine(row);
 }
 
@@ -74,6 +76,7 @@ export interface UpdateMachineInput {
   assetType?: string;
   location?: string;
   isActive?: boolean;
+  idealCycleTimeSeconds?: number;
 }
 
 export async function updateMachine(id: string, input: UpdateMachineInput): Promise<Machine | undefined> {
@@ -83,10 +86,11 @@ export async function updateMachine(id: string, input: UpdateMachineInput): Prom
        asset_type = COALESCE($3, asset_type),
        location = COALESCE($4, location),
        is_active = COALESCE($5, is_active),
+       ideal_cycle_time_seconds = COALESCE($6, ideal_cycle_time_seconds),
        updated_at = now()
      WHERE id = $1
      RETURNING *`,
-    [id, input.name ?? null, input.assetType ?? null, input.location ?? null, input.isActive ?? null],
+    [id, input.name ?? null, input.assetType ?? null, input.location ?? null, input.isActive ?? null, input.idealCycleTimeSeconds ?? null],
   );
   return result.rows[0] ? toMachine(result.rows[0]) : undefined;
 }

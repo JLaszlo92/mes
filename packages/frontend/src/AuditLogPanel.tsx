@@ -22,7 +22,7 @@ const ACTION_COLOR: Record<string, string> = {
 };
 
 export default function AuditLogPanel() {
-  const { auth } = useAuth();
+  const { auth, logout } = useAuth();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -30,14 +30,18 @@ export default function AuditLogPanel() {
     if (auth?.role !== "admin") return;
     fetch(`${API_BASE}/api/audit-log`, { headers: { Authorization: `Bearer ${auth.token}` } })
       .then((res) => {
+        if (res.status === 401) {
+          logout();
+          throw new Error("session expired — please sign in again");
+        }
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.json();
       })
       .then(setEntries)
       .catch((err) => setError(String(err)));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth]);
 
-  // Csak admin lássa — ez a legérzékenyebb nézet a rendszerben.
   if (auth?.role !== "admin") return null;
 
   return (
