@@ -10,6 +10,7 @@ export interface User {
   role: UserRole;
   isActive: boolean;
   createdAt: string;
+  mfaEnabled: boolean;
 }
 
 type UserRow = {
@@ -19,10 +20,11 @@ type UserRow = {
   role: UserRole;
   is_active: boolean;
   created_at: string;
+  mfa_enabled: boolean;
 };
 
 function toUser(row: UserRow): User {
-  return { id: row.id, email: row.email, role: row.role, isActive: row.is_active, createdAt: row.created_at };
+  return { id: row.id, email: row.email, role: row.role, isActive: row.is_active, createdAt: row.created_at, mfaEnabled: row.mfa_enabled,};
 }
 
 export async function createUser(email: string, password: string, role: UserRole): Promise<User> {
@@ -47,4 +49,9 @@ export async function findUserByEmail(
 export async function listUsers(): Promise<User[]> {
   const result = await pool.query<UserRow>(`SELECT * FROM users ORDER BY email`);
   return result.rows.map(toUser);
+}
+
+export async function getUserById(id: string): Promise<User | undefined> {
+  const result = await pool.query<UserRow>(`SELECT * FROM users WHERE id = $1 AND is_active`, [id]);
+  return result.rows[0] ? toUser(result.rows[0]) : undefined;
 }

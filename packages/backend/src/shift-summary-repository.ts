@@ -12,6 +12,10 @@ export interface ShiftSummary {
   changeoverSeconds: number;
   totalSeconds: number;
   productionRatio: number;
+  availability: number;
+  performance: number | null;
+  quality: number | null;
+  oee: number | null;
 }
 
 type CountsRow = {
@@ -33,12 +37,15 @@ type DurationsRow = {
 };
 
 /**
- * Egy adott [from, to) időszakra visszaadja a jó/rossz darabszámot és a
- * gyártás/nem-gyártás állapot-időtartamokat, műszak- és gépenkénti
- * bontásban. Két külön lekérdezés van (darabszám, állapot-időtartam),
- * mert más-más eseménytípusból (production_count / machine_status)
- * származnak, és külön-külön sokkal olvashatóbbak, mint egy közös,
- * bonyolult lekérdezésbe összegyúrva.
+ * Egy adott [from, to) időszakra visszaadja a jó/rossz darabszámot, a
+ * gyártás/nem-gyártás állapot-időtartamokat, és a klasszikus OEE három
+ * komponensét (Availability × Performance × Quality), műszak- és
+ * gépenkénti bontásban.
+ *
+ * Performance és Quality (és így az OEE is) null marad, ha nincs elég
+ * adat a számításhoz (nincs beállítva ideális ciklusidő a gépnél, vagy
+ * nincs darabszám a műszakban) — nem hamisítunk be egy semleges 100%-ot,
+ * mert az félrevezető lenne a dashboardon.
  */
 export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummary[]> {
   const countsResult = await pool.query<CountsRow>(
@@ -117,6 +124,10 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
       changeoverSeconds: 0,
       totalSeconds: 0,
       productionRatio: 0,
+      availability: 0,
+      performance: null,
+      quality: null,
+      oee: null,
     });
   }
 
@@ -134,6 +145,10 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
       changeoverSeconds: 0,
       totalSeconds: 0,
       productionRatio: 0,
+      availability: 0,
+      performance: null,
+      quality: null,
+      oee: null,
     };
     existing.runningSeconds = row.running_seconds;
     existing.idleSeconds = row.idle_seconds;
@@ -142,11 +157,38 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
     merged.set(key, existing);
   }
 
+  // Az ideális ciklusidő géphez kötött, nem eseményhez — külön
+  // lekérdezés, mert a shift-instanciák és a gép-törzsadat különböző
+  // élettartamú dolgok.
+  const machinesResult = await pool.query<{ id: string; ideal_cycle_time_seconds: string | null }>(
+    `SELECT id, ideal_cycle_time_seconds FROM machines`,
+  );
+  const idealCycleTimeByMachine = new Map<string, number | null>(
+    machinesResult.rows.map((r) => [r.id, r.ideal_cycle_time_seconds ? Number(r.ideal_cycle_time_seconds) : null]),
+  );
+
   for (const summary of merged.values()) {
     summary.totalSeconds =
       summary.runningSeconds + summary.idleSeconds + summary.downSeconds + summary.changeoverSeconds;
     summary.productionRatio = summary.totalSeconds > 0 ? summary.runningSeconds / summary.totalSeconds : 0;
+    summary.availability = summary.productionRatio;
+
+    const totalParts = summary.goodCount + summary.scrapCount;
+    summary.quality = totalParts > 0 ? summary.goodCount / totalParts : null;
+
+    const idealCycleTime = idealCycleTimeByMachine.get(summary.machineId) ?? null;
+    summary.performance =
+      idealCycleTime && summary.runningSeconds > 0
+        ? Math.min(1, (idealCycleTime * totalParts) / summary.runningSeconds)
+        : null;
+
+    summary.oee =
+      summary.performance !== null && summary.quality !== null
+        ? summary.availability * summary.performance * summary.quality
+        : null;
   }
 
-  return [...merged.values()].sort((a, b) => a.shiftDate.localeCompare(b.shiftDate) || a.shiftName.localeCompare(b.shiftName));
+  return [...merged.values()].sort(
+    (a, b) => a.shiftDate.localeCompare(b.shiftDate) || a.shiftName.localeCompare(b.shiftName),
+  );
 }
