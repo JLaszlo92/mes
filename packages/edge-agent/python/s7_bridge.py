@@ -22,6 +22,18 @@ Data layout (DB1) — must match plc-simulator/plc_simulator.py:
   byte 0, bit 0 : Running     (BOOL)  1 = running, 0 = down
   bytes 4-7     : GoodCount   (DINT)  cumulative good parts
   bytes 8-11    : ScrapCount  (DINT)  cumulative scrap parts
+
+Resilience note (found during M8 chaos testing): losing the PLC
+connection used to be handled entirely internally — this script logged a
+message to stderr and quietly kept retrying, without ever telling
+edge-agent/index.ts (via a "down" SignalReading) that the machine had
+actually become unreachable. From the dashboard's point of view the
+machine looked frozen at its last known status forever, not "down". This
+is now fixed: the moment a connection attempt or a read fails, an
+explicit {"kind": "machine_status", "status": "down"} line is emitted
+before the retry loop starts (once per outage, not once per 3-second
+retry attempt), and the real status is re-announced explicitly the
+moment the connection is restored.
 """
 import json
 import os
@@ -85,6 +97,7 @@ def main() -> None:
     client = snap7.Client()
     previous = {"running": False, "good": 0, "scrap": 0}
     first_poll = True
+    down_reported = False
 
     while True:
         try:
@@ -93,11 +106,15 @@ def main() -> None:
             while True:
                 raw = client.db_read(DB_NUMBER, 0, DB_SIZE)
                 current = decode_state(raw)
-                if first_poll:
-                    # Announce the starting status without replaying every
-                    # count that happened before this bridge was started.
+                if first_poll or down_reported:
+                    # Announce the actual status explicitly whenever we're
+                    # starting fresh, or just recovered from an outage we
+                    # reported as "down" — the state store needs this even
+                    # if it happens to equal what `previous` already holds,
+                    # since a synthetic "down" was emitted in between.
                     emit({"kind": "machine_status", "status": "running" if current["running"] else "down"})
                     first_poll = False
+                    down_reported = False
                 else:
                     for event in diff_events(previous, current):
                         emit(event)
@@ -110,6 +127,9 @@ def main() -> None:
                 file=sys.stderr,
                 flush=True,
             )
+            if not down_reported:
+                emit({"kind": "machine_status", "status": "down"})
+                down_reported = True
             try:
                 client.disconnect()
             except Exception:

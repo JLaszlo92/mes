@@ -20,11 +20,12 @@ export interface ModbusSignalSourceOptions {
 }
 
 /**
- * Polls three Modbus holding registers on a fixed interval and diffs the
- * two counters against their previous reading — the same poll-and-diff
- * shape as S7SignalSource and OpcUaSignalSource. Modbus registers are
- * plain 16-bit numbers, so the status register carries a numeric code
- * (STATUS_BY_CODE) rather than a string.
+ * Polls three Modbus holding registers on a fixed interval. Unlike
+ * node-opcua (which has a built-in reconnection strategy), modbus-serial
+ * does not reconnect automatically when the underlying TCP connection
+ * drops (e.g. the simulator/PLC restarts) — so this class handles that
+ * itself: any failed poll triggers a reconnect attempt on the next tick,
+ * retried indefinitely until it succeeds.
  */
 export class ModbusSignalSource implements SignalSource {
   readonly name = "modbus";
@@ -35,6 +36,8 @@ export class ModbusSignalSource implements SignalSource {
   private lastScrapCount: number | null = null;
   private lastStatus: number | null = null;
   private connected = false;
+  private reconnecting = false;
+  private reportedDown = false;
 
   constructor(private readonly options: ModbusSignalSourceOptions) {}
 
@@ -42,18 +45,44 @@ export class ModbusSignalSource implements SignalSource {
     void this.connectAndPoll(onReading);
   }
 
-  private async connectAndPoll(onReading: (reading: SignalReading) => void): Promise<void> {
+  private async connect(): Promise<void> {
     await this.client.connectTCP(this.options.host, { port: this.options.port ?? 502 });
     this.client.setID(this.options.unitId ?? 1);
     this.connected = true;
+  }
 
+  private async connectAndPoll(onReading: (reading: SignalReading) => void): Promise<void> {
+    await this.connect();
     const pollIntervalMs = this.options.pollIntervalMs ?? 1000;
     this.timer = setInterval(() => void this.poll(onReading), pollIntervalMs);
   }
 
-  private async poll(onReading: (reading: SignalReading) => void): Promise<void> {
-    if (!this.connected) return;
+  private async reconnect(): Promise<void> {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+    this.connected = false;
     try {
+      this.client.close(() => {});
+    } catch {
+      // ignore — a kapcsolat már úgyis megszakadt
+    }
+    try {
+      await this.connect();
+      console.log("Modbus reconnected");
+    } catch (err) {
+      console.error("Modbus reconnect failed, will retry on next tick", err);
+    } finally {
+      this.reconnecting = false;
+    }
+  }
+
+  private async poll(onReading: (reading: SignalReading) => void): Promise<void> {
+    if (!this.connected) {
+      void this.reconnect();
+      return;
+    }
+    try {
+      this.reportedDown = false;
       const goodAddr = this.options.goodCountRegister ?? 0;
       const scrapAddr = this.options.scrapCountRegister ?? 1;
       const statusAddr = this.options.statusRegister ?? 2;
@@ -88,7 +117,13 @@ export class ModbusSignalSource implements SignalSource {
         if (status) onReading({ kind: "machine_status", status });
       }
     } catch (err) {
-      console.error("Modbus poll failed", err);
+      console.error("Modbus poll failed — will reconnect", err);
+      if (!this.reportedDown) {
+        this.reportedDown = true;
+        this.lastStatus = null;
+        onReading({ kind: "machine_status", status: "down" });
+      }
+      void this.reconnect();
     }
   }
 

@@ -10,16 +10,44 @@ export interface OpcUaSignalSourceOptions {
   pollIntervalMs?: number;
 }
 
+const READ_TIMEOUT_MS = 3000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Polls three OPC-UA nodes on a fixed interval and diffs the two counters
  * against their previous reading — the same poll-and-diff shape as
- * S7SignalSource (see DEVELOPMENT_STATUS.md): a counter increase of N
- * becomes N discrete production_count readings, and the status node is
- * reported whenever it changes.
+ * S7SignalSource. Unlike GpioSignalSource/S7SignalSource, this talks to
+ * the network directly via node-opcua — no Python bridge process.
  *
- * Unlike GpioSignalSource/S7SignalSource, this talks to the network
- * directly via node-opcua — no Python bridge process, because node-opcua
- * is a mature native Node client (ROADMAP.md Section 3's stack rationale).
+ * Resilience note (found during M8 chaos testing): when the server
+ * becomes unreachable, node-opcua's session.read() does NOT reject — it
+ * just queues the request and waits indefinitely for the connection to
+ * come back, while node-opcua's own reconnection logic works in the
+ * background. Combined with our setInterval firing every tick regardless,
+ * this silently piled up an ever-growing stack of pending ReadRequests
+ * (visible as node-opcua's own "sending multiple requests simultaneously"
+ * warning) and — worse — never told the rest of the system the machine
+ * had become unreachable, so the dashboard just froze on the last known
+ * status. Fixed with two changes: (1) a `pollInFlight` guard so a new
+ * read is never started while a previous one is still outstanding, and
+ * (2) wrapping the read in a timeout, so a stuck read is treated as a
+ * failure — surfaced as a "down" status — after a few seconds, rather
+ * than hanging forever.
  */
 export class OpcUaSignalSource implements SignalSource {
   readonly name = "opcua";
@@ -30,6 +58,8 @@ export class OpcUaSignalSource implements SignalSource {
   private lastGoodCount: number | null = null;
   private lastScrapCount: number | null = null;
   private lastStatus: string | null = null;
+  private reportedDown = false;
+  private pollInFlight = false;
 
   constructor(private readonly options: OpcUaSignalSourceOptions) {}
 
@@ -57,13 +87,20 @@ export class OpcUaSignalSource implements SignalSource {
   }
 
   private async poll(onReading: (reading: SignalReading) => void): Promise<void> {
-    if (!this.session) return;
+    if (!this.session || this.pollInFlight) return;
+    this.pollInFlight = true;
     try {
-      const results = await this.session.read([
-        { nodeId: this.options.goodCountNodeId, attributeId: AttributeIds.Value },
-        { nodeId: this.options.scrapCountNodeId, attributeId: AttributeIds.Value },
-        { nodeId: this.options.statusNodeId, attributeId: AttributeIds.Value },
-      ]);
+      const results = await withTimeout(
+        this.session.read([
+          { nodeId: this.options.goodCountNodeId, attributeId: AttributeIds.Value },
+          { nodeId: this.options.scrapCountNodeId, attributeId: AttributeIds.Value },
+          { nodeId: this.options.statusNodeId, attributeId: AttributeIds.Value },
+        ]),
+        READ_TIMEOUT_MS,
+        "OPC-UA read",
+      );
+
+      this.reportedDown = false;
 
       const goodCount = results[0]?.value?.value as number | undefined;
       const scrapCount = results[1]?.value?.value as number | undefined;
@@ -92,10 +129,14 @@ export class OpcUaSignalSource implements SignalSource {
         onReading({ kind: "machine_status", status: status as MachineStatusValue });
       }
     } catch (err) {
-      // Egy sikertelen poll (pl. rövid hálózati akadás) nem végzetes — a
-      // node-opcua saját maga próbál újracsatlakozni, a következő tick
-      // egyszerűen újra próbálkozik.
       console.error("OPC-UA poll failed", err);
+      if (!this.reportedDown) {
+        this.reportedDown = true;
+        this.lastStatus = null;
+        onReading({ kind: "machine_status", status: "down" });
+      }
+    } finally {
+      this.pollInFlight = false;
     }
   }
 

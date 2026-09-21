@@ -15,34 +15,53 @@ export interface ProcessBridgeSignalSourceOptions {
 }
 
 const VALID_STATUSES = new Set(MachineStatusValue.options);
+const RESPAWN_DELAY_MS = 5000;
 
 /**
  * Shared machinery behind every "spawn a small script, read newline-
  * delimited JSON SignalReadings off its stdout" SignalSource.
- * GpioSignalSource (GPIO pins, edge-triggered pulses) and S7SignalSource
- * (Siemens S7 PLC, polled counters) are both thin wrappers around this —
- * the wire contract (one JSON object per line, matching SignalReading's
- * shape) is what lets either bridge script be swapped in without this
- * class, or anything downstream of it, caring which one is running.
+ * GpioSignalSource and S7SignalSource are both thin wrappers around this.
+ *
+ * Resilience note (found during M8 chaos testing): an unexpected bridge
+ * process exit — e.g. s7_bridge.py crashing when it loses its PLC
+ * connection — used to be silently swallowed: the state store would
+ * freeze on the last known status forever, with no indication the
+ * machine had actually become unreachable. This class now (a) emits a
+ * synthetic "down" reading the moment the bridge process exits
+ * unexpectedly, and (b) respawns the bridge after a delay, so the source
+ * recovers on its own once the underlying problem clears — the same
+ * resilience shape as OpcUaSignalSource/ModbusSignalSource's reconnect
+ * logic, just applied to a child process instead of a network client.
  */
 export class ProcessBridgeSignalSource implements SignalSource {
   readonly name: string;
 
   private child: ChildProcessWithoutNullStreams | null = null;
+  private stopped = false;
+  private reportedDown = false;
 
   constructor(private readonly options: ProcessBridgeSignalSourceOptions) {
     this.name = options.name;
   }
 
   start(onReading: (reading: SignalReading) => void): void {
+    this.stopped = false;
+    this.spawnChild(onReading);
+  }
+
+  private spawnChild(onReading: (reading: SignalReading) => void): void {
     const child = spawn(this.options.pythonPath ?? "python3", [this.options.scriptPath], {
       env: { ...process.env, ...this.options.env },
     });
     this.child = child;
+    this.reportedDown = false;
 
     createInterface({ input: child.stdout }).on("line", (line) => {
       const reading = this.parseLine(line);
-      if (reading) onReading(reading);
+      if (reading) {
+        if (reading.kind === "machine_status") this.reportedDown = reading.status === "down";
+        onReading(reading);
+      }
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
@@ -51,6 +70,23 @@ export class ProcessBridgeSignalSource implements SignalSource {
 
     child.on("exit", (code, signal) => {
       console.error(`[${this.name}-bridge] process exited (code=${code}, signal=${signal})`);
+      this.child = null;
+      if (this.stopped) return;
+
+      // A bridge-folyamat váratlan leállása pontosan olyan, mintha a gép
+      // elérhetetlenné vált volna — jelöljük "down"-nak explicit, ne
+      // fagyjon be csendben az utolsó ismert állapoton.
+      if (!this.reportedDown) {
+        this.reportedDown = true;
+        onReading({ kind: "machine_status", status: "down" });
+      }
+
+      // Próbáljunk újraindítani pár másodperc múlva — ha az alapprobléma
+      // (pl. a PLC-szimulátor) közben helyreállt, a bridge magától
+      // folytatja, emberi beavatkozás nélkül.
+      setTimeout(() => {
+        if (!this.stopped) this.spawnChild(onReading);
+      }, RESPAWN_DELAY_MS);
     });
 
     child.on("error", (err) => {
@@ -59,6 +95,7 @@ export class ProcessBridgeSignalSource implements SignalSource {
   }
 
   stop(): void {
+    this.stopped = true;
     this.child?.kill("SIGINT");
     this.child = null;
   }
