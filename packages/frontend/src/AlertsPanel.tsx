@@ -58,6 +58,8 @@ export default function AlertsPanel() {
   const [submitting, setSubmitting] = useState(false);
 
   const isAdmin = auth?.role === "admin" || auth?.role === "manager";
+  const canCreateTicket =
+    auth?.role === "supervisor" || auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
 
   function load() {
     const calls: Promise<void>[] = [
@@ -106,6 +108,17 @@ export default function AlertsPanel() {
       load();
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function createMaintenanceTicket(machineId: string, title: string, sourceType: string, sourceId: string) {
+    const res = await fetch(`${API_BASE}/api/maintenance-work-orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+      body: JSON.stringify({ machineId, title, sourceType, sourceId }),
+    });
+    if (res.status === 401) {
+      logout();
     }
   }
 
@@ -193,13 +206,23 @@ export default function AlertsPanel() {
             <div style={{ fontSize: 13 }}>{a.message}</div>
             <div style={{ fontSize: 11, color: "#898781" }}>{new Date(a.raisedAt).toLocaleString()}</div>
           </div>
-          {a.acknowledgedAt ? (
-            <span style={{ fontSize: 12, color: "#898781" }}>Acknowledged</span>
-          ) : (
-            <button style={secondaryButtonStyle} onClick={() => acknowledge(a.id)}>
-              Acknowledge
-            </button>
-          )}
+          <div style={{ display: "flex", gap: 6 }}>
+            {canCreateTicket && a.type === "machine_down" && (
+              <button
+                style={secondaryButtonStyle}
+                onClick={() => createMaintenanceTicket(a.machineId, `Investigate: ${a.message}`, "alert", a.id)}
+              >
+                Create ticket
+              </button>
+            )}
+            {a.acknowledgedAt ? (
+              <span style={{ fontSize: 12, color: "#898781" }}>Acknowledged</span>
+            ) : (
+              <button style={secondaryButtonStyle} onClick={() => acknowledge(a.id)}>
+                Acknowledge
+              </button>
+            )}
+          </div>
         </div>
       ))}
 

@@ -73,6 +73,8 @@ export default function FaultReportsPanel() {
 
   const canReview = auth?.role === "manager" || auth?.role === "admin";
   const canSignOff = auth?.role === "supervisor" || auth?.role === "manager" || auth?.role === "admin";
+  const canCreateTicket =
+    auth?.role === "supervisor" || auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
 
   function load() {
     Promise.all([
@@ -152,6 +154,23 @@ export default function FaultReportsPanel() {
       return;
     }
     load();
+  }
+
+  async function createMaintenanceTicket(r: FaultReport) {
+    const res = await fetch(`${API_BASE}/api/maintenance-work-orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+      body: JSON.stringify({
+        machineId: r.machineId,
+        title: `${r.faultCode} — ${r.faultName}`,
+        description: r.comment ?? undefined,
+        sourceType: "fault_report",
+        sourceId: r.id,
+      }),
+    });
+    if (res.status === 401) {
+      logout();
+    }
   }
 
   async function addCorrectiveAction(faultReportId: string) {
@@ -302,9 +321,16 @@ export default function FaultReportsPanel() {
           <summary style={{ fontSize: 13, color: "#898781", cursor: "pointer" }}>{reviewed.length} reviewed</summary>
           {reviewed.map((r) => (
             <div key={r.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8 }}>
-              <div style={{ fontWeight: 600 }}>
-                {r.machineName} — {r.faultCode} × {r.occurrenceCount}{" "}
-                <span style={{ color: STATUS_COLOR[r.status], fontSize: 11 }}>{r.status}</span>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 600 }}>
+                  {r.machineName} — {r.faultCode} × {r.occurrenceCount}{" "}
+                  <span style={{ color: STATUS_COLOR[r.status], fontSize: 11 }}>{r.status}</span>
+                </div>
+                {canCreateTicket && r.status === "confirmed" && (
+                  <button style={secondaryButtonStyle} onClick={() => createMaintenanceTicket(r)}>
+                    Create ticket
+                  </button>
+                )}
               </div>
               <div style={{ fontSize: 11, color: "#898781" }}>reviewed by {r.reviewedByEmail ?? "—"}</div>
               {r.status !== "rejected" && renderCorrectiveActions(r.id)}

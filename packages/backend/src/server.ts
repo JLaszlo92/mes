@@ -1044,7 +1044,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Params: { id: string }; Body: { partName: string; quantity?: number } }>(
     "/api/maintenance-work-orders/:id/parts",
-    { preHandler: requireRole("maintenance", "manager", "admin") },
+    { preHandler: requireRole("supervisor", "maintenance", "manager", "admin") },
     async (request, reply) => {
       const { partName, quantity } = request.body;
       if (!partName) {
