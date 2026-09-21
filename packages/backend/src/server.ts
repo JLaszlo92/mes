@@ -204,19 +204,35 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   );
 
-  app.get("/api/audit-log", { preHandler: requireRole("admin") }, async () => listAuditLog());
 
-  app.get<{ Querystring: { from: string; to: string } }>(
-    "/api/shifts/summary",
-    async (request, reply) => {
-      const { from, to } = request.query;
-      if (!from || !to) {
-        reply.code(400);
-        return { error: "from and to query params are required (ISO date strings)" };
-      }
-      return getShiftSummary(new Date(from), new Date(to));
+  app.get<{ Querystring: { from?: string; to?: string; limit?: string; offset?: string } }>(
+    "/api/audit-log",
+    { preHandler: requireRole("admin") },
+    async (request) => {
+      const { from, to, limit, offset } = request.query;
+      return listAuditLog({
+        from,
+        to,
+        limit: limit ? parseInt(limit, 10) : undefined,
+        offset: offset ? parseInt(offset, 10) : undefined,
+      });
     },
   );
+
+  app.get<{ Querystring: { from: string; to: string } }>("/api/shifts/summary", async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) {
+      reply.code(400);
+      return { error: "from and to query parameters are required" };
+    }
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      reply.code(400);
+      return { error: "from and to must be valid ISO date strings" };
+    }
+    return getShiftSummary(fromDate, toDate);
+  });
 
   app.register(async (scoped) => {
     scoped.get("/ws", { websocket: true }, (socket, request) => {
@@ -237,12 +253,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
 
     app.post<{ Body: { email: string; password: string } }>("/api/auth/login", async (request, reply) => {
-  const { email, password } = request.body;
-  const user = await findUserByEmail(email);
-  if (!user || !(await verifyPassword(password, user.passwordHash))) {
-    await recordAuditEvent({ actorEmail: email, action: "login_failed", ipAddress: request.ip });
-    reply.code(401);
-    return { error: "invalid email or password" };
+      const { email, password } = request.body;
+      const user = await findUserByEmail(email);
+      if (!user || !(await verifyPassword(password, user.passwordHash))) {
+        await recordAuditEvent({ actorEmail: email, action: "login_failed", ipAddress: request.ip });
+        reply.code(401);
+        return { error: "invalid email or password" };
   }
 
   if (user.mfaEnabled) {

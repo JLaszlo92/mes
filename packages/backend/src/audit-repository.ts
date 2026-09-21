@@ -72,9 +72,49 @@ function toAuditEntry(row: AuditRow): AuditEntry {
   };
 }
 
-export async function listAuditLog(limit = 200): Promise<AuditEntry[]> {
-  const result = await pool.query<AuditRow>(`SELECT * FROM audit_log ORDER BY occurred_at DESC LIMIT $1`, [
-    limit,
-  ]);
-  return result.rows.map(toAuditEntry);
+export interface ListAuditLogOptions {
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditLogPage {
+  entries: AuditEntry[];
+  total: number;
+}
+
+export async function listAuditLog(options: ListAuditLogOptions = {}): Promise<AuditLogPage> {
+  const limit = options.limit ?? 100;
+  const offset = options.offset ?? 0;
+
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.from) {
+    params.push(options.from);
+    conditions.push(`occurred_at >= $${params.length}`);
+  }
+  if (options.to) {
+    params.push(options.to);
+    conditions.push(`occurred_at <= $${params.length}`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const countResult = await pool.query<{ count: string }>(`SELECT COUNT(*) FROM audit_log ${whereClause}`, params);
+
+  const queryParams = [...params, limit, offset];
+  const limitParamIndex = queryParams.length - 1;
+  const offsetParamIndex = queryParams.length;
+
+  const result = await pool.query<AuditRow>(
+    `SELECT * FROM audit_log ${whereClause} ORDER BY occurred_at DESC LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
+    queryParams,
+  );
+
+  return {
+    entries: result.rows.map(toAuditEntry),
+    total: Number(countResult.rows[0]?.count ?? 0),
+  };
 }
