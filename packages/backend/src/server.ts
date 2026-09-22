@@ -107,6 +107,13 @@ import {
   resetSchedule,
   isForeignKeyViolation as isScheduleForeignKeyViolation,
 } from "./preventive-maintenance-repository.js";
+import {
+  listStatusDefinitions,
+  createStatusDefinition,
+  deleteStatusDefinition,
+  isForeignKeyViolation as isStatusDefForeignKeyViolation,
+  isUniqueViolation as isStatusDefUniqueViolation,
+} from "./machine-status-definitions-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1147,6 +1154,67 @@ export async function buildServer(): Promise<FastifyInstance> {
       reply.code(204);
       return null;
     },
+  );
+  app.get(
+  "/api/status-definitions",
+  { preHandler: requireRole("admin", "manager") },
+  async () => listStatusDefinitions(),
+);
+
+app.post<{
+  Body: { machineId?: string; code: string; displayName: string; oeeCategory: "counts_as_down" | "excluded"; color?: string };
+}>("/api/status-definitions", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  const { code, displayName, oeeCategory } = request.body;
+  if (!code || !displayName || !oeeCategory) {
+    reply.code(400);
+    return { error: "code, displayName and oeeCategory are required" };
+  }
+  if (code === "running" || code === "down") {
+    reply.code(400);
+    return { error: "'running' and 'down' are built-in and cannot be redefined" };
+  }
+  try {
+    const def = await createStatusDefinition(request.body);
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "status_definition_created",
+      target: def.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
+    reply.code(201);
+    return def;
+  } catch (err) {
+    if (isStatusDefForeignKeyViolation(err)) {
+      reply.code(404);
+      return { error: "unknown machine" };
+    }
+    if (isStatusDefUniqueViolation(err)) {
+      reply.code(409);
+      return { error: "this code already exists in this scope" };
+    }
+    throw err;
+  }
+});
+
+app.delete<{ Params: { id: string } }>(
+  "/api/status-definitions/:id",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const deleted = await deleteStatusDefinition(request.params.id);
+    if (!deleted) {
+      reply.code(404);
+      return { error: "unknown status definition" };
+    }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "status_definition_deleted",
+      target: request.params.id,
+      ipAddress: request.ip,
+    });
+    reply.code(204);
+    return null;
+  },
   );
   return app;
 }

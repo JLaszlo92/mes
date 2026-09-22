@@ -17,6 +17,7 @@ import LotsPanel from "./LotsPanel";
 import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
 import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
 import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
+import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -32,12 +33,13 @@ type ServerMessage =
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 
-const STATUS_COLOR: Record<MachineStatusValue, string> = {
+const STATUS_COLOR: Record<string, string> = {
   running: "#0ca30c",
   idle: "#898781",
   down: "#d03b3b",
   changeover: "#eda100",
 };
+const DEFAULT_STATUS_COLOR = "#185fa5";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -197,7 +199,7 @@ export default function App() {
                       width: 9,
                       height: 9,
                       borderRadius: "50%",
-                      background: STATUS_COLOR[m.status],
+                      background: STATUS_COLOR[m.status] ?? DEFAULT_STATUS_COLOR,
                       display: "inline-block",
                     }}
                   />
@@ -254,6 +256,7 @@ export default function App() {
       {activeTab === "admin" && (
         <div>
           <MachineRegistryPanel />
+          <MachineStatusDefinitionsPanel />
           <TerminalUisPanel />
           <AuditLogPanel />
         </div>

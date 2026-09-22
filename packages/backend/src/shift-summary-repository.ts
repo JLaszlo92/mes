@@ -6,10 +6,8 @@ export interface ShiftSummary {
   machineId: string;
   goodCount: number;
   scrapCount: number;
+  statusSeconds: Record<string, number>;
   runningSeconds: number;
-  idleSeconds: number;
-  downSeconds: number;
-  changeoverSeconds: number;
   totalSeconds: number;
   productionRatio: number;
   availability: number;
@@ -31,21 +29,21 @@ type DurationsRow = {
   shift_name: string;
   machine_id: string;
   running_seconds: number;
-  idle_seconds: number;
   down_seconds: number;
-  changeover_seconds: number;
+  excluded_seconds: number;
+  status_breakdown: Record<string, number> | null;
 };
 
 /**
- * Egy adott [from, to) időszakra visszaadja a jó/rossz darabszámot, a
- * gyártás/nem-gyártás állapot-időtartamokat, és a klasszikus OEE három
- * komponensét (Availability × Performance × Quality), műszak- és
- * gépenkénti bontásban.
+ * Egy adott [from, to) időszakra visszaadja a jó/rossz darabszámot, az
+ * állapot-időtartamokat (tetszőleges, egyedi állapotnevekkel is), és a
+ * klasszikus OEE három komponensét.
  *
- * Performance és Quality (és így az OEE is) null marad, ha nincs elég
- * adat a számításhoz (nincs beállítva ideális ciklusidő a gépnél, vagy
- * nincs darabszám a műszakban) — nem hamisítunk be egy semleges 100%-ot,
- * mert az félrevezető lenne a dashboardon.
+ * Az egyedi állapotok OEE-besorolását a machine_status_definitions tábla
+ * adja (gép-specifikus bejegyzés felülírja az azonos kódú globálist);
+ * a 'running' és 'down' mindig beépített. Az 'excluded' besorolású idő
+ * (pl. tervezett átállás) kimarad a totalSeconds-ból — se nem ront, se
+ * nem javít az elérhetőségen.
  */
 export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummary[]> {
   const countsResult = await pool.query<CountsRow>(
@@ -93,17 +91,38 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
            END AS end_ts
          FROM shift_definitions sd WHERE sd.name = r.shift_name
        ) sw ON true
+     ),
+     categorized AS (
+       SELECT
+         c.*,
+         CASE
+           WHEN c.status = 'running' THEN 'running'
+           WHEN c.status = 'down' THEN 'counts_as_down'
+           ELSE COALESCE(msd_machine.oee_category, msd_global.oee_category, 'counts_as_down')
+         END AS oee_bucket
+       FROM clipped c
+       LEFT JOIN machine_status_definitions msd_machine
+         ON msd_machine.machine_id = c.machine_id AND msd_machine.code = c.status
+       LEFT JOIN machine_status_definitions msd_global
+         ON msd_global.machine_id IS NULL AND msd_global.code = c.status
+       WHERE c.clip_end > c.clip_start
+     ),
+     per_status AS (
+       SELECT
+         shift_date, shift_name, machine_id, status, oee_bucket,
+         SUM(EXTRACT(EPOCH FROM (clip_end - clip_start)))::float AS seconds
+       FROM categorized
+       GROUP BY shift_date, shift_name, machine_id, status, oee_bucket
      )
      SELECT
        shift_date::text AS shift_date,
        shift_name,
        machine_id,
-       COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE status = 'running'), 0)::float AS running_seconds,
-       COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE status = 'idle'), 0)::float AS idle_seconds,
-       COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE status = 'down'), 0)::float AS down_seconds,
-       COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE status = 'changeover'), 0)::float AS changeover_seconds
-     FROM clipped
-     WHERE clip_end > clip_start
+       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'running'), 0)::float AS running_seconds,
+       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'counts_as_down'), 0)::float AS down_seconds,
+       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'excluded'), 0)::float AS excluded_seconds,
+       jsonb_object_agg(status, seconds) AS status_breakdown
+     FROM per_status
      GROUP BY shift_date, shift_name, machine_id`,
     [from, to],
   );
@@ -118,10 +137,8 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
       machineId: row.machine_id,
       goodCount: row.good_count,
       scrapCount: row.scrap_count,
+      statusSeconds: {},
       runningSeconds: 0,
-      idleSeconds: 0,
-      downSeconds: 0,
-      changeoverSeconds: 0,
       totalSeconds: 0,
       productionRatio: 0,
       availability: 0,
@@ -139,10 +156,8 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
       machineId: row.machine_id,
       goodCount: 0,
       scrapCount: 0,
+      statusSeconds: {},
       runningSeconds: 0,
-      idleSeconds: 0,
-      downSeconds: 0,
-      changeoverSeconds: 0,
       totalSeconds: 0,
       productionRatio: 0,
       availability: 0,
@@ -151,15 +166,14 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
       oee: null,
     };
     existing.runningSeconds = row.running_seconds;
-    existing.idleSeconds = row.idle_seconds;
-    existing.downSeconds = row.down_seconds;
-    existing.changeoverSeconds = row.changeover_seconds;
+    existing.statusSeconds = row.status_breakdown ?? {};
+    // A totalSeconds a running + "counts_as_down" időket tartalmazza —
+    // az "excluded" (tervezett) idő szándékosan kimarad, se nem ront, se
+    // nem javít az elérhetőségen.
+    existing.totalSeconds = row.running_seconds + row.down_seconds;
     merged.set(key, existing);
   }
 
-  // Az ideális ciklusidő géphez kötött, nem eseményhez — külön
-  // lekérdezés, mert a shift-instanciák és a gép-törzsadat különböző
-  // élettartamú dolgok.
   const machinesResult = await pool.query<{ id: string; ideal_cycle_time_seconds: string | null }>(
     `SELECT id, ideal_cycle_time_seconds FROM machines`,
   );
@@ -168,8 +182,6 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
   );
 
   for (const summary of merged.values()) {
-    summary.totalSeconds =
-      summary.runningSeconds + summary.idleSeconds + summary.downSeconds + summary.changeoverSeconds;
     summary.productionRatio = summary.totalSeconds > 0 ? summary.runningSeconds / summary.totalSeconds : 0;
     summary.availability = summary.productionRatio;
 
