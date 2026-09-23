@@ -18,6 +18,7 @@ import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
 import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
 import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
+import EdgeNodesPanel from "./EdgeNodesPanel";
 
 interface MachineState {
   machineId: string;
@@ -258,6 +259,7 @@ export default function App() {
           <MachineRegistryPanel />
           <MachineStatusDefinitionsPanel />
           <TerminalUisPanel />
+          <EdgeNodesPanel />
           <AuditLogPanel />
         </div>
       )}

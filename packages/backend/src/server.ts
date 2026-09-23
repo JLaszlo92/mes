@@ -114,6 +114,20 @@ import {
   isForeignKeyViolation as isStatusDefForeignKeyViolation,
   isUniqueViolation as isStatusDefUniqueViolation,
 } from "./machine-status-definitions-repository.js";
+import {
+  listEdgeNodes,
+  createEdgeNode,
+  deleteEdgeNode,
+  regenerateToken,
+  addChannel,
+  deleteChannel,
+  claimEdgeNode,
+  recordHeartbeat,
+  DuplicateSessionError,
+  InvalidTokenError,
+  InvalidSessionError,
+  isForeignKeyViolation as isEdgeNodeForeignKeyViolation,
+} from "./edge-nodes-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1216,5 +1230,169 @@ app.delete<{ Params: { id: string } }>(
     return null;
   },
   );
+  // --- Admin CRUD (emberi session-token véd) ---
+
+  app.get("/api/edge-nodes", { preHandler: requireRole("admin", "manager") }, async () => listEdgeNodes());
+
+  app.post<{ Body: { name: string } }>(
+    "/api/edge-nodes",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const { name } = request.body;
+      if (!name) {
+        reply.code(400);
+        return { error: "name is required" };
+      }
+      const created = await createEdgeNode(name);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "edge_node_created",
+        target: created.id,
+        details: { name },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return created;
+    },
+  );
+
+  app.delete<{ Params: { id: string } }>(
+    "/api/edge-nodes/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteEdgeNode(request.params.id);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown edge node" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "edge_node_deleted",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/edge-nodes/:id/regenerate-token",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const token = await regenerateToken(request.params.id);
+      if (!token) {
+        reply.code(404);
+        return { error: "unknown edge node" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "edge_node_token_regenerated",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      return { token };
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: {
+      machineId?: string;
+      signalSource: "simulated" | "gpio" | "s7" | "opcua" | "modbus";
+      connectionConfig?: Record<string, unknown>;
+      statusMode?: "status_bit" | "signal_presence";
+      noSignalTimeoutSeconds?: number;
+      acceptProductionWhileDown?: boolean;
+    };
+  }>("/api/edge-nodes/:id/channels", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    const { signalSource } = request.body;
+    if (!signalSource) {
+      reply.code(400);
+      return { error: "signalSource is required" };
+    }
+    try {
+      const channel = await addChannel(request.params.id, request.body);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "edge_node_channel_added",
+        target: channel.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return channel;
+    } catch (err) {
+      if (isEdgeNodeForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown edge node or machine" };
+      }
+      throw err;
+    }
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    "/api/edge-node-channels/:channelId",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteChannel(request.params.channelId);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown channel" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "edge_node_channel_removed",
+        target: request.params.channelId,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+
+  app.post<{ Body: { token: string } }>("/api/edge-nodes/claim", async (request, reply) => {
+    const { token } = request.body;
+    if (!token) {
+      reply.code(400);
+      return { error: "token is required" };
+    }
+    try {
+      return await claimEdgeNode(token);
+    } catch (err) {
+      if (err instanceof DuplicateSessionError) {
+        reply.code(409);
+        return { error: err.message };
+      }
+      if (err instanceof InvalidTokenError) {
+        reply.code(401);
+        return { error: err.message };
+      }
+      throw err;
+    }
+  });
+
+  app.post<{ Body: { token: string; sessionId: string } }>("/api/edge-nodes/heartbeat", async (request, reply) => {
+    const { token, sessionId } = request.body;
+    if (!token || !sessionId) {
+      reply.code(400);
+      return { error: "token and sessionId are required" };
+    }
+    try {
+      await recordHeartbeat(token, sessionId);
+      return { success: true };
+    } catch (err) {
+      if (err instanceof InvalidSessionError) {
+        reply.code(409);
+        return { error: err.message };
+      }
+      if (err instanceof InvalidTokenError) {
+        reply.code(401);
+        return { error: err.message };
+      }
+      throw err;
+    }
+  });
+
   return app;
 }
