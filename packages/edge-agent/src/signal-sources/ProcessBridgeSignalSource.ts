@@ -14,7 +14,6 @@ export interface ProcessBridgeSignalSourceOptions {
   env?: Record<string, string>;
 }
 
-const VALID_STATUSES = new Set(MachineStatusValue.options);
 const RESPAWN_DELAY_MS = 5000;
 
 /**
@@ -123,11 +122,7 @@ export class ProcessBridgeSignalSource implements SignalSource {
       return { kind: "production_count", result: obj.result };
     }
 
-    if (
-      obj.kind === "machine_status" &&
-      typeof obj.status === "string" &&
-      VALID_STATUSES.has(obj.status as MachineStatusValue)
-    ) {
+    if (obj.kind === "machine_status" && typeof obj.status === "string" && obj.status.length > 0) {
       return { kind: "machine_status", status: obj.status as MachineStatusValue };
     }
 

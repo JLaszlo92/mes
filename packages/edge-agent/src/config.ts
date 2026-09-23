@@ -18,8 +18,23 @@ export const config = {
   // docs/pi-test-rig-s7-mode.md — the recommended first pass), or "gpio"
   // (the physical 3-Pi rig — see docs/pi-test-rig.md — or a real discrete
   // machine connection later).
-signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7" | "opcua" | "modbus",
+  signalSource: (process.env.SIGNAL_SOURCE ?? "simulated") as "simulated" | "gpio" | "s7" | "opcua" | "modbus",
 
+  // "status_bit" (alapértelmezett, jelenlegi viselkedés): a jelforrás
+  // saját külön státusz-jelét (running/down bit) használjuk. "signal_presence":
+  // a darabszám-jelek jelenlétéből/hiányából következtetünk a státuszra,
+  // a jelforrás saját státusz-jelentését figyelmen kívül hagyva.
+  statusMode: (process.env.STATUS_MODE ?? "status_bit") as "status_bit" | "signal_presence",
+  // Csak "signal_presence" módban számít: ennyi másodpercig tartó
+  // jel-csend után vált a gép "down"-ra.
+  noSignalTimeoutMs: parseInt(process.env.NO_SIGNAL_TIMEOUT_MS ?? "60000", 10),
+
+    // Csak "status_bit" módban számít: elfogadja-e a jó/rossz jeleket,
+  // amíg a gép "down" státuszban van. Ha false, a "down" állapot alatt
+  // érkező darabszám-jelek eldobódnak — egy leállt gépnél egy szenzor
+  // esetleges zaja/utórezgése nem számít valódi termelésnek.
+  acceptProductionWhileDown: (process.env.ACCEPT_PRODUCTION_WHILE_DOWN ?? "true") !== "false",
+  
   gpio: {
     pythonPath: process.env.GPIO_PYTHON_PATH ?? "python3",
     scriptPath: process.env.GPIO_BRIDGE_SCRIPT_PATH ?? path.join(__dirname, "..", "python", "gpio_bridge.py"),
