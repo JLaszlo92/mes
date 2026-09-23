@@ -11,6 +11,7 @@ import { SimulatedSignalSource } from "./signal-sources/SimulatedSignalSource.js
 import type { SignalReading, SignalSource } from "./signal-sources/SignalSource.js";
 import { ModbusSignalSource } from "./signal-sources/ModbusSignalSource.js";
 import { SignalPresenceWatchdog } from "./signal-sources/SignalPresenceWatchdog.js";
+import { ProductionGate } from "./signal-sources/ProductionGate.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -70,7 +71,7 @@ function buildSignalSource(): SignalSource {
   if (config.statusMode === "signal_presence") {
     return new SignalPresenceWatchdog(inner, config.noSignalTimeoutMs);
   }
-  return inner;
+  return new ProductionGate(inner, config.acceptProductionWhileDown);
 }
 
 const source: SignalSource = buildSignalSource();

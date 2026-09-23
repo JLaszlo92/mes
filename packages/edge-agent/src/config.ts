@@ -28,6 +28,12 @@ export const config = {
   // Csak "signal_presence" módban számít: ennyi másodpercig tartó
   // jel-csend után vált a gép "down"-ra.
   noSignalTimeoutMs: parseInt(process.env.NO_SIGNAL_TIMEOUT_MS ?? "60000", 10),
+
+    // Csak "status_bit" módban számít: elfogadja-e a jó/rossz jeleket,
+  // amíg a gép "down" státuszban van. Ha false, a "down" állapot alatt
+  // érkező darabszám-jelek eldobódnak — egy leállt gépnél egy szenzor
+  // esetleges zaja/utórezgése nem számít valódi termelésnek.
+  acceptProductionWhileDown: (process.env.ACCEPT_PRODUCTION_WHILE_DOWN ?? "true") !== "false",
   
   gpio: {
     pythonPath: process.env.GPIO_PYTHON_PATH ?? "python3",
