@@ -9,6 +9,9 @@ function optionalEnv(name: string): string | undefined {
 }
 
 export const config = {
+  backendHttpUrl: process.env.BACKEND_HTTP_URL ?? "http://127.0.0.1:3001",
+  edgeNodeToken: optionalEnv("EDGE_NODE_TOKEN"),
+
   mqttUrl: process.env.MQTT_URL ?? "mqtt://127.0.0.1:1883",
   machineId: process.env.MACHINE_ID ?? "sim-machine-01",
   bufferFilePath: process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson",
