@@ -10,6 +10,8 @@ interface WorkOrder {
   dueDate: string | null;
   status: string;
   notes: string | null;
+  completionMode: "manual" | "auto";
+  countOverproduction: boolean;
 }
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
@@ -45,6 +47,8 @@ export default function WorkOrdersPanel() {
     quantity: "",
     expectedCycleTimeSeconds: "",
     dueDate: "",
+    completionMode: "manual" as "manual" | "auto",
+    countOverproduction: true,
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -76,6 +80,8 @@ export default function WorkOrdersPanel() {
           quantity: Number(form.quantity),
           expectedCycleTimeSeconds: form.expectedCycleTimeSeconds ? Number(form.expectedCycleTimeSeconds) : undefined,
           dueDate: form.dueDate || undefined,
+          completionMode: form.completionMode,
+          countOverproduction: form.countOverproduction,
         }),
       });
       if (res.status === 401) {
@@ -86,7 +92,15 @@ export default function WorkOrdersPanel() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `${res.status} ${res.statusText}`);
       }
-      setForm({ orderNumber: "", partName: "", quantity: "", expectedCycleTimeSeconds: "", dueDate: "" });
+      setForm({
+        orderNumber: "",
+        partName: "",
+        quantity: "",
+        expectedCycleTimeSeconds: "",
+        dueDate: "",
+        completionMode: "manual",
+        countOverproduction: true,
+      });
       load();
     } catch (err) {
       setError(String(err));
@@ -102,6 +116,28 @@ export default function WorkOrdersPanel() {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({ status }),
+      });
+      if (res.status === 401) {
+        logout();
+        throw new Error("session expired — please sign in again");
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+      }
+      load();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function updateSettings(id: string, changes: { completionMode?: "manual" | "auto"; countOverproduction?: boolean }) {
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+        body: JSON.stringify(changes),
       });
       if (res.status === 401) {
         logout();
@@ -142,6 +178,25 @@ export default function WorkOrdersPanel() {
           Due date<br />
           <input type="date" value={form.dueDate} onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))} style={inputStyle} />
         </label>
+        <label style={{ fontSize: 12 }}>
+          Completion<br />
+          <select
+            value={form.completionMode}
+            onChange={(e) => setForm((f) => ({ ...f, completionMode: e.target.value as "manual" | "auto" }))}
+            style={inputStyle}
+          >
+            <option value="manual">Manual (operator confirms)</option>
+            <option value="auto">Auto (closes at target)</option>
+          </select>
+        </label>
+        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, height: 30 }}>
+          <input
+            type="checkbox"
+            checked={form.countOverproduction}
+            onChange={(e) => setForm((f) => ({ ...f, countOverproduction: e.target.checked }))}
+          />
+          Count overproduction
+        </label>
         <button type="submit" disabled={submitting} style={buttonStyle}>
           {submitting ? "Adding…" : "Add order"}
         </button>
@@ -152,7 +207,7 @@ export default function WorkOrdersPanel() {
       {!loading && workOrders.length === 0 && <p style={{ color: "#898781" }}>No work orders yet.</p>}
 
       {workOrders.map((wo) => (
-        <div key={wo.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center" }}>
+        <div key={wo.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
           <div><div style={{ fontSize: 12, color: "#898781" }}>Order #</div><div style={{ fontWeight: 600 }}>{wo.orderNumber}</div></div>
           <div><div style={{ fontSize: 12, color: "#898781" }}>Part</div><div>{wo.partName}</div></div>
           <div><div style={{ fontSize: 12, color: "#898781" }}>Qty</div><div style={{ fontVariantNumeric: "tabular-nums" }}>{wo.quantity}</div></div>
@@ -168,6 +223,25 @@ export default function WorkOrdersPanel() {
               <option value="cancelled">cancelled</option>
             </select>
           </div>
+          <div>
+            <div style={{ fontSize: 12, color: "#898781" }}>Completion</div>
+            <select
+              value={wo.completionMode}
+              onChange={(e) => updateSettings(wo.id, { completionMode: e.target.value as "manual" | "auto" })}
+              style={inputStyle}
+            >
+              <option value="manual">Manual</option>
+              <option value="auto">Auto</option>
+            </select>
+          </div>
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={wo.countOverproduction}
+              onChange={(e) => updateSettings(wo.id, { countOverproduction: e.target.checked })}
+            />
+            Overproduction
+          </label>
         </div>
       ))}
     </section>

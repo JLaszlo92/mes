@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { insertEvent } from "./events-repository.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
+import { checkAndAutoCompleteWorkOrders } from "./work-order-completion-service.js";
 
 export function startMqttSubscriber(log: FastifyBaseLogger): mqtt.MqttClient {
   // A stable clientId + clean:false gives this client a persistent broker
@@ -65,6 +66,14 @@ async function handleMessage(
     } else {
       stateStore.applyEvent(event);
       publishToHub(event);
+      // Azonnali (nem 30-60mp-es pollozásra váró) ellenőrzés: elérte-e ez a
+      // gép valamelyik "auto" munkarendelésének célmennyiségét. Fire-and-
+      // forget, hogy ne lassítsa az ack-küldést.
+      if (event.type === "production_count" && event.result === "good") {
+        void checkAndAutoCompleteWorkOrders(event.machineId).catch((err) =>
+          log.error({ err, machineId: event.machineId }, "auto-complete check failed"),
+        );
+      }
     }
   } catch (err) {
     log.error({ err }, "failed to persist event — NOT acking, edge agent will retry");

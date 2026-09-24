@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { pool } from "./db.js";
 
 export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
+export type CompletionMode = "manual" | "auto";
 
 export interface WorkOrder {
   id: string;
@@ -12,6 +13,8 @@ export interface WorkOrder {
   dueDate: string | null;
   status: WorkOrderStatus;
   notes: string | null;
+  completionMode: CompletionMode;
+  countOverproduction: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,6 +28,8 @@ type WorkOrderRow = {
   due_date: string | null;
   status: WorkOrderStatus;
   notes: string | null;
+  completion_mode: CompletionMode;
+  count_overproduction: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -39,6 +44,8 @@ function toWorkOrder(row: WorkOrderRow): WorkOrder {
     dueDate: row.due_date,
     status: row.status,
     notes: row.notes,
+    completionMode: row.completion_mode,
+    countOverproduction: row.count_overproduction,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -61,12 +68,14 @@ export interface CreateWorkOrderInput {
   expectedCycleTimeSeconds?: number;
   dueDate?: string;
   notes?: string;
+  completionMode?: CompletionMode;
+  countOverproduction?: boolean;
 }
 
 export async function createWorkOrder(input: CreateWorkOrderInput): Promise<WorkOrder> {
   const result = await pool.query<WorkOrderRow>(
-    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes, completion_mode, count_overproduction)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'manual'), COALESCE($9, true))
      RETURNING *`,
     [
       randomUUID(),
@@ -76,6 +85,8 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Work
       input.expectedCycleTimeSeconds ?? null,
       input.dueDate ?? null,
       input.notes ?? null,
+      input.completionMode ?? null,
+      input.countOverproduction ?? null,
     ],
   );
   const row = result.rows[0];
@@ -90,6 +101,8 @@ export interface UpdateWorkOrderInput {
   dueDate?: string;
   status?: WorkOrderStatus;
   notes?: string;
+  completionMode?: CompletionMode;
+  countOverproduction?: boolean;
 }
 
 export async function updateWorkOrder(id: string, input: UpdateWorkOrderInput): Promise<WorkOrder | undefined> {
@@ -101,6 +114,8 @@ export async function updateWorkOrder(id: string, input: UpdateWorkOrderInput): 
        due_date = COALESCE($5, due_date),
        status = COALESCE($6, status),
        notes = COALESCE($7, notes),
+       completion_mode = COALESCE($8, completion_mode),
+       count_overproduction = COALESCE($9, count_overproduction),
        updated_at = now()
      WHERE id = $1
      RETURNING *`,
@@ -112,6 +127,8 @@ export async function updateWorkOrder(id: string, input: UpdateWorkOrderInput): 
       input.dueDate ?? null,
       input.status ?? null,
       input.notes ?? null,
+      input.completionMode ?? null,
+      input.countOverproduction ?? null,
     ],
   );
   return result.rows[0] ? toWorkOrder(result.rows[0]) : undefined;
@@ -132,14 +149,6 @@ export interface WorkOrderProgress {
   targetReached: boolean;
 }
 
-/**
- * Ugyanazt a trükköt használja, mint a Lots (tétel-genealógia): a gépet a
- * work_order_assignments-ből, a kezdés időpontját és az operátort az
- * audit logból (amikor "in_progress"-re váltott). Ha countOverproduction
- * === false és a célmennyiség már elérve, a számlálás a célmennyiséget
- * elérő N-edik jó darab időbélyegénél áll meg — az utána termelt darabok
- * nem számítanak bele ebbe a munkarendelésbe.
- */
 export async function computeWorkOrderProgress(
   workOrderId: string,
   quantity: number,
@@ -217,4 +226,31 @@ export async function getWorkOrderProgress(
   if (!wo) return undefined;
   const progress = await computeWorkOrderProgress(workOrderId, wo.quantity, wo.count_overproduction);
   return { ...progress, quantity: wo.quantity, remaining: Math.max(0, wo.quantity - progress.goodCount) };
+}
+export interface AutoCompleteCandidate {
+  id: string;
+  quantity: number;
+  countOverproduction: boolean;
+}
+
+/**
+ * Az adott géphez (vagy ha nincs megadva, az összes géphez) tartozó,
+ * "in_progress" + "auto" lezárási módú munkarendeléseket adja vissza —
+ * ezeket kell ellenőrizni, elérték-e a célmennyiséget.
+ */
+export async function findAutoCompleteCandidates(machineId?: string): Promise<AutoCompleteCandidate[]> {
+  const params: unknown[] = [];
+  let where = `wo.status = 'in_progress' AND wo.completion_mode = 'auto'`;
+  if (machineId) {
+    params.push(machineId);
+    where = `woa.machine_id = $1 AND ${where}`;
+  }
+  const result = await pool.query<{ id: string; quantity: number; count_overproduction: boolean }>(
+    `SELECT DISTINCT wo.id, wo.quantity, wo.count_overproduction
+     FROM work_orders wo
+     JOIN work_order_assignments woa ON woa.work_order_id = wo.id
+     WHERE ${where}`,
+    params,
+  );
+  return result.rows.map((r) => ({ id: r.id, quantity: r.quantity, countOverproduction: r.count_overproduction }));
 }

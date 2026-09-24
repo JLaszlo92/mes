@@ -5,6 +5,7 @@ import { startMqttSubscriber } from "./mqtt-subscriber.js";
 import { startAlertEvaluator } from "./alert-evaluator.js";
 import { startPreventiveMaintenanceEvaluator } from "./preventive-maintenance-evaluator.js";
 import { startDowntimeEvaluator } from "./downtime-periods-evaluator.js";
+import { startWorkOrderAutoCompleteEvaluator } from "./work-order-auto-complete-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -19,6 +20,7 @@ async function main(): Promise<void> {
   startAlertEvaluator(app.log);
   startPreventiveMaintenanceEvaluator(app.log);
   startDowntimeEvaluator(app.log);
+  startWorkOrderAutoCompleteEvaluator(app.log);
 }
 
 main().catch((err) => {
