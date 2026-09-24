@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.js";
+import { computeWorkOrderProgress } from "./work-orders-repository.js";
 
 export interface Lot {
   id: string;
@@ -74,51 +75,30 @@ export async function generateLotForWorkOrder(workOrderId: string): Promise<Lot 
   const existing = await getLotForWorkOrder(workOrderId);
   if (existing) return existing;
 
-  const orderResult = await pool.query<{ order_number: string }>(
-    `SELECT order_number FROM work_orders WHERE id = $1`,
+  const orderResult = await pool.query<{ order_number: string; quantity: number; count_overproduction: boolean }>(
+    `SELECT order_number, quantity, count_overproduction FROM work_orders WHERE id = $1`,
     [workOrderId],
   );
-  const orderNumber = orderResult.rows[0]?.order_number;
-  if (!orderNumber) return undefined;
+  const order = orderResult.rows[0];
+  if (!order) return undefined;
 
-  const assignmentResult = await pool.query<{ machine_id: string }>(
-    `SELECT machine_id FROM work_order_assignments WHERE work_order_id = $1 ORDER BY planned_start LIMIT 1`,
-    [workOrderId],
-  );
-  const machineId = assignmentResult.rows[0]?.machine_id ?? null;
+  const progress = await computeWorkOrderProgress(workOrderId, order.quantity, order.count_overproduction);
 
-  const startResult = await pool.query<{ actor_email: string | null; occurred_at: string }>(
-  `SELECT u.email AS actor_email, al.occurred_at
-   FROM audit_log al
-   LEFT JOIN users u ON u.id = al.actor_id
-   WHERE al.action = 'work_order_updated' AND al.target = $1 AND al.details->>'status' = 'in_progress'
-   ORDER BY al.occurred_at ASC LIMIT 1`,
-  [workOrderId],
-    );
-  const startedAt = startResult.rows[0]?.occurred_at ?? null;
-  const operatorEmail = startResult.rows[0]?.actor_email ?? null;
-
-  let goodCount = 0;
-  let scrapCount = 0;
-  if (machineId && startedAt) {
-    const countsResult = await pool.query<{ good_count: string; scrap_count: string }>(
-      `SELECT
-         COUNT(*) FILTER (WHERE payload->>'result' = 'good') AS good_count,
-         COUNT(*) FILTER (WHERE payload->>'result' = 'scrap') AS scrap_count
-       FROM events
-       WHERE type = 'production_count' AND machine_id = $1 AND "timestamp" BETWEEN $2 AND now()`,
-      [machineId, startedAt],
-    );
-    goodCount = Number(countsResult.rows[0]?.good_count ?? 0);
-    scrapCount = Number(countsResult.rows[0]?.scrap_count ?? 0);
-  }
-
-  const lotNumber = `LOT-${orderNumber}`;
+  const lotNumber = `LOT-${order.order_number}`;
   await pool.query(
     `INSERT INTO lots (id, lot_number, work_order_id, machine_id, operator_email, started_at, good_count, scrap_count)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (lot_number) DO NOTHING`,
-    [randomUUID(), lotNumber, workOrderId, machineId, operatorEmail, startedAt, goodCount, scrapCount],
+    [
+      randomUUID(),
+      lotNumber,
+      workOrderId,
+      progress.machineId,
+      progress.operatorEmail,
+      progress.startedAt,
+      progress.goodCount,
+      progress.scrapCount,
+    ],
   );
 
   return getLotForWorkOrder(workOrderId);

@@ -120,3 +120,101 @@ export async function updateWorkOrder(id: string, input: UpdateWorkOrderInput): 
 export function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23505";
 }
+
+export interface WorkOrderProgress {
+  workOrderId: string;
+  machineId: string | null;
+  machineName: string | null;
+  operatorEmail: string | null;
+  startedAt: string | null;
+  goodCount: number;
+  scrapCount: number;
+  targetReached: boolean;
+}
+
+/**
+ * Ugyanazt a trükköt használja, mint a Lots (tétel-genealógia): a gépet a
+ * work_order_assignments-ből, a kezdés időpontját és az operátort az
+ * audit logból (amikor "in_progress"-re váltott). Ha countOverproduction
+ * === false és a célmennyiség már elérve, a számlálás a célmennyiséget
+ * elérő N-edik jó darab időbélyegénél áll meg — az utána termelt darabok
+ * nem számítanak bele ebbe a munkarendelésbe.
+ */
+export async function computeWorkOrderProgress(
+  workOrderId: string,
+  quantity: number,
+  countOverproduction: boolean,
+): Promise<WorkOrderProgress> {
+  const assignmentResult = await pool.query<{ machine_id: string; machine_name: string }>(
+    `SELECT woa.machine_id, m.name AS machine_name
+     FROM work_order_assignments woa
+     JOIN machines m ON m.id = woa.machine_id
+     WHERE woa.work_order_id = $1 ORDER BY woa.planned_start LIMIT 1`,
+    [workOrderId],
+  );
+  const machineId = assignmentResult.rows[0]?.machine_id ?? null;
+  const machineName = assignmentResult.rows[0]?.machine_name ?? null;
+
+  const startResult = await pool.query<{ actor_email: string | null; occurred_at: string }>(
+    `SELECT u.email AS actor_email, al.occurred_at
+     FROM audit_log al
+     LEFT JOIN users u ON u.id = al.actor_id
+     WHERE al.action = 'work_order_updated' AND al.target = $1 AND al.details->>'status' = 'in_progress'
+     ORDER BY al.occurred_at ASC LIMIT 1`,
+    [workOrderId],
+  );
+  const startedAt = startResult.rows[0]?.occurred_at ?? null;
+  const operatorEmail = startResult.rows[0]?.actor_email ?? null;
+
+  if (!machineId || !startedAt) {
+    return { workOrderId, machineId, machineName, operatorEmail, startedAt, goodCount: 0, scrapCount: 0, targetReached: false };
+  }
+
+  let cappedAtTimestamp: string | null = null;
+  if (!countOverproduction && quantity > 0) {
+    const nthGoodResult = await pool.query<{ timestamp: string }>(
+      `SELECT "timestamp" FROM events
+       WHERE type = 'production_count' AND machine_id = $1 AND payload->>'result' = 'good' AND "timestamp" >= $2
+       ORDER BY "timestamp" ASC
+       OFFSET $3 LIMIT 1`,
+      [machineId, startedAt, quantity - 1],
+    );
+    cappedAtTimestamp = nthGoodResult.rows[0]?.timestamp ?? null;
+  }
+
+  const countsResult = await pool.query<{ good_count: string; scrap_count: string }>(
+    `SELECT
+       COUNT(*) FILTER (WHERE payload->>'result' = 'good') AS good_count,
+       COUNT(*) FILTER (WHERE payload->>'result' = 'scrap') AS scrap_count
+     FROM events
+     WHERE type = 'production_count' AND machine_id = $1
+       AND "timestamp" BETWEEN $2 AND COALESCE($3::timestamptz, now())`,
+    [machineId, startedAt, cappedAtTimestamp],
+  );
+  const goodCount = Number(countsResult.rows[0]?.good_count ?? 0);
+  const scrapCount = Number(countsResult.rows[0]?.scrap_count ?? 0);
+
+  return {
+    workOrderId,
+    machineId,
+    machineName,
+    operatorEmail,
+    startedAt,
+    goodCount,
+    scrapCount,
+    targetReached: goodCount >= quantity,
+  };
+}
+
+export async function getWorkOrderProgress(
+  workOrderId: string,
+): Promise<(WorkOrderProgress & { quantity: number; remaining: number }) | undefined> {
+  const woResult = await pool.query<{ quantity: number; count_overproduction: boolean }>(
+    `SELECT quantity, count_overproduction FROM work_orders WHERE id = $1`,
+    [workOrderId],
+  );
+  const wo = woResult.rows[0];
+  if (!wo) return undefined;
+  const progress = await computeWorkOrderProgress(workOrderId, wo.quantity, wo.count_overproduction);
+  return { ...progress, quantity: wo.quantity, remaining: Math.max(0, wo.quantity - progress.goodCount) };
+}

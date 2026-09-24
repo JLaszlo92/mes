@@ -43,6 +43,14 @@ interface WorkInstruction {
   pdfUrl: string | null;
 }
 
+interface WorkOrderProgress {
+  goodCount: number;
+  scrapCount: number;
+  quantity: number;
+  remaining: number;
+  targetReached: boolean;
+}
+
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
@@ -76,11 +84,10 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [faultCodesByMachine, setFaultCodesByMachine] = useState<Record<string, FaultCode[]>>({});
   const [recentReports, setRecentReports] = useState<FaultReport[]>([]);
   const [instructionsByPart, setInstructionsByPart] = useState<Record<string, WorkInstruction | null>>({});
+  const [progressByWorkOrder, setProgressByWorkOrder] = useState<Record<string, WorkOrderProgress>>({});
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Melyik (instructionId, workOrderId) párokat naplóztuk már megtekintésként
-  // — enélkül minden 5 másodperces frissítés újra naplózna.
   const loggedViewsRef = useRef<Set<string>>(new Set());
 
   function load() {
@@ -125,8 +132,6 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
 
         setRecentReports(reports as FaultReport[]);
 
-        // Az aktív (in_progress) munkarendelések alkatrészeihez lekérjük az
-        // aktuális munkautasítást, és naplózzuk a megtekintést (egyszer).
         const activePartNames = new Set(
           Object.values(byMachine)
             .flat()
@@ -143,6 +148,32 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
               setInstructionsByPart((prev) => ({ ...prev, [partName]: instruction }));
             });
         }
+
+        // Az élő hátralévő darabszámot minden ciklusban frissítjük (nem
+        // cache-eljük örökre, mint a munkautasítást) — ez folyamatosan
+        // változik, ahogy a gép termel.
+        const inProgressOrderIds = Object.values(byMachine)
+          .flat()
+          .filter((a) => a.workOrderStatus === "in_progress")
+          .map((a) => a.workOrderId);
+
+        if (inProgressOrderIds.length > 0 && auth) {
+          Promise.all(
+            inProgressOrderIds.map((workOrderId) =>
+              fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/progress`, {
+                headers: { Authorization: `Bearer ${auth.token}` },
+              })
+                .then((res) => (res.ok ? res.json() : null))
+                .then((progress) => [workOrderId, progress] as const),
+            ),
+          ).then((pairs) => {
+            const next: Record<string, WorkOrderProgress> = {};
+            for (const [id, progress] of pairs) {
+              if (progress) next[id] = progress;
+            }
+            setProgressByWorkOrder(next);
+          });
+        }
       })
       .catch((err) => setError(String(err)));
   }
@@ -155,8 +186,6 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth, terminalUiId]);
 
-  // Ha egy aktív munkarendeléshez most töltődött be az utasítás, naplózzuk a
-  // megtekintést — csak egyszer, (instructionId, workOrderId) párokként.
   useEffect(() => {
     if (!auth) return;
     for (const assignments of Object.values(assignmentsByMachine)) {
@@ -241,6 +270,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
             {assignments.length === 0 && <p style={{ color: "#898781" }}>No work orders scheduled.</p>}
             {assignments.map((a) => {
               const instruction = instructionsByPart[a.partName];
+              const progress = progressByWorkOrder[a.workOrderId];
               return (
                 <div key={a.id} style={{ padding: "12px 0", borderTop: "1px solid #e1e0d9" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
@@ -249,6 +279,12 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                       <div style={{ fontSize: 13, color: "#898781" }}>
                         {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
                       </div>
+                      {a.workOrderStatus === "in_progress" && progress && (
+                        <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4, color: progress.targetReached ? "#0ca30c" : "#0b0b0b" }}>
+                          {progress.goodCount} / {progress.quantity} db kész
+                          {progress.targetReached ? " — célmennyiség elérve" : ` — ${progress.remaining} hátra`}
+                        </div>
+                      )}
                     </div>
                     {a.workOrderStatus === "in_progress" ? (
                       <button

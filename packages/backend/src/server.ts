@@ -133,6 +133,7 @@ import {
   explainDowntimePeriod,
 } from "./downtime-periods-repository.js";
 import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
+import { getWorkOrderProgress } from "./work-orders-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1460,6 +1461,18 @@ app.delete<{ Params: { id: string } }>(
       return getMachineHistory(request.params.machineId, fromDate, toDate, bucketUnit);
     },
   );
+  app.get<{ Params: { id: string } }>("/api/work-orders/:id/progress", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    const progress = await getWorkOrderProgress(request.params.id);
+    if (!progress) {
+      reply.code(404);
+      return { error: "unknown work order" };
+    }
+    return progress;
+    });
 
   return app;
 }
