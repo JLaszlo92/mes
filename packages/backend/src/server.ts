@@ -132,6 +132,7 @@ import {
   listUnexplainedDowntimePeriods,
   explainDowntimePeriod,
 } from "./downtime-periods-repository.js";
+import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1432,7 +1433,33 @@ app.delete<{ Params: { id: string } }>(
       reply.code(201);
       return report;
     },
-);
+  );
+  app.get<{ Params: { machineId: string }; Querystring: { from: string; to: string; bucket?: string } }>(
+    "/api/machines/:machineId/history",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { from, to, bucket } = request.query;
+      if (!from || !to) {
+        reply.code(400);
+        return { error: "from and to query parameters are required" };
+      }
+      const fromDate = new Date(from);
+      const toDate = new Date(to);
+      if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+        reply.code(400);
+        return { error: "from and to must be valid ISO date strings" };
+      }
+      const bucketUnit = (bucket ?? "day") as BucketUnit;
+      if (!["hour", "day", "week", "month"].includes(bucketUnit)) {
+        reply.code(400);
+        return { error: "bucket must be one of: hour, day, week, month" };
+      }
+      return getMachineHistory(request.params.machineId, fromDate, toDate, bucketUnit);
+    },
+  );
 
   return app;
 }

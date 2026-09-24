@@ -20,6 +20,7 @@ import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
+import MachineHistoryPanel from "./MachineHistoryPanel";
 
 interface MachineState {
   machineId: string;
@@ -223,6 +224,7 @@ export default function App() {
             </div>
           ))}
           <ShiftSummaryPanel />
+          <MachineHistoryPanel />
         </div>
       )}
 
