@@ -1,246 +1,206 @@
 # Development Status
 
-**Last updated:** September 16, 2026
+**Last updated:** September 23, 2026
 
 ## Where things stand
 
-Phase 1 milestones **M0 through M4 are complete**, plus a substantial slice of
-work-order/scheduling/terminal functionality that goes beyond what ROADMAP.md
-originally scoped into M2. The project also moved from zip-based delivery to
-a real GitHub remote (`https://github.com/JLaszlo92/mes.git`), with all three
-Proxmox nodes (node-dc `.141`, node-gate `.142`, node-sim `.143`) now tracking
-the same `main` branch.
+**Phase 1 (M0–M8) is fully complete.** M9 (live pilot on a real Emlid
+machine) has not started yet — the team is currently doing a "node-dc
+polishing" pass on the existing modules before picking the actual pilot
+machine, per an explicit decision to harden the platform first.
 
-The codebase is a TypeScript monorepo (Node edge agent, Fastify backend,
-React frontend, a shared event-schema package) — see the repo's own
-`README.md` for how to run it. SQL migrations live in
-`packages/backend/sql/`, numbered `001` through `011`, each run idempotently
-at backend startup by `migrate.ts` (which now runs *every* `.sql` file in the
-folder in filename order, not just one hardcoded file).
+The repo (`JLaszlo92/mes`, private GitHub) is a TypeScript monorepo run
+across three Proxmox LXC nodes: node-dc (`.141`, backend + frontend +
+Postgres + Mosquitto), node-gate (`.142`, edge agent), node-sim (`.143`,
+protocol simulators). All three are in sync on `main` as of this update.
 
-## M0 — Walking skeleton: done (unchanged from prior status)
+## Milestone recap (M0–M8)
 
-Simulated machine signal → edge agent → MQTT → backend → Postgres → live
-dashboard, survives a broker outage with zero event loss. See the repo's
-`README.md` and earlier status notes for the full write-up; nothing about
-this milestone changed in this update.
+- **M0–M4**: walking skeleton, all four protocol adapters (GPIO/S7/OPC-UA/
+  Modbus), production/OEE dashboard, RBAC+MFA, configurable alerts.
+- **M5**: quality (machine-specific fault codes with manager
+  confirm/modify/reject workflow), automatic lot-level genealogy generated
+  on work-order completion (machine/operator/counts pulled from existing
+  data, no manual entry), corrective-action tracking with sign-off.
+- **M6**: versioned digital work instructions, tied to part name, shown
+  automatically on the terminal for the active work order, every view
+  logged (who/when/which version).
+- **M7**: maintenance work orders (parts/labor logging), preventive
+  maintenance scheduling (calendar / usage-hours / part-count triggers,
+  auto-resets on completion, not creation), "Create ticket" buttons on
+  alerts and confirmed fault reports (downtime-reason integration).
+- **M8**: systematic chaos-testing of all four signal sources (see "Known
+  gaps" below for what this found), git-tag-based staged/reversible
+  edge-agent releases (`scripts/tag-edge-agent-release.sh`,
+  `scripts/deploy-edge-agent.sh --latest|--rollback`), and a frank
+  self-review against the IEC 62443 SL2 baseline
+  (`docs/SECURITY_REVIEW.md` — the honest headline: no TLS anywhere yet,
+  no automated Postgres backups, no incident-response document; these are
+  the top three things to fix before any external pilot).
 
-## M1 — Core data pipeline: done, all four signal sources complete
+Two purpose-built control panels exist for the simulators, useful for any
+future testing: the S7 simulator's web panel (`:8080`, pre-existing,
+richer than expected — fault injection, burst mode, simulated PLC
+disconnect) and a now-matching Modbus control panel (`:5021`, built this
+cycle — configurable cycle time/scrap rate/downtime, manual force-down/
+force-running, reset counters).
 
-`SignalSource` now has real implementations for all four connectivity modes
-the PRD calls for, each running as an independent, `systemd`-managed
-process, each verified end-to-end against its own simulator:
+## Today's "node-dc polishing" session — what got built
 
-- **GPIO** (`GpioSignalSource`) — physical discrete I/O, bench-tested on the
-  3-node Proxmox rig (see `docs/pi-test-rig.md`).
-- **S7** (`S7SignalSource`) — polls a Siemens S7 PLC (or `plc-simulator/`)
-  over the network, no wiring (`docs/pi-test-rig-s7-mode.md`).
-- **OPC-UA** (`OpcUaSignalSource`) — pure TypeScript, no Python bridge,
-  because `node-opcua` is a mature client *and* server library. Simulator:
-  `opcua-simulator/opcua_simulator.js`. Documented in `docs/opcua-mode.md`,
-  including the `alternateHostname` gotcha (the server advertises its own
-  hostname by default; a client connecting by IP needs the server told to
-  accept that IP too, or it fails with "Cannot find suitable endpoints").
-- **Modbus TCP** (`ModbusSignalSource`) — also pure TypeScript
-  (`modbus-serial`), same poll-and-diff shape as S7/OPC-UA. Simulator:
-  `modbus-simulator/modbus_simulator.js`. **Not yet documented** — there is
-  no `docs/modbus-mode.md` analogous to the OPC-UA one; worth writing before
-  this mode is handed to someone unfamiliar with it.
+This was a single very long, very thorough session. In rough order:
 
-**Known gap surfaced during M4 alert testing:** unlike GPIO's deliberate
-pull-down fail-safe wiring (a broken wire reads as "down", not a false
-"running"), the S7 bridge does **not** emit a "down" `machine_status` event
-when it loses its connection to the PLC — it just stops sending anything,
-and the backend's in-memory state store freezes on the last known status.
-This meant a `machine_down` alert rule against the S7 rig never fired even
-after stopping the PLC simulator for several minutes. Not fixed yet; a
-reasonable fix would be either a bridge-side timeout that emits an explicit
-"down" event, or a backend-side staleness check (if a machine hasn't sent
-*any* event in N minutes, treat it as down/offline regardless of its last
-reported status). Worth revisiting during M8 (resilience hardening) if not
-sooner.
+1. **Audit log date-range filtering + pagination** (24h/7d/30d/all
+   presets, "load more"). Along the way, found and fixed a real,
+   pre-existing bug: the `/api/shifts/summary` route had gone missing
+   from `server.ts` entirely (import still there, route body gone) —
+   nobody had noticed because the dashboard's WebSocket happened to still
+   be showing cached data.
 
-Systemd units in place: `mes-plc-simulator`, `mes-opcua-simulator`,
-`mes-modbus-simulator` (node-sim); `mes-edge-agent` (S7),
-`mes-edge-agent-opcua`, `mes-edge-agent-modbus` (node-gate) — multiple
-edge-agent instances run concurrently on node-gate, each with its own
-`MACHINE_ID` and `SIGNAL_SOURCE`.
+2. **Custom machine statuses with OEE classification**
+   (`machine_status_definitions` table). `running` and `down` stay
+   built-in; any other status name (global or per-machine) now gets
+   tagged `counts_as_down` or `excluded` (planned, no OEE impact).
+   `idle`→`counts_as_down` and `changeover`→`excluded` were migrated in
+   as the new defaults — the changeover reclassification is a genuine OEE
+   accuracy improvement over the old hardcoded behavior. Required
+   loosening `MachineStatusValue` in `packages/shared` from a fixed
+   4-value enum to `z.string()`.
 
-## M2 — Production & Status Counting + OEE: done
+3. **Configurable status source per machine**:
+   - **Signal-presence mode** (`SignalPresenceWatchdog.ts`): infers
+     running/down purely from whether `production_count` events are
+     arriving, with a configurable no-signal timeout. Deliberately
+     implemented **at the edge**, not the backend — a backend-side
+     staleness check would produce false "down" readings during a
+     network blip, exactly the class of bug M8's chaos testing had just
+     found and fixed elsewhere.
+   - **Production gate** (`ProductionGate.ts`): a toggle (default on) for
+     whether production counts are accepted while the dedicated status
+     bit reports "down" — off means a stopped machine's sensor noise
+     doesn't get counted as real output.
+   - Both are protocol-agnostic wrappers around any `SignalSource`.
+   - **Not yet done**: a secondary status bit supplying a custom status
+     name when the primary running-bit is off. Deliberately deferred —
+     it's protocol-specific (a Modbus register vs. an OPC-UA node ID vs.
+     an S7 DB offset vs. a GPIO pin all look completely different) and
+     would need building four times.
 
-- `machines` master data table (`003_machines.sql`): id, name, asset type,
-  location, active flag, and now also `ideal_cycle_time_seconds`
-  (`009_machine_ideal_cycle_time.sql`) for the OEE Performance component.
-- `shift_definitions` + `resolve_shift()` (`002_shifts.sql`), correctly
-  handling midnight-spanning night shifts.
-- `/api/shifts/summary` now returns the full classical OEE breakdown per
-  shift/machine: `availability`, `performance`, `quality`, and `oee`
-  (Availability × Performance × Quality). `performance`/`quality`/`oee` are
-  `null` (not a fake 100%) when there isn't enough data — no ideal cycle
-  time set, or no parts counted yet.
-- **Known simplification:** Performance is computed only from the machine's
-  own `ideal_cycle_time_seconds`, never from a work order's
-  `expectedCycleTimeSeconds` even when a `work_order_assignments` row
-  overlaps the shift window. This was deliberately deferred (see below) —
-  it's a small, well-understood enhancement whenever it's wanted.
-- `ShiftSummaryPanel.tsx` and `MachineRegistryPanel.tsx` (frontend) both
-  updated accordingly.
+4. **Edge-node registry** — the biggest single change of the day.
+   Previously every edge-agent instance was one systemd service per
+   machine, hand-configured via SSH + env vars. Now:
+   - `edge_nodes` + `edge_node_channels` tables: **one edge-node can carry
+     any number of channels (machines)**, each with its own protocol,
+     connection config, and status-mode settings — added specifically
+     because the original single-machine-per-node design didn't match
+     what was actually asked for.
+   - Each edge-node gets a unique secret token (shown once, only its
+     SHA-256 hash stored). An edge-agent process "claims" its
+     configuration from the backend using that token.
+   - **Session-lease duplicate protection**: claiming records a fresh
+     session ID; a second claim attempt with the same token is **rejected
+     outright** (not auto-evicted) if the previous session heartbeated
+     within the last 90 seconds — guarantees at most one live instance
+     per registered node.
+   - Heartbeat every 30s; the admin panel shows online/offline derived
+     from heartbeat staleness.
+   - The edge-agent (`index.ts`) now has two paths: if `EDGE_NODE_TOKEN`
+     is set, it claims its channel list from the backend and runs
+     multiple channels (each with its own MQTT topic/buffer/SignalSource)
+     over one shared MQTT connection; if not set, it falls back to the
+     **original single-machine env-var behavior verbatim** — a
+     deliberate compatibility path so existing deployments keep working
+     during migration.
+   - **This was completed and proven, not just built**: the three
+     simulator rigs that had been running as three separate systemd
+     services (`mes-edge-agent`/S7, `mes-edge-agent-modbus`,
+     `mes-edge-agent-opcua`) were migrated live into one registered
+     edge-node (`mes-edge-node.service`) with three channels, and
+     confirmed working end-to-end (all three machines still counting,
+     node showing online in the admin panel). The three old services are
+     stopped and disabled, not deleted, in case of rollback need.
 
-## M3 — Users, roles & auth: done, including MFA
+## Known gaps surfaced this session (real findings, not guesses)
 
-- RBAC (`004_users.sql`): five roles (operator/supervisor/maintenance/
-  manager/admin), enforced via `requireRole()` preHandlers.
-- Session-based auth (not JWT) — server-side `sessions` table, individually
-  revocable.
-- Audit logging (`005_audit_log.sql`): logins (success/failure), logouts,
-  and configuration changes (machine registry, work orders, alert rules,
-  terminal UIs) all recorded with actor, IP, and timestamp.
-- **TOTP-based MFA** (`010_mfa.sql`, `mfa-repository.ts`), using `otplib@^12`
-  (pin this major version — `otplib@13` shipped a completely different,
-  non-`authenticator`-based API that breaks this code) and `qrcode`.
-  Enrollment flow: first login for an admin/manager without MFA set up
-  succeeds but flags `mfaSetupRequired: true`; the frontend then forces a
-  QR-code enrollment screen (`MfaSetup.tsx`) before showing anything else.
-  Once enabled, login becomes two-step: password → short-lived pending
-  token → 6-digit code → real session (`mfa_pending_logins` table, 5-minute
-  TTL, atomically consumed via `DELETE ... RETURNING`).
-- Frontend: `auth-context.tsx` and `LoginForm.tsx` both handle the two-step
-  flow; `App.tsx` and `TerminalPage.tsx` both gate on `!auth` first.
+- **The `buildSignalSource`/`buildInnerSignalSource` naming-swap bug**:
+  while adding the signal-presence wrapper, the two functions ended up
+  with swapped names and one had an accidental self-recursive dead-code
+  call. The wrapping silently never happened — no crash, no error, just
+  quietly wrong behavior — until debug print statements traced it. Worth
+  remembering: **a function that is provably never called is invisible to
+  every test except deliberately checking call order**, and this
+  particular class of bug produces no compiler error and no runtime
+  error.
+- **`node-opcua`'s `session.read()` does not reject on connection loss** —
+  it silently queues requests forever while node-opcua reconnects
+  underneath, and combined with a naive `setInterval` this caused an
+  unbounded pending-request pile-up (node-opcua's own "sending multiple
+  requests simultaneously" warning). Fixed with a `pollInFlight` guard
+  plus a manual timeout that surfaces a stuck read as a "down" status.
+- **Modbus and S7 had no reconnection/down-reporting logic at all**
+  originally — found via M8's chaos testing, both fixed (see M8 recap
+  above and `docs/CHAOS_TEST_FINDINGS.md`).
+- **`ProcessBridgeSignalSource`** (shared base for GPIO/S7) didn't handle
+  an unexpected child-process exit — no synthetic "down" event, no
+  respawn. Fixed: emits "down" once per outage, respawns after a 5s
+  delay, retried indefinitely.
 
-## M4 — Alerts & notifications: done (MVP scope)
+## What's next (in priority order, per today's planning)
 
-- `alert_rules` (config) and `alerts` (raised instances) tables
-  (`011_alerts.sql`) — same rule/instance split as `shift_definitions` vs.
-  actual shift data.
-- Two rule types implemented: `machine_down` (minutes a machine has been
-  continuously `down`) and `scrap_rate` (% scrap over a trailing 30-minute
-  window, only evaluated once at least 5 parts have been counted, to avoid
-  a single early scrap producing a false 100% reading).
-- `alert-evaluator.ts` runs on a fixed interval (`EVAL_INTERVAL_MS`,
-  currently `30_000` in production; was temporarily dropped to `1_000`
-  during testing and correctly restored) inside the backend process
-  (started from `index.ts` alongside `startMqttSubscriber`, not from
-  `server.ts`). Alerts auto-resolve when the triggering condition clears.
-- In-app delivery only (no email/SMS/Slack — explicitly a Later-phase PRD
-  item). `AlertsPanel.tsx` polls `/api/alerts` every 15s; rule management
-  (create/enable/disable/delete) is admin/manager-only, visible alerts are
-  shown to everyone who opens the panel.
-- **Postgres gotcha hit during build:** `COALESCE($n, ...)` against a
-  `text[]` column needs an explicit `$n::text[]` cast — an untyped
-  parameter defaults to `text` and Postgres refuses to assign it to an
-  array column (`column "notify_roles" is of type text[] but expression is
-  of type text`).
+The "node-dc polishing" list, in the order agreed today:
 
-## Extra, ahead-of-schedule work: work orders, scheduling, machine terminal UI
+1. ~~Audit log filtering~~ [done]
+2. ~~Custom statuses + OEE classification~~ [done]
+3. ~~Status source config (signal-presence, production gate)~~ [done] —
+   **except** the secondary-status-bit piece, still open, protocol-specific
+4. ~~Edge-node registry (A: registry+UI, B: heartbeat, C: live config +
+   migration)~~ [done] — all three parts done and proven on real running
+   infrastructure
+5. **Retroactive downtime-reason capture** — when a signal-presence-mode
+   or status-bit down period is detected, let the operator (terminal) or
+   a supervisor (dashboard) retroactively pick a reason. Plan: reuse the
+   existing M5 fault-code system rather than building new machinery —
+   this hasn't been scoped in detail yet.
+6. **Work-order production-quantity tracking** — this is the deferred
+   "extend the event schema to carry `workOrderId`" work flagged back in
+   M2/M7 as invasive. Needed for: remaining-quantity countdown on the
+   terminal, auto-complete vs. manual-confirm-on-target-reached policy per
+   work order, and an overproduction-counts-or-not toggle.
+7. **Terminal refinements**: collapse historical work orders behind a
+   button (don't show everything by default), show the machine's
+   current-shift good/scrap/OEE inline on the terminal. Both
+   straightforward, independent of #6.
+8. **Historical reporting**: time-bucketed charts (hour/shift/day/week/
+   month) for counts/status/cycle-time/OEE, plus fast work-order history
+   lookup. Deliberately sequenced *after* #6, since work-order history
+   without the event linkage would be half-useful.
 
-Not itemized as its own ROADMAP milestone, but built as a natural extension
-once M2's dashboard and M3's auth were in place. This gives M7
-(maintenance, which will want its own work-order-like concept) a head
-start.
+After the polishing list: **M9** (pick the real target Emlid machine —
+still an open decision — connect it via whichever protocol it exposes,
+onboard real users, and the same live feedback/bug-fix loop the ROADMAP
+always called for this milestone). The security review's top three items
+(TLS everywhere, automated backups, an incident-response doc) are also
+worth doing before any pilot involving real production data, independent
+of the milestone numbering.
 
-- **`work_orders`** (`006_work_orders.sql`): order number, part name,
-  quantity, expected cycle time, due date, status
-  (planned/released/in_progress/completed/cancelled).
-- **`work_order_assignments`** (`007_work_order_assignments.sql`) — the
-  "finomtervező" (fine scheduler): assigns a work order to a machine for a
-  planned time window. Real FKs to both `work_orders` and `machines`
-  (unlike `events.machine_id`, which is deliberately loose). No overlap
-  detection — PRD explicitly excludes full APS/finite-scheduling
-  optimization from every phase; this is intentionally manual.
-- **`terminal_uis` + `terminal_ui_machines`** (`008_terminal_uis.sql`) — a
-  "terminal UI" is a named kiosk that can show one or more machines
-  (many-to-many). Admin-managed via `TerminalUisPanel.tsx`.
-- **`TerminalPage.tsx`** — a second, separate frontend view reachable at
-  `/terminal/<terminal-ui-id>` (no router library added; `main.tsx` just
-  pattern-matches `window.location.pathname`). Requires login (reuses the
-  same `AuthProvider`/`LoginForm`); an operator sees only the work orders
-  assigned to their terminal's machine(s) and can mark one "in progress"
-  (`PUT /api/work-orders/:id`, now permitted for the `operator` role too,
-  not just admin/manager — starting a job is explicitly an operator task
-  per PRD 5.1).
-- **Known gap, deliberately deferred:** `production_count` events still
-  carry no `workOrderId` — there is no automatic link between what a
-  machine actually produces and which work order was active when it did.
-  Work order status changes are entirely operator-driven (clicking
-  "Elkezdés"/"Start"), not derived from event counts. Fixing this properly
-  means extending the shared `MachineEvent` schema
-  (`packages/shared`) and touching the edge agent, the backend ingestion
-  path, and the in-memory state store — a genuinely invasive change,
-  correctly recognized as its own future step rather than something to
-  bolt on casually.
+## Practical notes for whoever (or whatever session) picks this up
 
-## Git / infrastructure notes worth remembering
-
-- **Each node's `~/mes` was bootstrapped into git independently**, not
-  cloned fresh: `git init` → `git branch -M main` → `git remote add origin
-  <url>` → `git fetch origin` → `git reset origin/main` (mixed reset —
-  updates git's bookkeeping only, never touches files on disk). This
-  surfaces every difference between that node's working copy and GitHub as
-  a normal `git status` diff, without silently overwriting anything.
-- **Always `git add` specific paths, never `-A` or `.`**, when working this
-  way — a node's working copy legitimately lacks files another node owns
-  (e.g. node-sim has no reason to have `packages/backend` "correct"), and
-  those show up as spurious `deleted:` entries that must never be staged.
-- **Stray files created on the wrong node** happened twice (an
-  `opcua-simulator/` copy and a `ModbusSignalSource.ts` copy both
-  accidentally created on the wrong machine) — caught via `git status`
-  showing something unexpected as untracked/modified where it shouldn't
-  have existed at all. Fixed by deleting the stray copy or `git checkout --
-  <file>` to discard an accidental local edit before merging.
-- **GitHub Personal Access Tokens were pasted into chat in full at least
-  twice** — both were revoked and replaced immediately. Going forward:
-  prefer the interactive `git push` credential prompt (paste directly into
-  the terminal's hidden password field) over embedding a token in a
-  command line or, worse, pasting it into any chat log.
-- **`dist/` vs `src/`**: the backend runs compiled JS
-  (`ExecStart=/usr/bin/node dist/index.js`), never `src/` directly. Every
-  edit needs `pnpm run build` **and then** `systemctl restart mes-backend`
-  — forgetting the restart is a recurring mistake (a route that "doesn't
-  exist" after editing `server.ts` is almost always this). When a rebuild
-  doesn't seem to take effect, `grep` the compiled `dist/*.js` for the new
-  code directly rather than trusting that the build succeeded silently; a
-  stale `.tsbuildinfo` incremental-build cache has caused this at least
-  once, fixed by `rm -rf dist *.tsbuildinfo && pnpm run build`.
-- **`DATABASE_URL` only exists inside the systemd unit's environment** —
-  running a one-off script (e.g. `dist/scripts/create-admin.js`) from an
-  interactive shell needs it exported manually first (`export
-  DATABASE_URL="postgres://mes:mes@localhost:5432/mes"`, copied from
-  `systemctl cat mes-backend`).
-- **React hook-order rule**: a conditional early return (`if (!auth) return
-  <LoginForm />`) must come *after* every hook call in the component
-  (`useState`, `useEffect`, etc.), never between them — placing it too
-  early causes React to see a different number of hooks between renders
-  and silently blank the page with no console error explaining why.
-- **Terminal multi-line paste is unreliable in this environment** — heredoc
-  blocks (`cat > file << 'EOF' ... EOF`) have repeatedly lost line breaks
-  or merged lines on paste. A single-line `printf '...\n...\n' > file`
-  command (with explicit `\n` escapes) has proven far more reliable for
-  creating systemd unit files and similar multi-line content directly from
-  a terminal.
-- **npm package major-version surprises**: both `node-opcua`'s TypeScript
-  types and `otplib`'s v13 API changed enough to break code written against
-  older assumptions. When a fresh `pnpm add <package>` behaves unexpectedly,
-  checking `Object.keys(require('<package>'))` directly is a fast way to
-  see what's actually exported before guessing further.
-
-## What's next
-
-Per ROADMAP.md's dependency order, **M5 (Quality management + lot
-traceability)** is next — the PRD groups these two together because they
-share data-model concepts (a non-conformance needs to trace back to the
-affected lot/units).
-
-Remaining Phase 1 milestones and rough estimates (unchanged from the
-original ROADMAP.md sizing, since none of them have been started):
-
-| Milestone | Remaining estimate |
-|---|---|
-| M5 — Quality + lot traceability | ~5 weeks |
-| M6 — Digital work instructions (static) | ~2 weeks |
-| M7 — Maintenance management (core) | ~4 weeks (likely faster in practice — the work-order/terminal infrastructure built ahead of schedule should transfer directly) |
-| M8 — Security & resilience hardening | ~3 weeks (should explicitly revisit the S7 "no down status on disconnect" gap noted above) |
-| M9 — Pilot deployment & iteration | ~3 weeks |
-
-**Total remaining: ~17 engineering weeks**, or roughly **22–25.5 calendar
-weeks (~5–6 months)** applying the ROADMAP's own 1.3–1.5× solo/two-person
-multiplier.
+- All three nodes are pushed and pulled to the same commit as of this
+  writing — always `git pull` before editing anywhere, this session hit
+  the "distant branches" merge prompt (`git config pull.rebase false`)
+  and the VS Code askpass hijack (`unset GIT_ASKPASS
+  VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN` before `git push`)
+  enough times that both are now routine, not surprising.
+- `mes-edge-node.service` on node-gate is the new, single, token-based
+  service carrying all three simulator channels. The old
+  `mes-edge-agent`/`mes-edge-agent-modbus`/`mes-edge-agent-opcua` units
+  still exist on disk but are stopped+disabled — don't `systemctl start`
+  them without first stopping `mes-edge-node`, or two processes will
+  publish to the same machine IDs simultaneously.
+- The edge-node's secret token lives in
+  `/etc/systemd/system/mes-edge-node.service`'s `EDGE_NODE_TOKEN=`
+  line on node-gate — if it's ever lost, use "New token" in the admin
+  panel's Edge nodes list and update the unit file (this invalidates the
+  old token immediately).
+- `rm -rf dist *.tsbuildinfo` before rebuilding is still the fix whenever
+  behavior doesn't match code after a `pnpm run build` — hit this again
+  today (the naming-swap bug above).

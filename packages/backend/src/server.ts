@@ -128,6 +128,10 @@ import {
   InvalidSessionError,
   isForeignKeyViolation as isEdgeNodeForeignKeyViolation,
 } from "./edge-nodes-repository.js";
+import {
+  listUnexplainedDowntimePeriods,
+  explainDowntimePeriod,
+} from "./downtime-periods-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1372,27 +1376,63 @@ app.delete<{ Params: { id: string } }>(
     }
   });
 
-  app.post<{ Body: { token: string; sessionId: string } }>("/api/edge-nodes/heartbeat", async (request, reply) => {
-    const { token, sessionId } = request.body;
-    if (!token || !sessionId) {
-      reply.code(400);
-      return { error: "token and sessionId are required" };
-    }
-    try {
-      await recordHeartbeat(token, sessionId);
-      return { success: true };
-    } catch (err) {
-      if (err instanceof InvalidSessionError) {
-        reply.code(409);
-        return { error: err.message };
+    app.post<{ Body: { token: string; sessionId: string } }>("/api/edge-nodes/heartbeat", async (request, reply) => {
+      const { token, sessionId } = request.body;
+      if (!token || !sessionId) {
+        reply.code(400);
+        return { error: "token and sessionId are required" };
       }
-      if (err instanceof InvalidTokenError) {
-        reply.code(401);
-        return { error: err.message };
+      try {
+        await recordHeartbeat(token, sessionId);
+        return { success: true };
+      } catch (err) {
+        if (err instanceof InvalidSessionError) {
+          reply.code(409);
+          return { error: err.message };
+        }
+        if (err instanceof InvalidTokenError) {
+          reply.code(401);
+          return { error: err.message };
+        }
+        throw err;
       }
-      throw err;
+    });
+      app.get<{ Querystring: { machineId?: string } }>("/api/downtime-periods/unexplained", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
     }
+    return listUnexplainedDowntimePeriods(request.query.machineId);
   });
+
+  app.post<{ Params: { id: string }; Body: { faultCodeId: string; comment?: string } }>(
+    "/api/downtime-periods/:id/explain",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { faultCodeId } = request.body;
+      if (!faultCodeId) {
+        reply.code(400);
+        return { error: "faultCodeId is required" };
+      }
+      const report = await explainDowntimePeriod(request.params.id, { ...request.body, reportedBy: request.user.id });
+      if (!report) {
+        reply.code(404);
+        return { error: "unknown or already explained downtime period" };
+      }
+      await recordAuditEvent({
+        actorId: request.user.id,
+        action: "downtime_period_explained",
+        target: request.params.id,
+        details: request.body,
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return report;
+    },
+);
 
   return app;
 }

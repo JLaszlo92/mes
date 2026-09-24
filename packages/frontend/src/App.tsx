@@ -19,6 +19,7 @@ import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
 import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
+import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 
 interface MachineState {
   machineId: string;
@@ -239,6 +240,7 @@ export default function App() {
           <MachineFaultCodesPanel />
           <FaultReportsPanel />
           <WorkInstructionsPanel />
+          <DowntimePeriodsPanel />
         </div>
       )}
       {activeTab === "maintenance" && (

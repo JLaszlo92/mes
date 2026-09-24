@@ -17,5 +17,3 @@ CREATE TABLE IF NOT EXISTS edge_nodes (
   last_heartbeat_at             TIMESTAMPTZ,
   created_at                    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-CREATE INDEX IF NOT EXISTS edge_nodes_machine_idx ON edge_nodes (machine_id);
