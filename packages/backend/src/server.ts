@@ -134,6 +134,7 @@ import {
 } from "./downtime-periods-repository.js";
 import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
 import { getWorkOrderProgress } from "./work-orders-repository.js";
+import { getCurrentShiftSummaryForMachine } from "./shift-summary-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1473,6 +1474,15 @@ app.delete<{ Params: { id: string } }>(
     }
     return progress;
     });
+
+    app.get<{ Params: { machineId: string } }>("/api/machines/:machineId/current-shift", async (request, reply) => {
+      const summary = await getCurrentShiftSummaryForMachine(request.params.machineId);
+      if (!summary) {
+        reply.code(404);
+        return { error: "no shift data available" };
+      }
+      return summary;
+  });
 
   return app;
 }

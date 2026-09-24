@@ -203,4 +203,20 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
   return [...merged.values()].sort(
     (a, b) => a.shiftDate.localeCompare(b.shiftDate) || a.shiftName.localeCompare(b.shiftName),
   );
+  
+}
+
+/**
+ * A getShiftSummary(from, to) egy 24 órás ablakra lekérdezi az összes
+ * műszakot minden gépre, majd erre a gépre sz\u0171rve a LEGUT\u00d3BBIT adja
+ * vissza — mivel az eredmény id\u0151rendben rendezett, ez pontosan a most
+ * folyamatban lévő műszak (feltéve, hogy a műszak-defin\u00edci\u00f3k lefedik a
+ * teljes napot, ami itt igaz).
+ */
+export async function getCurrentShiftSummaryForMachine(machineId: string): Promise<ShiftSummary | undefined> {
+  const now = new Date();
+  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const summaries = await getShiftSummary(from, now);
+  const forMachine = summaries.filter((s) => s.machineId === machineId);
+  return forMachine[forMachine.length - 1];
 }

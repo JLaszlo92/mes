@@ -51,6 +51,16 @@ interface WorkOrderProgress {
   targetReached: boolean;
 }
 
+interface ShiftSummary {
+  shiftName: string;
+  goodCount: number;
+  scrapCount: number;
+  availability: number;
+  oee: number | null;
+}
+
+const HISTORICAL_STATUSES = new Set(["completed", "cancelled"]);
+
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
@@ -85,6 +95,8 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [recentReports, setRecentReports] = useState<FaultReport[]>([]);
   const [instructionsByPart, setInstructionsByPart] = useState<Record<string, WorkInstruction | null>>({});
   const [progressByWorkOrder, setProgressByWorkOrder] = useState<Record<string, WorkOrderProgress>>({});
+  const [shiftSummaryByMachine, setShiftSummaryByMachine] = useState<Record<string, ShiftSummary>>({});
+  const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -119,9 +131,16 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                 r.ok ? r.json() : [],
               )
             : Promise.resolve([]),
+          Promise.all(
+            data.machineIds.map((machineId) =>
+              fetch(`${API_BASE}/api/machines/${encodeURIComponent(machineId)}/current-shift`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((summary: ShiftSummary | null) => [machineId, summary] as const),
+            ),
+          ),
         ]);
       })
-      .then(([assignmentPairs, faultCodePairs, reports]) => {
+      .then(([assignmentPairs, faultCodePairs, reports, shiftPairs]) => {
         const byMachine: Record<string, Assignment[]> = {};
         for (const [machineId, assignments] of assignmentPairs) byMachine[machineId] = assignments;
         setAssignmentsByMachine(byMachine);
@@ -131,6 +150,12 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         setFaultCodesByMachine(codesByMachine);
 
         setRecentReports(reports as FaultReport[]);
+
+        const shiftByMachine: Record<string, ShiftSummary> = {};
+        for (const [machineId, summary] of shiftPairs) {
+          if (summary) shiftByMachine[machineId] = summary;
+        }
+        setShiftSummaryByMachine(shiftByMachine);
 
         const activePartNames = new Set(
           Object.values(byMachine)
@@ -149,9 +174,6 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
             });
         }
 
-        // Az élő hátralévő darabszámot minden ciklusban frissítjük (nem
-        // cache-eljük örökre, mint a munkautasítást) — ez folyamatosan
-        // változik, ahogy a gép termel.
         const inProgressOrderIds = Object.values(byMachine)
           .flat()
           .filter((a) => a.workOrderStatus === "in_progress")
@@ -262,13 +284,31 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         const assignments = assignmentsByMachine[machineId] ?? [];
         const faultCodes = faultCodesByMachine[machineId] ?? [];
         const machineRecentReports = recentReports.filter((r) => r.machineId === machineId).slice(0, 5);
+        const shiftSummary = shiftSummaryByMachine[machineId];
+
+        const currentAssignments = assignments.filter((a) => !HISTORICAL_STATUSES.has(a.workOrderStatus));
+        const historicalAssignments = assignments.filter((a) => HISTORICAL_STATUSES.has(a.workOrderStatus));
+        const showHistory = showHistoryFor[machineId] ?? false;
 
         return (
           <section key={machineId} style={{ marginTop: 24, border: "1px solid #e1e0d9", borderRadius: 12, padding: 16 }}>
-            <h2 style={{ fontSize: 18, marginTop: 0 }}>{ui.machineNames[i]}</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+              <h2 style={{ fontSize: 18, marginTop: 0 }}>{ui.machineNames[i]}</h2>
+              {shiftSummary && (
+                <div style={{ display: "flex", gap: 14, fontSize: 13, color: "#898781" }}>
+                  <span>Shift: <strong style={{ color: "#0b0b0b" }}>{shiftSummary.shiftName}</strong></span>
+                  <span>Good: <strong style={{ color: "#0ca30c" }}>{shiftSummary.goodCount}</strong></span>
+                  <span>Scrap: <strong style={{ color: "#d03b3b" }}>{shiftSummary.scrapCount}</strong></span>
+                  <span>OEE: <strong style={{ color: "#0b0b0b" }}>{shiftSummary.oee !== null ? `${Math.round(shiftSummary.oee * 100)}%` : "—"}</strong></span>
+                </div>
+              )}
+            </div>
 
-            {assignments.length === 0 && <p style={{ color: "#898781" }}>No work orders scheduled.</p>}
-            {assignments.map((a) => {
+            {currentAssignments.length === 0 && historicalAssignments.length === 0 && (
+              <p style={{ color: "#898781" }}>No work orders scheduled.</p>
+            )}
+
+            {currentAssignments.map((a) => {
               const instruction = instructionsByPart[a.partName];
               const progress = progressByWorkOrder[a.workOrderId];
               return (
@@ -293,8 +333,6 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                       >
                         Befejezés
                       </button>
-                    ) : a.workOrderStatus === "completed" ? (
-                      <span style={{ color: "#898781" }}>Kész</span>
                     ) : (
                       <button style={startButtonStyle} onClick={() => startWorkOrder(a.workOrderId)}>
                         Elkezdés
@@ -318,6 +356,32 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                 </div>
               );
             })}
+
+            {historicalAssignments.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => setShowHistoryFor((prev) => ({ ...prev, [machineId]: !showHistory }))}
+                  style={{ fontSize: 12, padding: "4px 10px", border: "1px solid #e1e0d9", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#898781" }}
+                >
+                  {showHistory ? "Hide" : "Show"} history ({historicalAssignments.length})
+                </button>
+
+                {showHistory &&
+                  historicalAssignments.map((a) => (
+                    <div key={a.id} style={{ padding: "12px 0", borderTop: "1px solid #e1e0d9", opacity: 0.7 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{a.orderNumber} — {a.partName}</div>
+                          <div style={{ fontSize: 13, color: "#898781" }}>
+                            {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
+                          </div>
+                        </div>
+                        <span style={{ color: "#898781", fontSize: 13 }}>{a.workOrderStatus === "completed" ? "Kész" : "Törölve"}</span>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            )}
 
             {faultCodes.length > 0 && (
               <div style={{ marginTop: 16, borderTop: "1px solid #e1e0d9", paddingTop: 12 }}>
