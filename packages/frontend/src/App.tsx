@@ -21,6 +21,7 @@ import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
+import CollapsibleSection from "./CollapsibleSection.js";
 
 interface MachineState {
   machineId: string;
@@ -156,27 +157,43 @@ export default function App() {
         </div>
       )}
 
-      {activeTab === "production" && (
+            {activeTab === "production" && (
         <div>
-          <WorkOrdersPanel />
-          <SchedulePanel />
-          <LotsPanel />
-          <MaterialLotsPanel />
+          <CollapsibleSection title="Work orders" defaultOpen>
+            <WorkOrdersPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Scheduling">
+            <SchedulePanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Traceability (lots & material)">
+            <LotsPanel />
+            <MaterialLotsPanel />
+          </CollapsibleSection>
         </div>
       )}
 
       {activeTab === "quality" && (
         <div>
-          <MachineFaultCodesPanel />
-          <FaultReportsPanel />
-          <WorkInstructionsPanel />
-          <DowntimePeriodsPanel />
+          <CollapsibleSection title="Fault codes & reports" defaultOpen>
+            <MachineFaultCodesPanel />
+            <FaultReportsPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Work instructions">
+            <WorkInstructionsPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Downtime">
+            <DowntimePeriodsPanel />
+          </CollapsibleSection>
         </div>
       )}
       {activeTab === "maintenance" && (
         <div>
-          <MaintenanceWorkOrdersPanel />
-          <PreventiveSchedulesPanel />
+          <CollapsibleSection title="Work orders" defaultOpen>
+            <MaintenanceWorkOrdersPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Preventive schedules">
+            <PreventiveSchedulesPanel />
+          </CollapsibleSection>
         </div>
       )}
 
@@ -188,11 +205,19 @@ export default function App() {
 
       {activeTab === "admin" && (
         <div>
-          <MachineRegistryPanel />
-          <MachineStatusDefinitionsPanel />
-          <TerminalUisPanel />
-          <EdgeNodesPanel />
-          <AuditLogPanel />
+          <CollapsibleSection title="Machines" defaultOpen>
+            <MachineRegistryPanel />
+            <MachineStatusDefinitionsPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Terminals">
+            <TerminalUisPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Edge nodes">
+            <EdgeNodesPanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Audit log">
+            <AuditLogPanel />
+          </CollapsibleSection>
         </div>
       )}
     </div>
