@@ -135,6 +135,7 @@ import {
 import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
 import { getWorkOrderProgress } from "./work-orders-repository.js";
 import { getCurrentShiftSummaryForMachine } from "./shift-summary-repository.js";
+import { getStatusTimeline } from "./machine-status-timeline-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1483,6 +1484,22 @@ app.delete<{ Params: { id: string } }>(
       }
       return summary;
   });
+
+  app.get<{ Params: { machineId: string }; Querystring: { from: string; to: string } }>(
+    "/api/machines/:machineId/status-timeline",
+    async (request, reply) => {
+      if (!request.user) {
+        reply.code(401);
+        return { error: "authentication required" };
+      }
+      const { from, to } = request.query;
+      if (!from || !to) {
+        reply.code(400);
+        return { error: "from and to are required" };
+      }
+      return getStatusTimeline(request.params.machineId, new Date(from), new Date(to));
+    },
+  );
 
   return app;
 }
