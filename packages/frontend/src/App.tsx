@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { MachineEvent, MachineStatusValue } from "@mes/shared";
-import ShiftSummaryPanel from "./ShiftSummaryPanel.js";
+import MachineOverviewPanel from "./MachineOverviewPanel.js";
 import MachineRegistryPanel from "./MachineRegistryPanel.js";
 import { useAuth } from "./auth-context.js";
 import LoginForm from "./LoginForm.js";
@@ -25,8 +25,6 @@ import MachineHistoryPanel from "./MachineHistoryPanel";
 interface MachineState {
   machineId: string;
   status: MachineStatusValue;
-  goodCount: number;
-  scrapCount: number;
   lastUpdated: string;
 }
 
@@ -35,14 +33,6 @@ type ServerMessage =
   | { type: "event"; event: MachineEvent };
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-
-const STATUS_COLOR: Record<string, string> = {
-  running: "#0ca30c",
-  idle: "#898781",
-  down: "#d03b3b",
-  changeover: "#eda100",
-};
-const DEFAULT_STATUS_COLOR = "#185fa5";
 
 const TABS = [
   { id: "overview", label: "Overview" },
@@ -61,20 +51,11 @@ function applyEventToMachines(
 ): Record<string, MachineState> {
   const existing =
     machines[event.machineId] ??
-    ({
-      machineId: event.machineId,
-      status: "idle",
-      goodCount: 0,
-      scrapCount: 0,
-      lastUpdated: event.timestamp,
-    } satisfies MachineState);
+    ({ machineId: event.machineId, status: "idle", lastUpdated: event.timestamp } satisfies MachineState);
 
   const updated: MachineState = { ...existing, lastUpdated: event.timestamp };
   if (event.type === "machine_status") {
     updated.status = event.status;
-  } else if (event.type === "production_count") {
-    if (event.result === "good") updated.goodCount += 1;
-    else updated.scrapCount += 1;
   }
   return { ...machines, [event.machineId]: updated };
 }
@@ -129,10 +110,6 @@ export default function App() {
     return <LoginForm />;
   }
 
-  const machineList = Object.values(machines).sort((a, b) =>
-    a.machineId.localeCompare(b.machineId),
-  );
-
   return (
     <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 900, margin: "40px auto", padding: "0 16px" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -174,56 +151,7 @@ export default function App() {
 
       {activeTab === "overview" && (
         <div>
-          {machineList.length === 0 && (
-            <p style={{ color: "#898781" }}>Waiting for the first event from the edge agent…</p>
-          )}
-          {machineList.map((m) => (
-            <div
-              key={m.machineId}
-              style={{
-                border: "1px solid #e1e0d9",
-                borderRadius: 10,
-                padding: 16,
-                marginTop: 12,
-                display: "flex",
-                alignItems: "center",
-                gap: 20,
-              }}
-            >
-              <div>
-                <div style={{ fontSize: 13, color: "#898781" }}>Machine</div>
-                <div style={{ fontWeight: 600 }}>{m.machineId}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 13, color: "#898781" }}>Status</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}>
-                  <span
-                    style={{
-                      width: 9,
-                      height: 9,
-                      borderRadius: "50%",
-                      background: STATUS_COLOR[m.status] ?? DEFAULT_STATUS_COLOR,
-                      display: "inline-block",
-                    }}
-                  />
-                  {m.status}
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 13, color: "#898781" }}>Good</div>
-                <div style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{m.goodCount}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 13, color: "#898781" }}>Scrap</div>
-                <div style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{m.scrapCount}</div>
-              </div>
-              <div>
-                <div style={{ fontSize: 13, color: "#898781" }}>Last update</div>
-                <div style={{ fontSize: 13 }}>{new Date(m.lastUpdated).toLocaleTimeString()}</div>
-              </div>
-            </div>
-          ))}
-          <ShiftSummaryPanel />
+          <MachineOverviewPanel liveState={machines} />
           <MachineHistoryPanel />
         </div>
       )}
@@ -249,7 +177,7 @@ export default function App() {
         <div>
           <MaintenanceWorkOrdersPanel />
           <PreventiveSchedulesPanel />
-          </div>
+        </div>
       )}
 
       {activeTab === "alerts" && (

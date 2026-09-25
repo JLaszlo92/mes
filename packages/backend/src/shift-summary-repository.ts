@@ -215,8 +215,16 @@ export async function getShiftSummary(from: Date, to: Date): Promise<ShiftSummar
  */
 export async function getCurrentShiftSummaryForMachine(machineId: string): Promise<ShiftSummary | undefined> {
   const now = new Date();
+  const currentShiftResult = await pool.query<{ shift_date: string; shift_name: string }>(
+    `SELECT shift_date::text, shift_name FROM resolve_shift($1)`,
+    [now],
+  );
+  const current = currentShiftResult.rows[0];
+  if (!current) return undefined;
+
   const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const summaries = await getShiftSummary(from, now);
-  const forMachine = summaries.filter((s) => s.machineId === machineId);
-  return forMachine[forMachine.length - 1];
+  return summaries.find(
+    (s) => s.machineId === machineId && s.shiftDate === current.shift_date && s.shiftName === current.shift_name,
+  );
 }

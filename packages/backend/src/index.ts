@@ -6,13 +6,19 @@ import { startAlertEvaluator } from "./alert-evaluator.js";
 import { startPreventiveMaintenanceEvaluator } from "./preventive-maintenance-evaluator.js";
 import { startDowntimeEvaluator } from "./downtime-periods-evaluator.js";
 import { startWorkOrderAutoCompleteEvaluator } from "./work-order-auto-complete-evaluator.js";
+import { stateStore } from "./state.js";
 
 async function main(): Promise<void> {
   await runMigrations();
 
+  // Induláskor visszatöltjük minden gép legutóbbi ismert állapotát a
+  // Postgres-ből — enélkül minden gép hamisan "idle"-nek látszana a
+  // dashboardon, amíg a következő valódi machine_status esemény meg nem
+  // érkezik.
+  await stateStore.rehydrateStatuses();
+
   const app = await buildServer();
   startMqttSubscriber(app.log);
-  startAlertEvaluator(app.log);
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`backend listening on http://${config.host}:${config.port}`);

@@ -1,4 +1,5 @@
 import type { MachineEvent, MachineStatusValue } from "@mes/shared";
+import { pool } from "./db.js";
 
 export interface MachineState {
   machineId: string;
@@ -53,6 +54,28 @@ class MachineStateStore {
   getAll(): MachineState[] {
     return [...this.machines.values()].map((s) => ({ ...s }));
   }
+
+    /**
+   * Induláskor (és csak induláskor) visszatölti minden gép LEGUTÓBBI
+   * ismert állapotát a Postgres events táblájából — enélkül minden
+   * backend-újraindítás után minden gép hamisan "idle"-nek látszana,
+   * amíg a következő valódi machine_status esemény meg nem érkezik.
+   */
+  async rehydrateStatuses(): Promise<void> {
+    const result = await pool.query<{ machine_id: string; status: string; timestamp: string }>(
+      `SELECT DISTINCT ON (machine_id) machine_id, payload->>'status' AS status, "timestamp"
+       FROM events
+       WHERE type = 'machine_status'
+       ORDER BY machine_id, "timestamp" DESC`,
+    );
+    for (const row of result.rows) {
+      const state = this.getOrCreate(row.machine_id);
+      state.status = row.status as MachineStatusValue;
+      state.lastUpdated = row.timestamp;
+    }
+  }
+
 }
+
 
 export const stateStore = new MachineStateStore();
