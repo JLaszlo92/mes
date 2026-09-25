@@ -9,6 +9,9 @@ export interface Machine {
   location: string | null;
   idealCycleTimeSeconds: number | null;
   isActive: boolean;
+  shiftPatternId: string | null;
+  calendarId: string | null;
+  autoOffshiftStatus: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -19,6 +22,9 @@ type MachineRow = {
   asset_type: string | null;
   location: string | null;
   is_active: boolean;
+  shift_pattern_id: string | null;
+  calendar_id: string | null;
+  auto_offshift_status: boolean;
   created_at: string;
   updated_at: string;
   ideal_cycle_time_seconds: string | null;
@@ -31,6 +37,9 @@ function toMachine(row: MachineRow): Machine {
     assetType: row.asset_type,
     location: row.location,
     isActive: row.is_active,
+    shiftPatternId: row.shift_pattern_id,
+    calendarId: row.calendar_id,
+    autoOffshiftStatus: row.auto_offshift_status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     idealCycleTimeSeconds: row.ideal_cycle_time_seconds ? Number(row.ideal_cycle_time_seconds) : null,

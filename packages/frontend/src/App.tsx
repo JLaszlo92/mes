@@ -22,6 +22,7 @@ import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
 import CollapsibleSection from "./CollapsibleSection.js";
+import ShiftPatternsPanel from "./ShiftPatternsPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -208,6 +209,7 @@ export default function App() {
           <CollapsibleSection title="Machines" defaultOpen>
             <MachineRegistryPanel />
             <MachineStatusDefinitionsPanel />
+            <ShiftPatternsPanel />
           </CollapsibleSection>
           <CollapsibleSection title="Terminals">
             <TerminalUisPanel />

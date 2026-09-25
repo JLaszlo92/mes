@@ -1,6 +1,15 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
 
+interface ShiftPattern {
+  id: string;
+  name: string;
+}
+interface Calendar {
+  id: string;
+  name: string;
+}
+
 interface Machine {
   id: string;
   name: string;
@@ -8,11 +17,15 @@ interface Machine {
   location: string | null;
   idealCycleTimeSeconds: number | null;
   isActive: boolean;
+  shiftPatternId: string | null;
+  calendarId: string | null;
+  autoOffshiftStatus: boolean;
 }
 
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
+
 
 const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
 const buttonStyle = {
@@ -32,6 +45,9 @@ const secondaryButtonStyle = {
 
 export default function MachineRegistryPanel() {
   const { auth, logout } = useAuth();
+  const [shiftPatterns, setShiftPatterns] = useState<ShiftPattern[]>([]);
+  const [calendars, setCalendars] = useState<Calendar[]>([]);
+  const [savingSchedulingId, setSavingSchedulingId] = useState<string | null>(null);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,6 +66,12 @@ export default function MachineRegistryPanel() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+    fetch(`${API_BASE}/api/shift-patterns`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setShiftPatterns);
+    fetch(`${API_BASE}/api/calendars`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setCalendars);
   }
 
   useEffect(load, []);
@@ -136,6 +158,17 @@ export default function MachineRegistryPanel() {
     } finally {
       setSavingId(null);
     }
+  }
+
+  async function updateScheduling(machineId: string, changes: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean }) {
+    setSavingSchedulingId(machineId);
+    await fetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(machineId)}/scheduling`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+      body: JSON.stringify(changes),
+    });
+    load();
+    setSavingSchedulingId(null);
   }
 
   async function toggleActive(m: Machine) {
@@ -251,6 +284,19 @@ export default function MachineRegistryPanel() {
               <div>{m.idealCycleTimeSeconds ?? "—"}s</div>
             </div>
             {!m.isActive && <div style={{ fontSize: 12, color: "#d03b3b" }}>inactive</div>}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <select value={m.shiftPatternId ?? ""} onChange={(e) => updateScheduling(m.id, { shiftPatternId: e.target.value })} style={{ ...inputStyle, fontSize: 12 }} disabled={savingSchedulingId === m.id}>
+                {shiftPatterns.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <select value={m.calendarId ?? ""} onChange={(e) => updateScheduling(m.id, { calendarId: e.target.value })} style={{ ...inputStyle, fontSize: 12 }} disabled={savingSchedulingId === m.id}>
+                {calendars.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}>
+                <input type="checkbox" checked={m.autoOffshiftStatus} onChange={(e) => updateScheduling(m.id, { autoOffshiftStatus: e.target.checked })} disabled={savingSchedulingId === m.id} />
+                Auto off-shift
+              </label>
+            </div>
+
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button type="button" onClick={() => startEdit(m)} style={secondaryButtonStyle}>
                 Edit

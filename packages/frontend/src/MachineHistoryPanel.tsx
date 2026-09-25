@@ -69,10 +69,12 @@ export default function MachineHistoryPanel() {
         setMachines(data);
         setMachineId((prev) => prev || data[0]?.id || "");
       });
-    fetch(`${API_BASE}/api/status-definitions`)
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setStatusDefs)
-      .catch(() => {});
+    if (auth) {
+      fetch(`${API_BASE}/api/status-definitions`, { headers: { Authorization: `Bearer ${auth.token}` } })
+        .then((r) => (r.ok ? r.json() : []))
+        .then(setStatusDefs)
+        .catch(() => {});
+    }
   }, []);
 
   useEffect(() => {

@@ -136,6 +136,18 @@ import { getMachineHistory, type BucketUnit } from "./machine-history-repository
 import { getWorkOrderProgress } from "./work-orders-repository.js";
 import { getCurrentShiftSummaryForMachine } from "./shift-summary-repository.js";
 import { getStatusTimeline } from "./machine-status-timeline-repository.js";
+import {
+  listShiftPatterns,
+  createShiftPattern,
+  deleteShiftPattern,
+  addShiftToPattern,
+  deleteShift,
+  listCalendars,
+  createCalendar,
+  updateCalendarWorkingDays,
+  deleteCalendar,
+  assignMachineScheduling,
+} from "./shift-patterns-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1500,6 +1512,100 @@ app.delete<{ Params: { id: string } }>(
       return getStatusTimeline(request.params.machineId, new Date(from), new Date(to));
     },
   );
+  app.get("/api/shift-patterns", { preHandler: requireRole("admin", "manager") }, async () => listShiftPatterns());
+
+app.post<{ Body: { name: string } }>(
+  "/api/shift-patterns",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const pattern = await createShiftPattern(request.body.name);
+    reply.code(201);
+    return pattern;
+  },
+);
+
+app.delete<{ Params: { id: string } }>(
+  "/api/shift-patterns/:id",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const deleted = await deleteShiftPattern(request.params.id);
+    if (!deleted) {
+      reply.code(404);
+      return { error: "unknown pattern" };
+    }
+    reply.code(204);
+    return null;
+  },
+);
+
+app.post<{ Params: { id: string }; Body: { name: string; startTime: string; endTime: string } }>(
+  "/api/shift-patterns/:id/shifts",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const shift = await addShiftToPattern(request.params.id, request.body);
+    reply.code(201);
+    return shift;
+  },
+);
+
+app.delete<{ Params: { shiftId: string } }>(
+  "/api/shift-pattern-shifts/:shiftId",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const deleted = await deleteShift(request.params.shiftId);
+    if (!deleted) {
+      reply.code(404);
+      return { error: "unknown shift" };
+    }
+    reply.code(204);
+    return null;
+  },
+);
+
+app.get("/api/calendars", { preHandler: requireRole("admin", "manager") }, async () => listCalendars());
+
+app.post<{ Body: { name: string; workingDays: boolean[] } }>(
+  "/api/calendars",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const calendar = await createCalendar(request.body.name, request.body.workingDays);
+    reply.code(201);
+    return calendar;
+  },
+);
+
+app.put<{ Params: { id: string }; Body: { workingDays: boolean[] } }>(
+  "/api/calendars/:id",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    await updateCalendarWorkingDays(request.params.id, request.body.workingDays);
+    reply.code(204);
+    return null;
+  },
+);
+
+app.delete<{ Params: { id: string } }>(
+  "/api/calendars/:id",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const deleted = await deleteCalendar(request.params.id);
+    if (!deleted) {
+      reply.code(404);
+      return { error: "unknown calendar" };
+    }
+    reply.code(204);
+    return null;
+  },
+);
+
+  app.put<{
+    Params: { id: string };
+    Body: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean };
+  }>("/api/machine-registry/:id/scheduling", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    await assignMachineScheduling(request.params.id, request.body);
+    reply.code(204);
+    return null;
+  });
 
   return app;
 }
