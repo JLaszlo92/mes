@@ -148,6 +148,8 @@ import {
   deleteCalendar,
   assignMachineScheduling,
 } from "./shift-patterns-repository.js";
+import { getCurrentShiftSummaryForAllMachines } from "./shift-summary-repository.js";
+import { startProductionRollupEvaluator } from "./production-rollup-evaluator.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1605,6 +1607,14 @@ app.delete<{ Params: { id: string } }>(
     await assignMachineScheduling(request.params.id, request.body);
     reply.code(204);
     return null;
+  });
+
+  app.get("/api/machines/current-shift", async (request, reply) => {
+  if (!request.user) {
+    reply.code(401);
+    return { error: "authentication required" };
+  }
+  return getCurrentShiftSummaryForAllMachines();
   });
 
   return app;

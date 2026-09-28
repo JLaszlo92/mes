@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "./auth-context.js";
 
 interface Machine {
   id: string;
@@ -40,6 +41,7 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
   const [machines, setMachines] = useState<Machine[]>([]);
   const [shiftByMachine, setShiftByMachine] = useState<Record<string, CurrentShift>>({});
   const [error, setError] = useState<string | null>(null);
+  const { auth } = useAuth();
 
   useEffect(() => {
     fetch(`${API_BASE}/api/machine-registry`)
@@ -48,27 +50,24 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
       .catch((err) => setError(String(err)));
   }, []);
 
-  useEffect(() => {
-    if (machines.length === 0) return;
+    useEffect(() => {
+    if (machines.length === 0 || !auth) return;
 
     function loadShifts() {
-      Promise.all(
-        machines.map((m) =>
-          fetch(`${API_BASE}/api/machines/${encodeURIComponent(m.id)}/current-shift`)
-            .then((r) => (r.ok ? r.json() : null))
-            .then((summary: CurrentShift | null) => [m.id, summary] as const),
-        ),
-      ).then((pairs) => {
-        const next: Record<string, CurrentShift> = {};
-        for (const [id, summary] of pairs) if (summary) next[id] = summary;
-        setShiftByMachine(next);
-      });
+      fetch(`${API_BASE}/api/machines/current-shift`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+        .then((r) => (r.ok ? r.json() : []))
+        .then((rows: (CurrentShift & { machineId: string })[]) => {
+          const next: Record<string, CurrentShift> = {};
+          for (const row of rows) next[row.machineId] = row;
+          setShiftByMachine(next);
+        })
+        .catch(() => {});
     }
 
     loadShifts();
     const timer = setInterval(loadShifts, 10000);
     return () => clearInterval(timer);
-  }, [machines]);
+  }, [machines, auth]);
 
   if (error) return <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>;
   if (machines.length === 0) return <p style={{ color: "#898781" }}>No machines registered yet.</p>;

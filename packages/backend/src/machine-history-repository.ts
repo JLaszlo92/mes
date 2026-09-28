@@ -86,11 +86,11 @@ export async function getMachineHistory(
     ),
     counts AS (
       SELECT vb.bucket_start,
-             COUNT(*) FILTER (WHERE e.payload->>'result' = 'good') AS good_count,
-             COUNT(*) FILTER (WHERE e.payload->>'result' = 'scrap') AS scrap_count
+             COALESCE(SUM(pch.good_count), 0) AS good_count,
+             COALESCE(SUM(pch.scrap_count), 0) AS scrap_count
       FROM valid_buckets vb
-      LEFT JOIN events e ON e.type = 'production_count' AND e.machine_id = $1
-        AND e."timestamp" >= vb.bucket_start AND e."timestamp" < vb.bucket_end
+      LEFT JOIN production_counts_hourly pch ON pch.machine_id = $1
+        AND pch.bucket_start >= vb.bucket_start AND pch.bucket_start < vb.bucket_end
       GROUP BY vb.bucket_start
     ),
     raw_status AS (
@@ -183,5 +183,10 @@ export async function getMachineHistory(
       oee,
       avgCycleTimeSeconds,
     };
-  });
+  }
+
+
+);
+
+  
 }
