@@ -13,7 +13,7 @@ import { z } from "zod";
  * by `type` and handled independently.
  */
 
-export const MachineStatusValue = z.enum(["running", "idle", "down", "changeover"]);
+export const MachineStatusValue = z.string().min(1);
 export type MachineStatusValue = z.infer<typeof MachineStatusValue>;
 
 const baseEventFields = {

@@ -8,6 +8,7 @@ import { startDowntimeEvaluator } from "./downtime-periods-evaluator.js";
 import { startWorkOrderAutoCompleteEvaluator } from "./work-order-auto-complete-evaluator.js";
 import { stateStore } from "./state.js";
 import { startProductionRollupEvaluator } from "./production-rollup-evaluator.js";
+import { startOffShiftEvaluator } from "./off-shift-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -29,6 +30,7 @@ async function main(): Promise<void> {
   startDowntimeEvaluator(app.log);
   startWorkOrderAutoCompleteEvaluator(app.log);
   startProductionRollupEvaluator(app.log);
+  startOffShiftEvaluator(app.log);
 }
 
 main().catch((err) => {

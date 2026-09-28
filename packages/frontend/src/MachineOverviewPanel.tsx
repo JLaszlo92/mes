@@ -30,6 +30,7 @@ const STATUS_COLOR: Record<string, string> = {
   idle: "#898781",
   down: "#d03b3b",
   changeover: "#eda100",
+  off_shift: "#5b6b7a",
 };
 const DEFAULT_STATUS_COLOR = "#185fa5";
 
