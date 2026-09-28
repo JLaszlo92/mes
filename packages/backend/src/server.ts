@@ -151,6 +151,7 @@ import {
 import { getCurrentShiftSummaryForAllMachines } from "./shift-summary-repository.js";
 import { validateSchedulingWindow } from "./shift-patterns-repository.js";
 import { updateAssignment } from "./work-order-assignments-repository.js";
+import { getOffShiftSegments } from "./off-shift-segments-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1639,6 +1640,18 @@ app.delete<{ Params: { id: string } }>(
       return { error: "unknown assignment" };
     }
     return assignment;
+  },
+  );
+
+  app.get<{ Params: { machineId: string }; Querystring: { from: string; to: string } }>(
+  "/api/machines/:machineId/off-shift-segments",
+  async (request, reply) => {
+    const { from, to } = request.query;
+    if (!from || !to) {
+      reply.code(400);
+      return { error: "from and to are required" };
+    }
+    return getOffShiftSegments(request.params.machineId, new Date(from), new Date(to));
   },
   );
 
