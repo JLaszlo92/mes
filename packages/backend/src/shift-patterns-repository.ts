@@ -134,3 +134,41 @@ export async function assignMachineScheduling(
     [machineId, input.shiftPatternId ?? null, input.calendarId ?? null, input.autoOffshiftStatus ?? null],
   );
 }
+
+export interface WindowValidation {
+  valid: boolean;
+  reason?: string;
+}
+
+/**
+ * Óránként mintavételezi a [start, end) ablakot resolve_shift()-tel — ha
+ * bármelyik minta "off_shift"-et ad vissza, az ablak érvénytelen. Ez
+ * biztosítja, hogy egy megbízás csak olyan időre kerülhessen, ami a gép
+ * naptára ÉS műszakrendje szerint is tényleges munkaidő.
+ */
+export async function validateSchedulingWindow(
+  machineId: string,
+  start: Date,
+  end: Date,
+): Promise<WindowValidation> {
+  const samples: Date[] = [start];
+  let cursor = new Date(start);
+  cursor.setMinutes(0, 0, 0);
+  cursor = new Date(cursor.getTime() + 60 * 60 * 1000);
+  while (cursor < end) {
+    samples.push(new Date(cursor));
+    cursor = new Date(cursor.getTime() + 60 * 60 * 1000);
+  }
+  samples.push(new Date(end.getTime() - 1));
+
+  for (const sample of samples) {
+    const result = await pool.query<{ shift_name: string }>(`SELECT shift_name FROM resolve_shift($1, $2)`, [
+      machineId,
+      sample,
+    ]);
+    if (result.rows[0]?.shift_name === "off_shift") {
+      return { valid: false, reason: `${sample.toLocaleString()} is outside working hours` };
+    }
+  }
+  return { valid: true };
+}

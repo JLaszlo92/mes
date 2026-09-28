@@ -23,6 +23,7 @@ import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
 import CollapsibleSection from "./CollapsibleSection.js";
 import ShiftPatternsPanel from "./ShiftPatternsPanel.js";
+import GanttSchedulePanel from "./GanttSchedulePanel";
 
 interface MachineState {
   machineId: string;
@@ -165,6 +166,9 @@ export default function App() {
           </CollapsibleSection>
           <CollapsibleSection title="Scheduling">
             <SchedulePanel />
+          </CollapsibleSection>
+          <CollapsibleSection title="Gantt schedule" defaultOpen>
+            <GanttSchedulePanel />
           </CollapsibleSection>
           <CollapsibleSection title="Traceability (lots & material)">
             <LotsPanel />

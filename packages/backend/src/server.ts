@@ -149,7 +149,8 @@ import {
   assignMachineScheduling,
 } from "./shift-patterns-repository.js";
 import { getCurrentShiftSummaryForAllMachines } from "./shift-summary-repository.js";
-import { startProductionRollupEvaluator } from "./production-rollup-evaluator.js";
+import { validateSchedulingWindow } from "./shift-patterns-repository.js";
+import { updateAssignment } from "./work-order-assignments-repository.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -1616,6 +1617,30 @@ app.delete<{ Params: { id: string } }>(
   }
   return getCurrentShiftSummaryForAllMachines();
   });
+  app.get<{ Params: { machineId: string }; Querystring: { start: string; end: string } }>(
+  "/api/machines/:machineId/validate-window",
+  async (request, reply) => {
+    const { start, end } = request.query;
+    if (!start || !end) {
+      reply.code(400);
+      return { error: "start and end are required" };
+    }
+    return validateSchedulingWindow(request.params.machineId, new Date(start), new Date(end));
+  },
+  );
+
+  app.put<{ Params: { id: string }; Body: { machineId?: string; plannedStart?: string; plannedEnd?: string } }>(
+  "/api/work-order-assignments/:id",
+  { preHandler: requireRole("admin", "manager") },
+  async (request, reply) => {
+    const assignment = await updateAssignment(request.params.id, request.body);
+    if (!assignment) {
+      reply.code(404);
+      return { error: "unknown assignment" };
+    }
+    return assignment;
+  },
+  );
 
   return app;
 }

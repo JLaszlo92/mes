@@ -101,3 +101,21 @@ export function isForeignKeyViolation(err: unknown): boolean {
 export function isCheckViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23514";
 }
+export interface UpdateAssignmentInput {
+  machineId?: string;
+  plannedStart?: string;
+  plannedEnd?: string;
+}
+
+export async function updateAssignment(id: string, input: UpdateAssignmentInput): Promise<Assignment | undefined> {
+  await pool.query(
+    `UPDATE work_order_assignments SET
+       machine_id = COALESCE($2, machine_id),
+       planned_start = COALESCE($3, planned_start),
+       planned_end = COALESCE($4, planned_end)
+     WHERE id = $1`,
+    [id, input.machineId ?? null, input.plannedStart ?? null, input.plannedEnd ?? null],
+  );
+  const result = await pool.query<AssignmentRow>(`${SELECT_JOINED} WHERE woa.id = $1`, [id]);
+  return result.rows[0] ? toAssignment(result.rows[0]) : undefined;
+}
