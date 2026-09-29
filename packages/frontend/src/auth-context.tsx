@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { API_BASE, setApiToken, setUnauthorizedHandler } from "./api.js";
 
 interface AuthState {
   token: string;
@@ -17,41 +18,78 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 const STORAGE_KEY = "mes-auth";
 
-export function AuthProvider({ children }: { children: ReactNode }) {
-  const [auth, setAuth] = useState<AuthState | null>(() => {
+function readStoredAuth(): AuthState | null {
+  try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as AuthState) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<AuthState>;
+    return typeof parsed.token === "string" && typeof parsed.role === "string"
+      ? { token: parsed.token, role: parsed.role }
+      : null;
+  } catch {
+    // Sérült localStorage érték ne akassza meg az egész alkalmazást.
+    return null;
+  }
+}
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [auth, setAuthState] = useState<AuthState | null>(() => {
+    const stored = readStoredAuth();
+    // Szinkronban, még az első render előtt: a gyerek komponensek effektjei
+    // a szülőé ELŐTT futnak, így egy useEffect-ben beállított token az első
+    // API-hívásokról lemaradna.
+    setApiToken(stored?.token ?? null);
+    return stored;
   });
   const [mfaPendingToken, setMfaPendingToken] = useState<string | null>(null);
   const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
+
+  /** Az auth állapot egyetlen írási pontja — az apiFetch tokenjét is szinkronban frissíti. */
+  const applyAuth = useCallback((next: AuthState | null) => {
+    setApiToken(next?.token ?? null);
+    setAuthState(next);
+  }, []);
 
   useEffect(() => {
     if (auth) localStorage.setItem(STORAGE_KEY, JSON.stringify(auth));
     else localStorage.removeItem(STORAGE_KEY);
   }, [auth]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const res = await fetch(`${API_BASE}/api/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+  // Lejárt vagy visszavont session: bármely hitelesített API-hívás 401-e
+  // kilépteti a felhasználót. A szerveroldali session ilyenkor már nem él,
+  // ezért logout-kérést nem küldünk.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      applyAuth(null);
+      setMfaPendingToken(null);
+      setMfaSetupRequired(false);
     });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-    }
-    const data = await res.json();
-    if (data.mfaRequired) {
-      setMfaPendingToken(data.pendingToken);
-      return;
-    }
-    setAuth({ token: data.token, role: data.role });
-    setMfaSetupRequired(Boolean(data.mfaSetupRequired));
-  }, []);
+    return () => setUnauthorizedHandler(null);
+  }, [applyAuth]);
+
+  const login = useCallback(
+    async (email: string, password: string) => {
+      const res = await fetch(`${API_BASE}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+      }
+      const data = await res.json();
+      if (data.mfaRequired) {
+        setMfaPendingToken(data.pendingToken);
+        return;
+      }
+      applyAuth({ token: data.token, role: data.role });
+      setMfaSetupRequired(Boolean(data.mfaSetupRequired));
+    },
+    [applyAuth],
+  );
 
   const submitMfaCode = useCallback(
     async (code: string) => {
@@ -66,9 +104,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const data = await res.json();
       setMfaPendingToken(null);
-      setAuth({ token: data.token, role: data.role });
+      applyAuth({ token: data.token, role: data.role });
     },
-    [mfaPendingToken],
+    [mfaPendingToken, applyAuth],
   );
 
   const completeMfaSetup = useCallback(() => setMfaSetupRequired(false), []);
@@ -80,10 +118,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         headers: { Authorization: `Bearer ${auth.token}` },
       }).catch(() => {});
     }
-    setAuth(null);
+    applyAuth(null);
     setMfaPendingToken(null);
     setMfaSetupRequired(false);
-  }, [auth]);
+  }, [auth, applyAuth]);
 
   return (
     <AuthContext.Provider

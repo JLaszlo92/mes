@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -78,16 +79,16 @@ export default function FaultReportsPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
         if (res.status === 401) {
           logout();
           throw new Error("session expired — please sign in again");
         }
         return res.json();
       }),
-      fetch(`${API_BASE}/api/corrective-actions`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
+      apiFetch(`${API_BASE}/api/corrective-actions`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
         (res) => {
           if (res.status === 401) {
             logout();
@@ -116,7 +117,7 @@ export default function FaultReportsPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/fault-reports`, {
+      const res = await apiFetch(`${API_BASE}/api/fault-reports`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -144,7 +145,7 @@ export default function FaultReportsPanel() {
   }
 
   async function review(id: string, status: "confirmed" | "modified" | "rejected", adjustedCount?: number) {
-    const res = await fetch(`${API_BASE}/api/fault-reports/${encodeURIComponent(id)}/review`, {
+    const res = await apiFetch(`${API_BASE}/api/fault-reports/${encodeURIComponent(id)}/review`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ status, adjustedCount }),
@@ -157,7 +158,7 @@ export default function FaultReportsPanel() {
   }
 
   async function createMaintenanceTicket(r: FaultReport) {
-    const res = await fetch(`${API_BASE}/api/maintenance-work-orders`, {
+    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({
@@ -176,7 +177,7 @@ export default function FaultReportsPanel() {
   async function addCorrectiveAction(faultReportId: string) {
     const description = (actionDrafts[faultReportId] ?? "").trim();
     if (!description) return;
-    const res = await fetch(`${API_BASE}/api/corrective-actions`, {
+    const res = await apiFetch(`${API_BASE}/api/corrective-actions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ faultReportId, description }),
@@ -190,7 +191,7 @@ export default function FaultReportsPanel() {
   }
 
   async function signOff(actionId: string) {
-    const res = await fetch(`${API_BASE}/api/corrective-actions/${encodeURIComponent(actionId)}/sign-off`, {
+    const res = await apiFetch(`${API_BASE}/api/corrective-actions/${encodeURIComponent(actionId)}/sign-off`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

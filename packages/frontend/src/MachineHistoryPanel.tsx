@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -63,14 +64,14 @@ export default function MachineHistoryPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry`)
       .then((r) => r.json())
       .then((data: Machine[]) => {
         setMachines(data);
         setMachineId((prev) => prev || data[0]?.id || "");
       });
     if (auth) {
-      fetch(`${API_BASE}/api/status-definitions`, { headers: { Authorization: `Bearer ${auth.token}` } })
+      apiFetch(`${API_BASE}/api/status-definitions`, { headers: { Authorization: `Bearer ${auth.token}` } })
         .then((r) => (r.ok ? r.json() : []))
         .then(setStatusDefs)
         .catch(() => {});
@@ -85,7 +86,7 @@ export default function MachineHistoryPanel() {
     setRangeStart(from);
     setRangeEnd(to);
 
-    fetch(
+    apiFetch(
       `${API_BASE}/api/machines/${encodeURIComponent(machineId)}/history?from=${from.toISOString()}&to=${to.toISOString()}&bucket=${bucket}`,
       { headers: { Authorization: `Bearer ${auth.token}` } },
     )
@@ -102,7 +103,7 @@ export default function MachineHistoryPanel() {
       })
       .catch((err) => setError(String(err)));
 
-    fetch(
+    apiFetch(
       `${API_BASE}/api/machines/${encodeURIComponent(machineId)}/status-timeline?from=${from.toISOString()}&to=${to.toISOString()}`,
       { headers: { Authorization: `Bearer ${auth.token}` } },
     )

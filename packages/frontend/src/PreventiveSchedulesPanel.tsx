@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -55,8 +56,8 @@ export default function PreventiveSchedulesPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/preventive-schedules`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/preventive-schedules`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
         (res) => {
           if (res.status === 401) {
             logout();
@@ -81,7 +82,7 @@ export default function PreventiveSchedulesPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/preventive-schedules`, {
+      const res = await apiFetch(`${API_BASE}/api/preventive-schedules`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -109,7 +110,7 @@ export default function PreventiveSchedulesPanel() {
   }
 
   async function remove(id: string) {
-    const res = await fetch(`${API_BASE}/api/preventive-schedules/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/preventive-schedules/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

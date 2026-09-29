@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface DowntimePeriod {
   id: string;
@@ -46,14 +47,14 @@ export default function DowntimePeriodsPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/downtime-periods/unexplained`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
+      apiFetch(`${API_BASE}/api/downtime-periods/unexplained`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
         if (res.status === 401) {
           logout();
           throw new Error("session expired — please sign in again");
         }
         return res.json();
       }),
-      fetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
     ])
       .then(([p, fc]) => {
         setPeriods(p);
@@ -66,7 +67,7 @@ export default function DowntimePeriodsPanel() {
   useEffect(load, []);
 
   async function explain(periodId: string, faultCodeId: string) {
-    const res = await fetch(`${API_BASE}/api/downtime-periods/${encodeURIComponent(periodId)}/explain`, {
+    const res = await apiFetch(`${API_BASE}/api/downtime-periods/${encodeURIComponent(periodId)}/explain`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ faultCodeId }),

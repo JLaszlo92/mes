@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface AuditEntry {
   id: string;
@@ -60,7 +61,7 @@ export default function AuditLogPanel() {
     const from = rangeStart(range);
     if (from) params.set("from", from);
 
-    fetch(`${API_BASE}/api/audit-log?${params.toString()}`, { headers: { Authorization: `Bearer ${auth.token}` } })
+    apiFetch(`${API_BASE}/api/audit-log?${params.toString()}`, { headers: { Authorization: `Bearer ${auth.token}` } })
       .then((res) => {
         if (res.status === 401) {
           logout();

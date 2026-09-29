@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -45,7 +46,7 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
   const { auth } = useAuth();
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry`)
       .then((r) => r.json())
       .then((data: Machine[]) => setMachines(data.filter((m) => m.isActive)))
       .catch((err) => setError(String(err)));
@@ -55,7 +56,7 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
     if (machines.length === 0 || !auth) return;
 
     function loadShifts() {
-      fetch(`${API_BASE}/api/machines/current-shift`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+      apiFetch(`${API_BASE}/api/machines/current-shift`, { headers: { Authorization: `Bearer ${auth?.token}` } })
         .then((r) => (r.ok ? r.json() : []))
         .then((rows: (CurrentShift & { machineId: string })[]) => {
           const next: Record<string, CurrentShift> = {};

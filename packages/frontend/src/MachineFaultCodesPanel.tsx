@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -42,7 +43,7 @@ export default function MachineFaultCodesPanel() {
   const isAdmin = auth?.role === "admin" || auth?.role === "manager";
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry`)
       .then((r) => r.json())
       .then((data: Machine[]) => {
         setMachines(data);
@@ -53,7 +54,7 @@ export default function MachineFaultCodesPanel() {
 
   function loadFaultCodes(machineId: string) {
     if (!machineId) return;
-    fetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
+    apiFetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
       .then((r) => r.json())
       .then(setFaultCodes)
       .catch((err) => setError(String(err)));
@@ -71,7 +72,7 @@ export default function MachineFaultCodesPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/fault-codes`, {
+      const res = await apiFetch(`${API_BASE}/api/fault-codes`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -99,7 +100,7 @@ export default function MachineFaultCodesPanel() {
   }
 
   async function remove(id: string) {
-    const res = await fetch(`${API_BASE}/api/fault-codes/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/fault-codes/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

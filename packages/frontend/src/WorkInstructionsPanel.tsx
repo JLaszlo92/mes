@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface WorkInstruction {
   id: string;
@@ -50,7 +51,7 @@ export default function WorkInstructionsPanel() {
   const canSeeLog = isAdmin || auth?.role === "supervisor";
 
   function load() {
-    fetch(`${API_BASE}/api/work-instructions`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+    apiFetch(`${API_BASE}/api/work-instructions`, { headers: { Authorization: `Bearer ${auth?.token}` } })
       .then((res) => {
         if (res.status === 401) {
           logout();
@@ -62,7 +63,7 @@ export default function WorkInstructionsPanel() {
       .catch((err) => setError(String(err)));
 
     if (canSeeLog) {
-      fetch(`${API_BASE}/api/work-instructions/views/log`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+      apiFetch(`${API_BASE}/api/work-instructions/views/log`, { headers: { Authorization: `Bearer ${auth?.token}` } })
         .then((res) => (res.ok ? res.json() : []))
         .then(setViews);
     }
@@ -75,7 +76,7 @@ export default function WorkInstructionsPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-instructions`, {
+      const res = await apiFetch(`${API_BASE}/api/work-instructions`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -103,7 +104,7 @@ export default function WorkInstructionsPanel() {
 
   async function showHistory(partName: string) {
     setHistoryFor(partName);
-    const res = await fetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}/versions`, {
+    const res = await apiFetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}/versions`, {
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
     if (res.ok) setHistory(await res.json());

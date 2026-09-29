@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Alert {
   id: string;
@@ -63,12 +64,12 @@ export default function AlertsPanel() {
 
   function load() {
     const calls: Promise<void>[] = [
-      fetch(`${API_BASE}/api/alerts`).then((r) => r.json()).then(setAlerts),
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()).then(setMachines),
+      apiFetch(`${API_BASE}/api/alerts`).then((r) => r.json()).then(setAlerts),
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()).then(setMachines),
     ];
     if (isAdmin) {
       calls.push(
-        fetch(`${API_BASE}/api/alert-rules`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+        apiFetch(`${API_BASE}/api/alert-rules`, { headers: { Authorization: `Bearer ${auth?.token}` } })
           .then((res) => {
             if (res.status === 401) {
               logout();
@@ -93,7 +94,7 @@ export default function AlertsPanel() {
   async function acknowledge(id: string) {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, {
+      const res = await apiFetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, {
         method: "POST",
         headers: { Authorization: `Bearer ${auth?.token}` },
       });
@@ -112,7 +113,7 @@ export default function AlertsPanel() {
   }
 
   async function createMaintenanceTicket(machineId: string, title: string, sourceType: string, sourceId: string) {
-    const res = await fetch(`${API_BASE}/api/maintenance-work-orders`, {
+    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ machineId, title, sourceType, sourceId }),
@@ -134,7 +135,7 @@ export default function AlertsPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/alert-rules`, {
+      const res = await apiFetch(`${API_BASE}/api/alert-rules`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -162,7 +163,7 @@ export default function AlertsPanel() {
   }
 
   async function toggleRuleActive(rule: AlertRule) {
-    const res = await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ isActive: !rule.isActive }),
@@ -175,7 +176,7 @@ export default function AlertsPanel() {
   }
 
   async function removeRule(id: string) {
-    const res = await fetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

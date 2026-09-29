@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { apiFetch } from "./api.js";
 
 interface ShiftSummary {
   shiftDate: string;
@@ -59,7 +60,7 @@ export default function ShiftSummaryPanel() {
     const from = new Date(to.getTime() - 24 * 60 * 60 * 1000);
     const url = `${API_BASE}/api/shifts/summary?from=${from.toISOString()}&to=${to.toISOString()}`;
 
-    fetch(url)
+    apiFetch(url)
       .then((res) => {
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.json() as Promise<ShiftSummary[]>;

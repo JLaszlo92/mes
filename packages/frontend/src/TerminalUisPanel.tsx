@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -39,8 +40,8 @@ export default function TerminalUisPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/terminal-uis`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/terminal-uis`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
     ])
       .then(([u, m]) => {
         setUis(u);
@@ -61,7 +62,7 @@ export default function TerminalUisPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/terminal-uis`, {
+      const res = await apiFetch(`${API_BASE}/api/terminal-uis`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({ name: name.trim(), machineIds: selectedMachineIds }),
@@ -87,7 +88,7 @@ export default function TerminalUisPanel() {
   async function remove(id: string) {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/terminal-uis/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/terminal-uis/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${auth?.token}` },
       });

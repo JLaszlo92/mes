@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface MaterialLot {
   id: string;
@@ -47,14 +48,14 @@ export default function MaterialLotsPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/material-lots`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
+      apiFetch(`${API_BASE}/api/material-lots`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
         if (res.status === 401) {
           logout();
           throw new Error("session expired — please sign in again");
         }
         return res.json();
       }),
-      fetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
     ])
       .then(([ml, wo]) => {
         setMaterialLots(ml);
@@ -68,7 +69,7 @@ export default function MaterialLotsPanel() {
 
   async function loadConsumption(workOrderId: string) {
     if (!workOrderId) return;
-    const res = await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/material-consumption`, {
+    const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/material-consumption`, {
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
     if (res.ok) {
@@ -82,7 +83,7 @@ export default function MaterialLotsPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/material-lots`, {
+      const res = await apiFetch(`${API_BASE}/api/material-lots`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -113,7 +114,7 @@ export default function MaterialLotsPanel() {
     e.preventDefault();
     setError(null);
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `${API_BASE}/api/work-orders/${encodeURIComponent(consumeForm.workOrderId)}/material-consumption`,
         {
           method: "POST",

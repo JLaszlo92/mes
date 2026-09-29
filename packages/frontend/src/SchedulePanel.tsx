@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface WorkOrder {
   id: string;
@@ -57,9 +58,9 @@ export default function SchedulePanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/work-order-assignments`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/work-order-assignments`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
     ])
       .then(([a, wo, m]) => {
         setAssignments(a);
@@ -77,7 +78,7 @@ export default function SchedulePanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-order-assignments`, {
+      const res = await apiFetch(`${API_BASE}/api/work-order-assignments`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -107,7 +108,7 @@ export default function SchedulePanel() {
   async function remove(id: string) {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-order-assignments/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/work-order-assignments/${encodeURIComponent(id)}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${auth?.token}` },
       });

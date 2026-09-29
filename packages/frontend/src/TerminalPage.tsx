@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import LoginForm from "./LoginForm.js";
+import { apiFetch } from "./api.js";
 
 interface TerminalUi {
   id: string;
@@ -103,7 +104,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const loggedViewsRef = useRef<Set<string>>(new Set());
 
   function load() {
-    fetch(`${API_BASE}/api/terminal-uis/${encodeURIComponent(terminalUiId)}`)
+    apiFetch(`${API_BASE}/api/terminal-uis/${encodeURIComponent(terminalUiId)}`)
       .then((res) => {
         if (!res.ok) throw new Error(`terminal UI not found (${res.status})`);
         return res.json();
@@ -114,26 +115,26 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         return Promise.all([
           Promise.all(
             data.machineIds.map((machineId) =>
-              fetch(`${API_BASE}/api/work-order-assignments?machineId=${encodeURIComponent(machineId)}`)
+              apiFetch(`${API_BASE}/api/work-order-assignments?machineId=${encodeURIComponent(machineId)}`)
                 .then((r) => r.json())
                 .then((assignments: Assignment[]) => [machineId, assignments] as const),
             ),
           ),
           Promise.all(
             data.machineIds.map((machineId) =>
-              fetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
+              apiFetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
                 .then((r) => r.json())
                 .then((codes: FaultCode[]) => [machineId, codes] as const),
             ),
           ),
           auth
-            ? fetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth.token}` } }).then((r) =>
+            ? apiFetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth.token}` } }).then((r) =>
                 r.ok ? r.json() : [],
               )
             : Promise.resolve([]),
           Promise.all(
             data.machineIds.map((machineId) =>
-              fetch(`${API_BASE}/api/machines/${encodeURIComponent(machineId)}/current-shift`)
+              apiFetch(`${API_BASE}/api/machines/${encodeURIComponent(machineId)}/current-shift`)
                 .then((r) => (r.ok ? r.json() : null))
                 .then((summary: ShiftSummary | null) => [machineId, summary] as const),
             ),
@@ -165,7 +166,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         );
         for (const partName of activePartNames) {
           if (partName in instructionsByPart) continue;
-          fetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}`, {
+          apiFetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}`, {
             headers: auth ? { Authorization: `Bearer ${auth.token}` } : {},
           })
             .then((res) => (res.ok ? res.json() : null))
@@ -182,7 +183,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         if (inProgressOrderIds.length > 0 && auth) {
           Promise.all(
             inProgressOrderIds.map((workOrderId) =>
-              fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/progress`, {
+              apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/progress`, {
                 headers: { Authorization: `Bearer ${auth.token}` },
               })
                 .then((res) => (res.ok ? res.json() : null))
@@ -218,7 +219,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         const key = `${instruction.id}:${a.workOrderId}`;
         if (loggedViewsRef.current.has(key)) continue;
         loggedViewsRef.current.add(key);
-        fetch(`${API_BASE}/api/work-instructions/view`, {
+        apiFetch(`${API_BASE}/api/work-instructions/view`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.token}` },
           body: JSON.stringify({ workInstructionId: instruction.id, workOrderId: a.workOrderId }),
@@ -233,7 +234,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   }
 
   async function startWorkOrder(workOrderId: string) {
-    await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
+    await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
       body: JSON.stringify({ status: "in_progress" }),
@@ -242,7 +243,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   }
 
   async function completeWorkOrder(workOrderId: string) {
-    await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
+    await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
       body: JSON.stringify({ status: "completed" }),
@@ -251,7 +252,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   }
 
   async function reportFault(machineId: string, faultCodeId: string, faultLabel: string) {
-    const res = await fetch(`${API_BASE}/api/fault-reports`, {
+    const res = await apiFetch(`${API_BASE}/api/fault-reports`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
       body: JSON.stringify({ machineId, faultCodeId, occurrenceCount: 1 }),

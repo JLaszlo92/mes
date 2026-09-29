@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -71,8 +72,8 @@ export default function MaintenanceWorkOrdersPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/maintenance-work-orders`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/maintenance-work-orders`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
         (res) => {
           if (res.status === 401) {
             logout();
@@ -94,10 +95,10 @@ export default function MaintenanceWorkOrdersPanel() {
 
   async function loadDetails(orderId: string) {
     const [parts, labor] = await Promise.all([
-      fetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
+      apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
         headers: { Authorization: `Bearer ${auth?.token}` },
       }).then((r) => (r.ok ? r.json() : [])),
-      fetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
+      apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
         headers: { Authorization: `Bearer ${auth?.token}` },
       }).then((r) => (r.ok ? r.json() : [])),
     ]);
@@ -110,7 +111,7 @@ export default function MaintenanceWorkOrdersPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/maintenance-work-orders`, {
+      const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -137,7 +138,7 @@ export default function MaintenanceWorkOrdersPanel() {
   }
 
   async function changeStatus(id: string, status: string) {
-    const res = await fetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ status }),
@@ -152,7 +153,7 @@ export default function MaintenanceWorkOrdersPanel() {
   async function addPart(orderId: string) {
     const partName = (partDrafts[orderId] ?? "").trim();
     if (!partName) return;
-    await fetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
+    await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ partName, quantity: 1 }),
@@ -164,7 +165,7 @@ export default function MaintenanceWorkOrdersPanel() {
   async function addLabor(orderId: string) {
     const hours = Number(laborDrafts[orderId]);
     if (!hours || hours <= 0) return;
-    await fetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
+    await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ hours }),

@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
@@ -13,7 +14,7 @@ export default function MfaSetup() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/auth/mfa/enroll`, {
+    apiFetch(`${API_BASE}/api/auth/mfa/enroll`, {
       method: "POST",
       headers: { Authorization: `Bearer ${auth?.token}` },
     })
@@ -30,7 +31,7 @@ export default function MfaSetup() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/auth/mfa/verify-enrollment`, {
+      const res = await apiFetch(`${API_BASE}/api/auth/mfa/verify-enrollment`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({ code }),

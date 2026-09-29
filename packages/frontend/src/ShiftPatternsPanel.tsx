@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Shift {
   id: string;
@@ -53,8 +54,8 @@ export default function ShiftPatternsPanel() {
   function load() {
     const headers = { Authorization: `Bearer ${auth?.token}` };
     Promise.all([
-      fetch(`${API_BASE}/api/shift-patterns`, { headers }).then((r) => (r.status === 401 ? (logout(), []) : r.json())),
-      fetch(`${API_BASE}/api/calendars`, { headers }).then((r) => (r.status === 401 ? (logout(), []) : r.json())),
+      apiFetch(`${API_BASE}/api/shift-patterns`, { headers }).then((r) => (r.status === 401 ? (logout(), []) : r.json())),
+      apiFetch(`${API_BASE}/api/calendars`, { headers }).then((r) => (r.status === 401 ? (logout(), []) : r.json())),
     ])
       .then(([p, c]) => {
         setPatterns(p);
@@ -68,7 +69,7 @@ export default function ShiftPatternsPanel() {
 
   async function createPattern(e: FormEvent) {
     e.preventDefault();
-    const res = await fetch(`${API_BASE}/api/shift-patterns`, {
+    const res = await apiFetch(`${API_BASE}/api/shift-patterns`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ name: newPatternName.trim() }),
@@ -83,7 +84,7 @@ export default function ShiftPatternsPanel() {
   }
 
   async function deletePattern(id: string) {
-    await fetch(`${API_BASE}/api/shift-patterns/${encodeURIComponent(id)}`, {
+    await apiFetch(`${API_BASE}/api/shift-patterns/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
@@ -92,7 +93,7 @@ export default function ShiftPatternsPanel() {
 
   async function addShift(patternId: string, e: FormEvent) {
     e.preventDefault();
-    const res = await fetch(`${API_BASE}/api/shift-patterns/${encodeURIComponent(patternId)}/shifts`, {
+    const res = await apiFetch(`${API_BASE}/api/shift-patterns/${encodeURIComponent(patternId)}/shifts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify(shiftForm),
@@ -108,7 +109,7 @@ export default function ShiftPatternsPanel() {
   }
 
   async function removeShift(shiftId: string) {
-    await fetch(`${API_BASE}/api/shift-pattern-shifts/${encodeURIComponent(shiftId)}`, {
+    await apiFetch(`${API_BASE}/api/shift-pattern-shifts/${encodeURIComponent(shiftId)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
@@ -117,7 +118,7 @@ export default function ShiftPatternsPanel() {
 
   async function createCalendar(e: FormEvent) {
     e.preventDefault();
-    const res = await fetch(`${API_BASE}/api/calendars`, {
+    const res = await apiFetch(`${API_BASE}/api/calendars`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ name: newCalendarName.trim(), workingDays: newCalendarDays }),
@@ -135,7 +136,7 @@ export default function ShiftPatternsPanel() {
   async function toggleCalendarDay(calendar: Calendar, day: number) {
     const updated = [...calendar.workingDays];
     updated[day] = !updated[day];
-    await fetch(`${API_BASE}/api/calendars/${encodeURIComponent(calendar.id)}`, {
+    await apiFetch(`${API_BASE}/api/calendars/${encodeURIComponent(calendar.id)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify({ workingDays: updated }),
@@ -144,7 +145,7 @@ export default function ShiftPatternsPanel() {
   }
 
   async function deleteCalendar(id: string) {
-    await fetch(`${API_BASE}/api/calendars/${encodeURIComponent(id)}`, {
+    await apiFetch(`${API_BASE}/api/calendars/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

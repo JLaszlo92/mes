@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Lot {
   id: string;
@@ -22,7 +23,7 @@ export default function LotsPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/lots`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+    apiFetch(`${API_BASE}/api/lots`, { headers: { Authorization: `Bearer ${auth?.token}` } })
       .then((res) => {
         if (res.status === 401) {
           logout();

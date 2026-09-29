@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface WorkOrder {
   id: string;
@@ -54,7 +55,7 @@ export default function WorkOrdersPanel() {
 
   function load() {
     setLoading(true);
-    fetch(`${API_BASE}/api/work-orders`)
+    apiFetch(`${API_BASE}/api/work-orders`)
       .then((res) => res.json())
       .then((data: WorkOrder[]) => {
         setWorkOrders(data);
@@ -71,7 +72,7 @@ export default function WorkOrdersPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-orders`, {
+      const res = await apiFetch(`${API_BASE}/api/work-orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -112,7 +113,7 @@ export default function WorkOrdersPanel() {
   async function changeStatus(id: string, status: string) {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({ status }),
@@ -134,7 +135,7 @@ export default function WorkOrdersPanel() {
   async function updateSettings(id: string, changes: { completionMode?: "manual" | "auto"; countOverproduction?: boolean }) {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify(changes),

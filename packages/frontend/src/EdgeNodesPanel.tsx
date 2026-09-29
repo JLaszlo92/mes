@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface Machine {
   id: string;
@@ -83,8 +84,8 @@ export default function EdgeNodesPanel() {
 
   function load() {
     Promise.all([
-      fetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
-      fetch(`${API_BASE}/api/edge-nodes`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/edge-nodes`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
         if (res.status === 401) {
           logout();
           throw new Error("session expired — please sign in again");
@@ -107,7 +108,7 @@ export default function EdgeNodesPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/edge-nodes`, {
+      const res = await apiFetch(`${API_BASE}/api/edge-nodes`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({ name: newNodeName.trim() }),
@@ -132,7 +133,7 @@ export default function EdgeNodesPanel() {
   }
 
   async function removeNode(id: string) {
-    const res = await fetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}`, {
+    const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
@@ -144,7 +145,7 @@ export default function EdgeNodesPanel() {
   }
 
   async function regenerateToken(id: string, name: string) {
-    const res = await fetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}/regenerate-token`, {
+    const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}/regenerate-token`, {
       method: "POST",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });
@@ -196,7 +197,7 @@ export default function EdgeNodesPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(edgeNodeId)}/channels`, {
+      const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(edgeNodeId)}/channels`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
         body: JSON.stringify({
@@ -227,7 +228,7 @@ export default function EdgeNodesPanel() {
   }
 
   async function removeChannel(channelId: string) {
-    const res = await fetch(`${API_BASE}/api/edge-node-channels/${encodeURIComponent(channelId)}`, {
+    const res = await apiFetch(`${API_BASE}/api/edge-node-channels/${encodeURIComponent(channelId)}`, {
       method: "DELETE",
       headers: { Authorization: `Bearer ${auth?.token}` },
     });

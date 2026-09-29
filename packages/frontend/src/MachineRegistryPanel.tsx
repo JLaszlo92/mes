@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
+import { apiFetch } from "./api.js";
 
 interface ShiftPattern {
   id: string;
@@ -58,7 +59,7 @@ export default function MachineRegistryPanel() {
 
   function load() {
     setLoading(true);
-    fetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry`)
       .then((res) => res.json())
       .then((data: Machine[]) => {
         setMachines(data);
@@ -66,10 +67,10 @@ export default function MachineRegistryPanel() {
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-    fetch(`${API_BASE}/api/shift-patterns`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+    apiFetch(`${API_BASE}/api/shift-patterns`, { headers: { Authorization: `Bearer ${auth?.token}` } })
       .then((r) => (r.ok ? r.json() : []))
       .then(setShiftPatterns);
-    fetch(`${API_BASE}/api/calendars`, { headers: { Authorization: `Bearer ${auth?.token}` } })
+    apiFetch(`${API_BASE}/api/calendars`, { headers: { Authorization: `Bearer ${auth?.token}` } })
       .then((r) => (r.ok ? r.json() : []))
       .then(setCalendars);
   }
@@ -81,7 +82,7 @@ export default function MachineRegistryPanel() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/machine-registry`, {
+      const res = await apiFetch(`${API_BASE}/api/machine-registry`, {
         method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -130,7 +131,7 @@ export default function MachineRegistryPanel() {
     setSavingId(id);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(id)}`, {
         method: "PUT",
           headers: {
             "Content-Type": "application/json",
@@ -162,7 +163,7 @@ export default function MachineRegistryPanel() {
 
   async function updateScheduling(machineId: string, changes: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean }) {
     setSavingSchedulingId(machineId);
-    await fetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(machineId)}/scheduling`, {
+    await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(machineId)}/scheduling`, {
       method: "PUT",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
       body: JSON.stringify(changes),
@@ -175,7 +176,7 @@ export default function MachineRegistryPanel() {
     setSavingId(m.id);
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(m.id)}`, {
+      const res = await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(m.id)}`, {
         method: "PUT",
         headers: {
         "Content-Type": "application/json",

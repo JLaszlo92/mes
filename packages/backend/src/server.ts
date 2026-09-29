@@ -150,8 +150,16 @@ import {
 } from "./shift-patterns-repository.js";
 import { getCurrentShiftSummaryForAllMachines } from "./shift-summary-repository.js";
 import { validateSchedulingWindow } from "./shift-patterns-repository.js";
-import { updateAssignment } from "./work-order-assignments-repository.js";
 import { getOffShiftSegments } from "./off-shift-segments-repository.js";
+
+import {
+  updateAssignment,
+  replaceScheduleForWorkOrder,
+  clearScheduleForWorkOrder,
+  ScheduleConflictError,
+} from "./work-order-assignments-repository.js";
+import { planScheduleChunks, MAX_SCHEDULE_MS, type SchedulePlanRequest } from "./work-order-scheduling.js";
+import { registerAuthGuard, authModeFromEnv } from "./auth-guard.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -160,6 +168,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(cors, { origin: true });
   await app.register(websocket);
   await app.register(authPlugin);
+  registerAuthGuard(app, authModeFromEnv());
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -1639,6 +1648,13 @@ app.delete<{ Params: { id: string } }>(
       reply.code(404);
       return { error: "unknown assignment" };
     }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "work_order_assignment_updated",
+      target: assignment.id,
+      details: request.body,
+      ipAddress: request.ip,
+    });
     return assignment;
   },
   );
@@ -1654,6 +1670,118 @@ app.delete<{ Params: { id: string } }>(
     return getOffShiftSegments(request.params.machineId, new Date(from), new Date(to));
   },
   );
+
+    function summarizeSegments(list: { machineId: string; plannedStart: string; plannedEnd: string }[]) {
+    return list.map((a) => ({ machineId: a.machineId, plannedStart: a.plannedStart, plannedEnd: a.plannedEnd }));
+  }
+
+   app.put<{
+    Params: { id: string };
+    Body: { machineId?: string; plannedStart?: string; plannedEnd?: string; durationMs?: number };
+  }>("/api/work-orders/:id/schedule", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    const { machineId, plannedStart, plannedEnd, durationMs } = request.body ?? {};
+    if (!machineId || !plannedStart) {
+      reply.code(400);
+      return { error: "machineId and plannedStart are required" };
+    }
+    if ((plannedEnd === undefined) === (durationMs === undefined)) {
+      reply.code(400);
+      return { error: "provide exactly one of plannedEnd or durationMs" };
+    }
+    const start = new Date(plannedStart);
+    if (isNaN(start.getTime())) {
+      reply.code(400);
+      return { error: "plannedStart must be a valid ISO date string" };
+    }
+ 
+    let plan: SchedulePlanRequest;
+    if (durationMs !== undefined) {
+      if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs <= 0 || durationMs > MAX_SCHEDULE_MS) {
+        reply.code(400);
+        return { error: "durationMs must be a positive number of at most 60 days" };
+      }
+      plan = { mode: "duration", start, durationMs };
+    } else {
+      const end = new Date(plannedEnd!);
+      if (isNaN(end.getTime()) || end.getTime() <= start.getTime()) {
+        reply.code(400);
+        return { error: "plannedEnd must be a valid ISO date string after plannedStart" };
+      }
+      if (end.getTime() - start.getTime() > MAX_SCHEDULE_MS) {
+        reply.code(400);
+        return { error: "a single work order cannot span more than 60 days" };
+      }
+      plan = { mode: "span", start, end };
+    }
+ 
+    const planned = await planScheduleChunks(machineId, plan);
+    if (!planned.ok) {
+      reply.code(400);
+      return { error: planned.error };
+    }
+ 
+    try {
+      const change = await replaceScheduleForWorkOrder(request.params.id, machineId, planned.chunks);
+      if (!change) {
+        reply.code(404);
+        return { error: "unknown work order" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "work_order_rescheduled",
+        target: request.params.id,
+        details: {
+          machineId,
+          mode: plan.mode,
+          previous: summarizeSegments(change.previous),
+          current: summarizeSegments(change.current),
+        },
+        ipAddress: request.ip,
+      });
+      return change.current;
+    } catch (err) {
+      if (err instanceof ScheduleConflictError) {
+        reply.code(409);
+        return { error: err.message };
+      }
+      if (isForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown machine" };
+      }
+      throw err;
+    }
+  });
+ 
+  /** Egy munkarendelés összes szegmensének törlése, atomikusan. */
+  app.delete<{ Params: { id: string } }>(
+    "/api/work-orders/:id/schedule",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      try {
+        const previous = await clearScheduleForWorkOrder(request.params.id);
+        if (!previous) {
+          reply.code(404);
+          return { error: "unknown work order" };
+        }
+        await recordAuditEvent({
+          actorId: request.user!.id,
+          action: "work_order_unscheduled",
+          target: request.params.id,
+          details: { previous: summarizeSegments(previous) },
+          ipAddress: request.ip,
+        });
+        reply.code(204);
+        return null;
+      } catch (err) {
+        if (err instanceof ScheduleConflictError) {
+          reply.code(409);
+          return { error: err.message };
+        }
+        throw err;
+      }
+    },
+  );
+ 
 
   return app;
 }
