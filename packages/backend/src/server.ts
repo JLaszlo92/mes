@@ -1568,97 +1568,220 @@ app.delete<{ Params: { id: string } }>(
       return getStatusTimeline(request.params.machineId, new Date(from), new Date(to));
     },
   );
+
+
+  const TIME_OF_DAY = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
+ 
+  function isValidWorkingDays(value: unknown): value is boolean[] {
+    return Array.isArray(value) && value.length === 7 && value.every((d) => typeof d === "boolean");
+  }
+ 
   app.get("/api/shift-patterns", { preHandler: requireRole("admin", "manager") }, async () => listShiftPatterns());
-
-app.post<{ Body: { name: string } }>(
-  "/api/shift-patterns",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const pattern = await createShiftPattern(request.body.name);
-    reply.code(201);
-    return pattern;
-  },
-);
-
-app.delete<{ Params: { id: string } }>(
-  "/api/shift-patterns/:id",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const deleted = await deleteShiftPattern(request.params.id);
-    if (!deleted) {
-      reply.code(404);
-      return { error: "unknown pattern" };
-    }
-    reply.code(204);
-    return null;
-  },
-);
-
-app.post<{ Params: { id: string }; Body: { name: string; startTime: string; endTime: string } }>(
-  "/api/shift-patterns/:id/shifts",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const shift = await addShiftToPattern(request.params.id, request.body);
-    reply.code(201);
-    return shift;
-  },
-);
-
-app.delete<{ Params: { shiftId: string } }>(
-  "/api/shift-pattern-shifts/:shiftId",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const deleted = await deleteShift(request.params.shiftId);
-    if (!deleted) {
-      reply.code(404);
-      return { error: "unknown shift" };
-    }
-    reply.code(204);
-    return null;
-  },
-);
-
-app.get("/api/calendars", { preHandler: requireRole("admin", "manager") }, async () => listCalendars());
-
-app.post<{ Body: { name: string; workingDays: boolean[] } }>(
-  "/api/calendars",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const calendar = await createCalendar(request.body.name, request.body.workingDays);
-    reply.code(201);
-    return calendar;
-  },
-);
-
-app.put<{ Params: { id: string }; Body: { workingDays: boolean[] } }>(
-  "/api/calendars/:id",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    await updateCalendarWorkingDays(request.params.id, request.body.workingDays);
-    reply.code(204);
-    return null;
-  },
-);
-
-app.delete<{ Params: { id: string } }>(
-  "/api/calendars/:id",
-  { preHandler: requireRole("admin", "manager") },
-  async (request, reply) => {
-    const deleted = await deleteCalendar(request.params.id);
-    if (!deleted) {
-      reply.code(404);
-      return { error: "unknown calendar" };
-    }
-    reply.code(204);
-    return null;
-  },
-);
-
+ 
+  app.post<{ Body: { name?: string } }>(
+    "/api/shift-patterns",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const name = request.body?.name?.trim();
+      if (!name) {
+        reply.code(400);
+        return { error: "name is required" };
+      }
+      const pattern = await createShiftPattern(name);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "shift_pattern_created",
+        target: pattern.id,
+        details: { name },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return pattern;
+    },
+  );
+ 
+  app.delete<{ Params: { id: string } }>(
+    "/api/shift-patterns/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      try {
+        const deleted = await deleteShiftPattern(request.params.id);
+        if (!deleted) {
+          reply.code(404);
+          return { error: "unknown pattern" };
+        }
+      } catch (err) {
+        if (isForeignKeyViolation(err)) {
+          reply.code(409);
+          return { error: "this shift pattern is still assigned to a machine — reassign the machine first" };
+        }
+        throw err;
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "shift_pattern_deleted",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+ 
+  app.post<{ Params: { id: string }; Body: { name?: string; startTime?: string; endTime?: string } }>(
+    "/api/shift-patterns/:id/shifts",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const name = request.body?.name?.trim();
+      const { startTime, endTime } = request.body ?? {};
+      if (!name || !startTime || !endTime) {
+        reply.code(400);
+        return { error: "name, startTime and endTime are required" };
+      }
+      if (!TIME_OF_DAY.test(startTime) || !TIME_OF_DAY.test(endTime)) {
+        reply.code(400);
+        return { error: "startTime and endTime must be HH:MM (24-hour)" };
+      }
+      try {
+        const shift = await addShiftToPattern(request.params.id, { name, startTime, endTime });
+        await recordAuditEvent({
+          actorId: request.user!.id,
+          action: "shift_added",
+          target: shift.id,
+          details: { shiftPatternId: request.params.id, name, startTime, endTime },
+          ipAddress: request.ip,
+        });
+        reply.code(201);
+        return shift;
+      } catch (err) {
+        if (isForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown pattern" };
+        }
+        throw err;
+      }
+    },
+  );
+ 
+  app.delete<{ Params: { shiftId: string } }>(
+    "/api/shift-pattern-shifts/:shiftId",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const deleted = await deleteShift(request.params.shiftId);
+      if (!deleted) {
+        reply.code(404);
+        return { error: "unknown shift" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "shift_deleted",
+        target: request.params.shiftId,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+ 
+  app.get("/api/calendars", { preHandler: requireRole("admin", "manager") }, async () => listCalendars());
+ 
+  app.post<{ Body: { name?: string; workingDays?: unknown } }>(
+    "/api/calendars",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const name = request.body?.name?.trim();
+      const workingDays = request.body?.workingDays;
+      if (!name) {
+        reply.code(400);
+        return { error: "name is required" };
+      }
+      if (!isValidWorkingDays(workingDays)) {
+        reply.code(400);
+        return { error: "workingDays must be an array of 7 booleans" };
+      }
+      const calendar = await createCalendar(name, workingDays);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "calendar_created",
+        target: calendar.id,
+        details: { name, workingDays },
+        ipAddress: request.ip,
+      });
+      reply.code(201);
+      return calendar;
+    },
+  );
+ 
+  app.put<{ Params: { id: string }; Body: { workingDays?: unknown } }>(
+    "/api/calendars/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const workingDays = request.body?.workingDays;
+      if (!isValidWorkingDays(workingDays)) {
+        reply.code(400);
+        return { error: "workingDays must be an array of 7 booleans" };
+      }
+      await updateCalendarWorkingDays(request.params.id, workingDays);
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "calendar_updated",
+        target: request.params.id,
+        details: { workingDays },
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+ 
+  app.delete<{ Params: { id: string } }>(
+    "/api/calendars/:id",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      try {
+        const deleted = await deleteCalendar(request.params.id);
+        if (!deleted) {
+          reply.code(404);
+          return { error: "unknown calendar" };
+        }
+      } catch (err) {
+        if (isForeignKeyViolation(err)) {
+          reply.code(409);
+          return { error: "this calendar is still assigned to a machine — reassign the machine first" };
+        }
+        throw err;
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "calendar_deleted",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      reply.code(204);
+      return null;
+    },
+  );
+ 
   app.put<{
     Params: { id: string };
     Body: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean };
   }>("/api/machine-registry/:id/scheduling", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
-    await assignMachineScheduling(request.params.id, request.body);
+    try {
+      await assignMachineScheduling(request.params.id, request.body ?? {});
+    } catch (err) {
+      if (isForeignKeyViolation(err)) {
+        reply.code(404);
+        return { error: "unknown machine, shift pattern or calendar" };
+      }
+      throw err;
+    }
+    await recordAuditEvent({
+      actorId: request.user!.id,
+      action: "machine_scheduling_updated",
+      target: request.params.id,
+      details: request.body ?? {},
+      ipAddress: request.ip,
+    });
     reply.code(204);
     return null;
   });

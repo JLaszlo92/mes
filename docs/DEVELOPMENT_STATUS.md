@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** September 29, 2026 (evening)
+**Last updated:** September 29, 2026 (late evening)
 
 ## Where things stand
 
@@ -22,6 +22,9 @@ Since the last save point (September 28):
   GET endpoints publicly readable. All frontend API calls now go through a
   central `apiFetch` (`packages/frontend/src/api.ts`). Rolled out via a
   report-only phase, verified, switched to enforce on September 29.
+- **`/ws` closed with single-use tickets**: the dashboard's live event
+  stream, the last unauthenticated data path, now requires a short-lived
+  ticket obtained with a valid session.
 
 ## The Gantt scheduler (item 8)
 
@@ -203,11 +206,38 @@ The app is a single-page app on `/`, gated entirely by the
 (back button, deep links) would need a client-side router — not needed
 for the pilot, since the terminal kiosk URL already works.
 
-**Known gap — `GET /ws` is still public.** Browsers can't set an
-`Authorization` header on a WebSocket, so the dashboard's live event
-stream stays on the allowlist for now. Planned fix: a short-lived,
-single-use ticket (`POST /api/auth/ws-ticket` → `/ws?ticket=…`), which
-also needs a change in the dashboard's WS client.
+### WebSocket tickets (`/ws`)
+
+Browsers can't send an `Authorization` header on a WebSocket, and the
+session token must not go into a URL (proxy, server and browser logs).
+So `GET /ws` stays on the guard's `PUBLIC_ROUTES` list, and the route
+authenticates itself with a ticket (`packages/backend/src/ws-tickets.ts`):
+
+- `POST /api/auth/ws-ticket` (session required) returns a 256-bit random
+  ticket, valid for 30 s, **single-use**. It is not derived from the
+  session token. Kept in memory (single-process monolith, no table);
+  unredeemed tickets are swept periodically and lost on restart, which is
+  harmless because the client asks for a new one on every connect.
+- `/ws?ticket=…` redeems and deletes the ticket on connect. Missing,
+  unknown, already-used or expired → closed with code **4401**, logged as
+  `dashboard websocket rejected`. A ticket that ended up in a log is
+  therefore already worthless.
+- **Max connection lifetime 10 min**: the server closes with code
+  **4000**, the client immediately reconnects with a fresh ticket (no
+  visible "disconnected"). If the session expired or was revoked in the
+  meantime, the ticket request gets 401, `apiFetch` signs the user out,
+  and there is no reconnect. This bounds how long a dead session can keep
+  receiving live events, without per-connection session polling.
+- Close codes are defined in `ws-tickets.ts` and duplicated in `App.tsx`
+  — keep them in sync.
+
+Client side (`App.tsx`): the WebSocket now connects **only while signed
+in** (before, it connected even behind the login screen), requests a
+fresh ticket before every (re)connect, retries with backoff (2, 4, 8,
+16, then 30 s instead of a fixed 2 s), and clears the live machine state
+on sign-out. Verified: dashboard live with a `dashboard client
+connected` log line carrying the `userId`; a ticket-less upgrade via
+`curl` is rejected.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
@@ -248,8 +278,6 @@ also needs a change in the dashboard's WS client.
 
 ## Still open (lower priority, not blocking)
 
-- **WebSocket ticket for `/ws`** — the only remaining unauthenticated
-  data stream (live events of every machine). Next up.
 - **Postgres credentials**: `mes:mes` sits in plain text in
   `mes-backend.service`. Before the pilot: a strong password, moved into a
   root-only `EnvironmentFile=` (PRD 8.3: no default credentials).
@@ -263,5 +291,7 @@ also needs a change in the dashboard's WS client.
 - A data-retention policy for raw events (flagged in earlier revisions,
   still not implemented — not urgent at current volumes, worth doing
   before the pilot).
+- Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
+  `api.ts` now exports `API_BASE`, so these can become imports.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,
   downtime Pareto analysis, multilingual work instructions) — not started.
