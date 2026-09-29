@@ -160,6 +160,14 @@ import {
 } from "./work-order-assignments-repository.js";
 import { planScheduleChunks, MAX_SCHEDULE_MS, type SchedulePlanRequest } from "./work-order-scheduling.js";
 import { registerAuthGuard, authModeFromEnv } from "./auth-guard.js";
+import {
+  issueWsTicket,
+  redeemWsTicket,
+  WsTicketCapacityError,
+  WS_MAX_LIFETIME_MS,
+  WS_CLOSE_INVALID_TICKET,
+  WS_CLOSE_REAUTH,
+} from "./ws-tickets.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -288,24 +296,59 @@ export async function buildServer(): Promise<FastifyInstance> {
     return getShiftSummary(fromDate, toDate);
   });
 
+/**
+   * Egyszer használható, 30 mp-ig érvényes ticket a dashboard WebSockethez.
+   * A deny-by-default auth guard ide csak érvényes sessionnel enged; a
+   * request.user ellenőrzés defence-in-depth.
+   */
+  app.post("/api/auth/ws-ticket", async (request, reply) => {
+    if (!request.user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    try {
+      return issueWsTicket(request.user.id);
+    } catch (err) {
+      if (err instanceof WsTicketCapacityError) {
+        reply.code(503);
+        return { error: err.message };
+      }
+      throw err;
+    }
+  });
+ 
   app.register(async (scoped) => {
+    // A /ws az auth guard PUBLIC_ROUTES listáján marad (a böngésző nem tud
+    // Authorization headert küldeni), a hitelesítést itt a ticket végzi.
     scoped.get("/ws", { websocket: true }, (socket, request) => {
-      request.log.info("dashboard client connected");
-
+      const { ticket } = request.query as { ticket?: string };
+      const redeemed = ticket ? redeemWsTicket(ticket) : undefined;
+      if (!redeemed) {
+        request.log.warn({ ip: request.ip }, "dashboard websocket rejected: missing, invalid, used or expired ticket");
+        socket.close(WS_CLOSE_INVALID_TICKET, "invalid or expired ticket");
+        return;
+      }
+ 
+      request.log.info({ userId: redeemed.userId }, "dashboard client connected");
       socket.send(JSON.stringify({ type: "snapshot", machines: stateStore.getAll() }));
-
+ 
       const onEvent = (event: unknown) => {
-        socket.send(JSON.stringify({ type: "event", event }));
+        if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "event", event }));
       };
       eventHub.on(MACHINE_EVENT, onEvent);
-
+ 
+      // Maximális élettartam: utána a kliens friss tickettel csatlakozik
+      // újra — ha közben lejárt vagy visszavonták a sessionjét, az új ticket
+      // kérése már 401-et kap, és nincs újracsatlakozás.
+      const lifetimeTimer = setTimeout(() => socket.close(WS_CLOSE_REAUTH, "re-authenticate"), WS_MAX_LIFETIME_MS);
+ 
       socket.on("close", () => {
+        clearTimeout(lifetimeTimer);
         eventHub.off(MACHINE_EVENT, onEvent);
-        request.log.info("dashboard client disconnected");
+        request.log.info({ userId: redeemed.userId }, "dashboard client disconnected");
       });
     });
   });
-
     app.post<{ Body: { email: string; password: string } }>("/api/auth/login", async (request, reply) => {
       const { email, password } = request.body;
       const user = await findUserByEmail(email);

@@ -3,6 +3,7 @@ import type { MachineEvent, MachineStatusValue } from "@mes/shared";
 import MachineOverviewPanel from "./MachineOverviewPanel.js";
 import MachineRegistryPanel from "./MachineRegistryPanel.js";
 import { useAuth } from "./auth-context.js";
+import { apiFetch, API_BASE } from "./api.js";
 import LoginForm from "./LoginForm.js";
 import AuditLogPanel from "./AuditLogPanel";
 import WorkOrdersPanel from "./WorkOrdersPanel";
@@ -37,6 +38,13 @@ type ServerMessage =
 
 const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 
+/** A backend ws-tickets.ts close kódjaival szinkronban tartandó. */
+const WS_CLOSE_REAUTH = 4000;
+
+/** Újrapróbálkozás: 2, 4, 8, 16, majd 30 mp-enként — egy tartósan elérhetetlen backendet ne árasszunk el. */
+const RETRY_BASE_MS = 2000;
+const RETRY_MAX_MS = 30_000;
+
 const TABS = [
   { id: "overview", label: "Overview" },
   { id: "production", label: "Production" },
@@ -70,16 +78,52 @@ export default function App() {
   const socketRef = useRef<WebSocket | null>(null);
 
   const { auth, logout, mfaSetupRequired } = useAuth();
+  const token = auth?.token ?? null;
 
+  // Élő eseményfolyam — csak bejelentkezve. Minden (újra)csatlakozás előtt
+  // friss, egyszer használható ticketet kér (POST /api/auth/ws-ticket), mert
+  // a böngésző WebSocketen nem tud Authorization headert küldeni. Ha a
+  // session közben lejárt, a ticket kérése 401-et kap, az apiFetch
+  // kilépteti a felhasználót, a token null lesz, és ez az effekt leáll.
   useEffect(() => {
-    let cancelled = false;
-    let retryTimer: ReturnType<typeof setTimeout>;
+    if (!token) {
+      setConnected(false);
+      setMachines({});
+      return;
+    }
 
-    function connect() {
-      const socket = new WebSocket(WS_URL);
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let failures = 0;
+
+    function scheduleRetry() {
+      if (cancelled) return;
+      failures++;
+      const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(failures - 1, 4));
+      retryTimer = setTimeout(() => void connect(), delay);
+    }
+
+    async function connect() {
+      if (cancelled) return;
+
+      let ticket: string;
+      try {
+        const res = await apiFetch(`${API_BASE}/api/auth/ws-ticket`, { method: "POST" });
+        if (!res.ok) throw new Error(`ws-ticket ${res.status}`);
+        ticket = ((await res.json()) as { ticket: string }).ticket;
+      } catch {
+        scheduleRetry();
+        return;
+      }
+      if (cancelled) return;
+
+      const socket = new WebSocket(`${WS_URL}?ticket=${encodeURIComponent(ticket)}`);
       socketRef.current = socket;
 
-      socket.onopen = () => setConnected(true);
+      socket.onopen = () => {
+        failures = 0;
+        setConnected(true);
+      };
 
       socket.onmessage = (raw) => {
         const message = JSON.parse(raw.data) as ServerMessage;
@@ -91,19 +135,28 @@ export default function App() {
         }
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event) => {
+        if (socketRef.current === socket) socketRef.current = null;
         setConnected(false);
-        if (!cancelled) retryTimer = setTimeout(connect, 2000);
+        if (cancelled) return;
+        // A kapcsolat elérte a maximális élettartamát: azonnal újra, friss
+        // tickettel, hogy a dashboardon ne villanjon fel a "disconnected".
+        if (event.code === WS_CLOSE_REAUTH) {
+          void connect();
+          return;
+        }
+        scheduleRetry();
       };
     }
 
-    connect();
+    void connect();
     return () => {
       cancelled = true;
       clearTimeout(retryTimer);
       socketRef.current?.close();
+      socketRef.current = null;
     };
-  }, []);
+  }, [token]);
 
   if (mfaSetupRequired) {
     return <MfaSetup />;
