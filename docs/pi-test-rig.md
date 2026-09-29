@@ -302,8 +302,8 @@ sudo systemctl restart mosquitto
 Run the migration once, then start the backend:
 
 ```bash
-DATABASE_URL=postgres://mes:mes@localhost:5432/mes pnpm --filter @mes/backend migrate
-DATABASE_URL=postgres://mes:mes@localhost:5432/mes MQTT_URL=mqtt://127.0.0.1:1883 pnpm --filter @mes/backend start
+DATABASE_URL=postgres://mes:<password>@localhost:5432/mes pnpm --filter @mes/backend migrate
+DATABASE_URL=postgres://mes:<password>@localhost:5432/mes MQTT_URL=mqtt://127.0.0.1:1883 pnpm --filter @mes/backend start
 ```
 
 You should see the backend log its own MQTT connect, then (once Pi #2 is

@@ -25,6 +25,12 @@ Since the last save point (September 28):
 - **`/ws` closed with single-use tickets**: the dashboard's live event
   stream, the last unauthenticated data path, now requires a short-lived
   ticket obtained with a valid session.
+- **Audit coverage and input validation** for shift patterns, shifts,
+  calendars and machine scheduling assignments (previously unaudited;
+  bad input gave 500s).
+- **Postgres credentials rotated**, moved out of the unit file into a
+  root-only env file; the hardcoded fallback connection string was
+  removed from `config.ts`. `docs/SECURITY_REVIEW.md` revised to match.
 
 ## The Gantt scheduler (item 8)
 
@@ -239,6 +245,28 @@ on sign-out. Verified: dashboard live with a `dashboard client
 connected` log line carrying the `userId`; a ticket-less upgrade via
 `curl` is rejected.
 
+## Configuration and secrets (node-dc)
+
+- `mes-backend.service` loads secrets from
+  **`/etc/mes/backend.env`** (`EnvironmentFile=`, directory `0700`, file
+  `0600`, root-only). It currently holds `DATABASE_URL`; `MQTT_URL` is
+  still an `Environment=` line in the unit because it contains no secret.
+  The Postgres password exists nowhere else except root's `~/.pgpass`, and
+  never in git.
+- `DATABASE_URL` is **mandatory** (`packages/backend/src/config.ts`):
+  without it the backend exits at startup with `DATABASE_URL is not set`
+  instead of silently trying a fallback. The error never echoes the URL.
+  `PORT` is validated too.
+- Ad-hoc database access: `psql -h localhost -U mes mes` — the password
+  comes from `~/.pgpass`, so it never has to be typed or appear in a
+  command line. (Older docs and chat history show
+  `psql postgres://mes:mes@…`; that password no longer works.)
+- Password rotation, if ever needed again: new value into
+  `/etc/mes/backend.env` and `~/.pgpass`, then `su - postgres -c psql` →
+  `\password mes` (hashed client-side) → `\q`, then
+  `systemctl restart mes-backend`. Do not skip the `\password` step —
+  the backend will fail with `password authentication failed`.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -271,6 +299,13 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 - `systemctl restart` returns before the backend is listening. A `curl`
   or `journalctl` run immediately after can show `000` / no startup line —
   wait a second and re-check before debugging.
+- **Never echo a secret into a terminal whose output gets pasted into a
+  chat, ticket or doc.** If it happens, treat the value as exposed and
+  rotate it — which is what happened with the first new Postgres
+  password on Sep 29.
+- Debian LXC nodes lack a generated UTF-8 locale (perl/psql warnings,
+  and the likely cause of the old `watch` unicode error on node-gate):
+  `apt install -y locales && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen`.
 - When pasting a multi-part patch into `server.ts`, each block goes
   inside its own route handler — a `recordAuditEvent` block pasted at the
   end of `buildServer()` fails the build with `Cannot find name
@@ -278,9 +313,10 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 
 ## Still open (lower priority, not blocking)
 
-- **Postgres credentials**: `mes:mes` sits in plain text in
-  `mes-backend.service`. Before the pilot: a strong password, moved into a
-  root-only `EnvironmentFile=` (PRD 8.3: no default credentials).
+- **Login rate limiting / lockout** — `POST /api/auth/login` and
+  `/api/auth/mfa/login` accept unlimited attempts; non-MFA accounts are
+  brute-forceable. See `docs/SECURITY_REVIEW.md` for the full, updated
+  priority list (backups first).
 - Several config mutations still write **no audit event**: shift pattern
   / shift / calendar create-update-delete and `PUT
   /api/machine-registry/:id/scheduling`. PRD 8.8 expects configuration
