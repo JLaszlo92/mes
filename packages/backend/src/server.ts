@@ -127,6 +127,8 @@ import {
 import {
   listUnexplainedDowntimePeriods,
   explainDowntimePeriod,
+  getDowntimeSummary,
+  setMicroStopThreshold,
 } from "./downtime-periods-repository.js";
 import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
 import { getWorkOrderProgress } from "./work-orders-repository.js";
@@ -1450,6 +1452,42 @@ app.delete<{ Params: { id: string } }>(
       return report;
     },
   );
+  /** Gépenkénti leállás-összesítő (leállások, mikroleállások, magyarázatlanok) az utolsó `hours` órára. */
+  app.get<{ Querystring: { hours?: string } }>("/api/downtime-periods/summary", async (request, reply) => {
+    const hours = request.query.hours === undefined ? 24 : Number(request.query.hours);
+    if (!Number.isInteger(hours) || hours < 1 || hours > 24 * 31) {
+      reply.code(400);
+      return { error: "hours must be an integer between 1 and 744" };
+    }
+    return getDowntimeSummary(hours);
+  });
+ 
+  /** A gép mikroleállási küszöbe másodpercben (0–3600); 0 = minden leállást magyarázni kell. */
+  app.put<{ Params: { id: string }; Body: { seconds?: unknown } }>(
+    "/api/machine-registry/:id/micro-stop-threshold",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const seconds = request.body?.seconds;
+      if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
+        reply.code(400);
+        return { error: "seconds must be an integer between 0 and 3600" };
+      }
+      const result = await setMicroStopThreshold(request.params.id, seconds);
+      if (!result) {
+        reply.code(404);
+        return { error: "unknown machine" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "machine_micro_stop_threshold_updated",
+        target: request.params.id,
+        details: { previous: result.previous, seconds },
+        ipAddress: request.ip,
+      });
+      return { machineId: request.params.id, microStopThresholdSeconds: seconds };
+    },
+  );
+
   app.get<{ Params: { machineId: string }; Querystring: { from: string; to: string; bucket?: string } }>(
     "/api/machines/:machineId/history",
     async (request, reply) => {

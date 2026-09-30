@@ -46,6 +46,10 @@ Since September 30 (morning):
 - **Backup failure alerting** (dead man's switch → System alert).
 - **Login rate limiting and lockout** (migration 032, `auth-throttle.ts`;
   login routes moved to `auth-routes.ts`).
+- **Downtime periods**: evaluator rewritten (no split periods, incremental —
+  136 s → 0.12 s per tick on 120k events), per-machine micro-stop
+  threshold (the "to explain" list went from 58,947 to 617 rows), downtime
+  summary, race-safe explain (migrations 033, 034).
 
 ## The Gantt scheduler (item 8)
 
@@ -350,6 +354,49 @@ Counters are rows in `auth_throttle` (`sql/032`), keyed per rule:
 - Verified on node-dc: `401 ×5 → 429`, `retry-after: 900`, one
   `login_locked` audit row.
 
+## Downtime periods and micro-stops
+
+**Why there were 58k periods:** investigated Sep 30. Mostly the
+simulators — `running`/`down` alternate ~50/50, the S7 rig about every
+35 s with ~10 s stops. That's test-signal noise, not a backend bug; a real
+line will look different. But three real problems surfaced and are fixed:
+
+- **Split periods** (`downtime-periods-evaluator.ts`): the old evaluator
+  treated every `down` event as a new period lasting until the *next
+  event*, so `down → down → running` (e.g. a status re-sent after an edge
+  reconnect) became two periods. Rare in the data (3 cases), but on a real
+  line it'd turn one stop into several things to explain. A period is now
+  "first `down` not preceded by `down`" → "first non-`down` after it".
+  Migration 033 merged the existing split chains (carrying over a
+  fragment's fault report if only it had one).
+- **Full-history scan every minute**: the old query ran `LEAD()` over
+  every status event ever recorded. Now per machine, from
+  `LEAST(now() − 48 h, end of that machine's last recorded period)`: the
+  48 h lookback catches events that arrive late from the edge agent's
+  offline buffer, the `LEAST` makes sure a stop longer than 48 h that just
+  ended is still recorded. The per-machine start is computed in a separate
+  query on purpose — inlined into a CTE, Postgres recomputed it per event
+  row (a first attempt took 136 s per tick). Now 0.12 s per tick, 1.2 s
+  for a full-history backfill (120k synthetic events).
+- **Micro-stops** (`sql/034`, `downtime-periods-repository.ts`,
+  `DowntimePeriodsPanel.tsx`): `machines.micro_stop_threshold_seconds`
+  (default 60, 0–3600, editable by admin/manager in the Downtime panel,
+  audited as `machine_micro_stop_threshold_updated`). Shorter stops are not
+  listed for explanation; they're summarized per machine
+  (`GET /api/downtime-periods/summary?hours=24`: stops, stop time,
+  micro-stops, micro-stop time, still to explain). Micro-stops are a
+  performance loss to watch in aggregate, not something an operator
+  reason-codes one by one. On node-dc this cut the list from 58,947 to 617.
+- **Explain race**: `explainDowntimePeriod` checked "still unexplained",
+  then created a fault report, then linked it — two near-simultaneous
+  requests (a double click, which the panel didn't prevent) both passed
+  and created two fault reports for one stop. The link is now a
+  conditional update; the loser's report is deleted. The panel also locks
+  the buttons while a save is in flight.
+- Only status `down` counts as downtime. Custom status definitions with
+  `oeeCategory = counts_as_down` are not considered by the evaluator —
+  none exist today; revisit if they're introduced.
+
 ## Backups (node-dc → S3)
 
 Daily at 02:30 UTC `mes-backup.timer` runs `mes-backup.sh`: `pg_dump`
@@ -457,10 +504,12 @@ is in `ops/backup/README.md`.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
-- **Check the 58k `downtime_periods` rows** — very high for 7 machines;
-  possibly status flapping (e.g. the signal-presence watchdog) creating a
-  period per flap. Worth a look before the pilot's downtime Pareto relies
-  on it.
+- **Test-data cleanup before the pilot**: the simulator rigs produced
+  ~120k status events and ~59k downtime periods. If the pilot runs on this
+  database, clear the test machines' data first so reports start clean
+  (a scoped cleanup script, not ad-hoc SQL).
+- Downtime **Pareto** view on top of explained periods (now that the list
+  is usable).
 - `mfa_pending_logins` stores raw pending tokens — hash like sessions
   (low risk, low effort).
 - Next security items per `docs/SECURITY_REVIEW.md`: incident-response
