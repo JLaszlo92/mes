@@ -12,6 +12,7 @@ import { startOffShiftEvaluator } from "./off-shift-evaluator.js";
 import { startBackupHealthEvaluator } from "./backup-health-evaluator.js";
 import { startStatusRollupEvaluator } from "./status-rollup-evaluator.js";
 import { ensureDatabaseTimezone } from "./db.js";
+import { startRawEventRetentionEvaluator } from "./raw-event-retention-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
   startWorkOrderAutoCompleteEvaluator(app.log);
   startProductionRollupEvaluator(app.log);
   startStatusRollupEvaluator(app.log);
+  startRawEventRetentionEvaluator(app.log);
   startOffShiftEvaluator(app.log);
   startBackupHealthEvaluator(app.log);
 }

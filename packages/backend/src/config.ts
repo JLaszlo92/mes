@@ -50,6 +50,30 @@ function timezoneFromEnv(): string {
   return value;
 }
 
+/**
+ * A nyers események (events) megőrzési ideje napokban (raw-event-retention-
+ * evaluator.ts). 0 = kikapcsolva; egyébként legalább 7, hogy az óránkénti
+ * összesítők 24 órás újraszámolási ablaka és a késve érkező, pufferelt
+ * események bőven beleférjenek.
+ */
+function retentionDaysFromEnv(): number {
+  const raw = process.env.MES_RAW_EVENT_RETENTION_DAYS ?? "90";
+  const days = Number(raw);
+  if (!Number.isInteger(days) || (days !== 0 && days < 7)) {
+    throw new Error(`MES_RAW_EVENT_RETENTION_DAYS must be 0 (disabled) or an integer >= 7 (got "${raw}")`);
+  }
+  return days;
+}
+
+/** Alapértelmezetten dry run: csak naplózza, mit törölne. Törléshez: MES_RAW_EVENT_RETENTION_DRY_RUN=false. */
+function retentionDryRunFromEnv(): boolean {
+  const raw = (process.env.MES_RAW_EVENT_RETENTION_DRY_RUN ?? "true").toLowerCase();
+  if (raw !== "true" && raw !== "false") {
+    throw new Error(`MES_RAW_EVENT_RETENTION_DRY_RUN must be "true" or "false" (got "${raw}")`);
+  }
+  return raw === "true";
+}
+
 function portFromEnv(): number {
   const port = Number(process.env.PORT ?? 3001);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -66,6 +90,8 @@ process.env.TZ = timezone;
 
 export const config = {
   timezone,
+  rawEventRetentionDays: retentionDaysFromEnv(),
+  rawEventRetentionDryRun: retentionDryRunFromEnv(),
   mqttUrl: process.env.MQTT_URL ?? "mqtt://127.0.0.1:1883",
   port: portFromEnv(),
   host: process.env.HOST ?? "0.0.0.0",
