@@ -327,7 +327,5 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 - A data-retention policy for raw events (flagged in earlier revisions,
   still not implemented — not urgent at current volumes, worth doing
   before the pilot).
-- Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
-  `api.ts` now exports `API_BASE`, so these can become imports.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,
   downtime Pareto analysis, multilingual work instructions) — not started.
