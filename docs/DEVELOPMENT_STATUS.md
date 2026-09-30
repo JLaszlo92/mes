@@ -43,6 +43,9 @@ Since September 30 (morning):
 - **Calendars / shift patterns**: rapid day toggles no longer lose
   updates, API errors are shown, and a calendar or pattern still assigned
   to a machine can no longer be deleted (migration 030).
+- **Backup failure alerting** (dead man's switch → System alert).
+- **Login rate limiting and lockout** (migration 032, `auth-throttle.ts`;
+  login routes moved to `auth-routes.ts`).
 
 ## The Gantt scheduler (item 8)
 
@@ -319,6 +322,34 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
   The migration finds the FK by column, not by name, and only swaps it if
   it isn't RESTRICT yet.
 
+## Login rate limiting (`auth-throttle.ts`, `auth-routes.ts`)
+
+`POST /api/auth/login` and `/api/auth/mfa/login` now live in
+`auth-routes.ts` (registered in `server.ts` right after the auth guard).
+Counters are rows in `auth_throttle` (`sql/032`), keyed per rule:
+
+| Key | Limit | Lock |
+|---|---|---|
+| `pair:<email>\|<ip>` | 5 failures / 15 min | 15 min |
+| `account:<email>` | 20 / 60 min (any IP) | 15 min |
+| `ip:<ip>` | 30 / 15 min (any account) | 15 min |
+| `mfa:<userId>` | 5 wrong codes / 15 min | 15 min |
+
+- Locked → 429 with `Retry-After`; the password isn't checked at all.
+- A correct password clears the pair and account counters, **not** the
+  IP one (a single known password mustn't reset spraying protection).
+- Unknown accounts: same message and same timing (dummy hash verified),
+  counted the same way; emails are lower-cased/trimmed for the key.
+- Audit: `login_locked` / `mfa_locked` once per lock, with the scope;
+  individual blocked requests are journal-only (`authThrottle: "blocked"`).
+- **Unlock someone by hand**:
+  `psql -h localhost -U mes mes -c "DELETE FROM auth_throttle WHERE key LIKE '%user@example%';"`
+- Old rows are pruned on successful logins (older than a day, not locked).
+- **Behind a reverse proxy** (planned with TLS) set Fastify `trustProxy`,
+  or every client shares the proxy's IP and the IP limit locks everyone out.
+- Verified on node-dc: `401 ×5 → 429`, `retry-after: 900`, one
+  `login_locked` audit row.
+
 ## Backups (node-dc → S3)
 
 Daily at 02:30 UTC `mes-backup.timer` runs `mes-backup.sh`: `pg_dump`
@@ -432,10 +463,9 @@ is in `ops/backup/README.md`.
   on it.
 - `mfa_pending_logins` stores raw pending tokens — hash like sessions
   (low risk, low effort).
-- **Login rate limiting / lockout** — `POST /api/auth/login` and
-  `/api/auth/mfa/login` accept unlimited attempts; non-MFA accounts are
-  brute-forceable. See `docs/SECURITY_REVIEW.md` for the full, updated
-  priority list (backups first).
+- Next security items per `docs/SECURITY_REVIEW.md`: incident-response
+  document, then TLS (Mosquitto, API, Postgres) with CORS pinning and
+  `trustProxy`.
 - Several config mutations still write **no audit event**: shift pattern
   / shift / calendar create-update-delete and `PUT
   /api/machine-registry/:id/scheduling`. PRD 8.8 expects configuration

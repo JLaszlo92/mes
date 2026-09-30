@@ -69,14 +69,25 @@ re-authenticated, which bounds how long an expired or revoked session
 keeps receiving live events. The WebSocket also no longer connects while
 signed out.
 
-❌ **No login rate limiting or lockout** *(new finding)* — `POST
-/api/auth/login` and `POST /api/auth/mfa/login` accept unlimited
-attempts. Failures are audited (`login_failed`, `mfa_failed`) but not
-throttled. MFA protects admin/manager accounts; operator, supervisor and
-maintenance accounts are password-only and therefore brute-forceable
-from anywhere that can reach the API. Fix: per-IP and per-account
-throttling (e.g. `@fastify/rate-limit` on the auth routes) plus a
-temporary lockout after repeated failures.
+✅ **Login rate limiting and lockout** *(was ❌, fixed Sep 30)* —
+`auth-throttle.ts`, counters in the `auth_throttle` table (survive a
+restart). 5 failures per account+IP pair in 15 min → 15 min lock; 20 per
+account from any IP in 60 min; 30 per IP across accounts in 15 min
+(password spraying); 5 wrong MFA codes per user in 15 min. The lock is
+keyed on the account+IP *pair* first, so an attacker can't lock a
+legitimate operator out of their own terminal; the account- and IP-wide
+limits cover distributed attacks. While locked the password isn't even
+checked (429 + `Retry-After`). MFA has its own counter because a correct
+password resets the login counter — without it the 6-digit code could be
+brute-forced with a known password. Unknown accounts get the same
+response *and the same response time* (a dummy hash is verified), so
+login doesn't reveal which accounts exist; identifiers are normalized so
+case variants can't bypass a lock. Lock events are audited
+(`login_locked`, `mfa_locked`); blocked requests go to the journal only.
+Verified on node-dc. **Caveat for the TLS work:** limits key on
+`request.ip`; behind a reverse proxy every request would come from the
+proxy's IP and the IP-wide limit would lock everyone out — set Fastify's
+`trustProxy` to the proxy address at that point.
 
 ✅ **Session tokens hashed at rest** *(fixed Sep 30)* — the `sessions`
 table previously held raw bearer tokens (as its primary key), so read
@@ -271,22 +282,22 @@ external heartbeat would be needed for that.
 
 Ordered by how much real risk each closes relative to the effort:
 
-1. **Add login rate limiting and lockout.** Small change, closes the
-   brute-force path to every non-MFA account.
-2. **Write the incident-response document.** A few hours of writing, and
+1. **Write the incident-response document.** A few hours of writing, and
    PRD explicitly wants it before any paying customer.
-3. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
+2. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
    largest cluster of related gaps (8.2, 8.3, 8.4) — genuinely blocking
    for any customer whose IT/OT team reviews this seriously, and now also
    what protects the session tokens and WebSocket tickets in transit.
-   Pin CORS to the frontend origin in the same pass.
-4. **Add MQTT broker authentication + per-device credentials.** Closes
+   Pin CORS to the frontend origin in the same pass, and set Fastify's
+   `trustProxy` if a reverse proxy terminates TLS (the login limits key
+   on the client IP).
+3. **Add MQTT broker authentication + per-device credentials.** Closes
    the biggest identity gap; a reasonable next step after TLS is in place
    (credentials should travel encrypted).
-5. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
+4. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
-6. After TLS: consider moving the session token from `localStorage` to an
+5. After TLS: consider moving the session token from `localStorage` to an
    `HttpOnly` cookie (with CSRF protection).
-7. Everything marked ➡️ above stays deferred, matching PRD's own guidance
+6. Everything marked ➡️ above stays deferred, matching PRD's own guidance
    — revisit only when a specific customer's requirement makes it
    concrete, not speculatively.

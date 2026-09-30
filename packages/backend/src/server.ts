@@ -12,9 +12,7 @@ import {
   isUniqueViolation,
 } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
-import { findUserByEmail, getUserById } from "./users-repository.js";
-import { createSession, deleteSession } from "./sessions-repository.js";
-import { verifyPassword } from "./password.js";
+import { deleteSession } from "./sessions-repository.js";
 import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
 import {
   listWorkOrders,
@@ -47,8 +45,6 @@ import {
   setPendingMfaSecret,
   confirmMfaEnrollment,
   getMfaSecret,
-  createPendingLogin,
-  consumePendingLogin,
 } from "./mfa-repository.js";
 import { listAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from "./alert-rules-repository.js";
 import { listAlerts, acknowledgeAlert } from "./alerts-repository.js";
@@ -168,6 +164,7 @@ import {
   WS_CLOSE_INVALID_TICKET,
   WS_CLOSE_REAUTH,
 } from "./ws-tickets.js";
+import authRoutes from "./auth-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -177,6 +174,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(websocket);
   await app.register(authPlugin);
   registerAuthGuard(app, authModeFromEnv());
+  await app.register(authRoutes);
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -349,34 +347,7 @@ export async function buildServer(): Promise<FastifyInstance> {
       });
     });
   });
-    app.post<{ Body: { email: string; password: string } }>("/api/auth/login", async (request, reply) => {
-      const { email, password } = request.body;
-      const user = await findUserByEmail(email);
-      if (!user || !(await verifyPassword(password, user.passwordHash))) {
-        await recordAuditEvent({ actorEmail: email, action: "login_failed", ipAddress: request.ip });
-        reply.code(401);
-        return { error: "invalid email or password" };
-  }
 
-  if (user.mfaEnabled) {
-    const pending = await createPendingLogin(user.id);
-    return { mfaRequired: true, pendingToken: pending.token, expiresAt: pending.expiresAt };
-  }
-
-  const session = await createSession(user.id);
-  await recordAuditEvent({
-    actorId: user.id,
-    actorEmail: user.email,
-    action: "login_success",
-    ipAddress: request.ip,
-  });
-
-  // PRD 8.3: admin/manager esetén kötelező az MFA — ha még nincs
-  // beállítva, jelezzük, hogy a kliensnek azonnal be kell állítania.
-  const mfaSetupRequired = (user.role === "admin" || user.role === "manager") && !user.mfaEnabled;
-
-  return { token: session.token, role: user.role, expiresAt: session.expiresAt, mfaSetupRequired };
-  });
 
   app.get("/api/work-orders", async () => listWorkOrders());
 
@@ -589,33 +560,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
   );
 
-  app.post<{ Body: { pendingToken: string; code: string } }>("/api/auth/mfa/login", async (request, reply) => {
-  const { pendingToken, code } = request.body;
-  const pending = await consumePendingLogin(pendingToken);
-  if (!pending) {
-    reply.code(401);
-    return { error: "invalid or expired login attempt — please sign in again" };
-  }
-  const secret = await getMfaSecret(pending.userId);
-  if (!secret || !verifyToken(secret, code)) {
-    await recordAuditEvent({ actorId: pending.userId, action: "mfa_failed", ipAddress: request.ip });
-    reply.code(401);
-    return { error: "invalid code" };
-  }
-  const user = await getUserById(pending.userId);
-  if (!user) {
-    reply.code(404);
-    return { error: "user not found" };
-  }
-  const session = await createSession(user.id);
-  await recordAuditEvent({
-    actorId: user.id,
-    actorEmail: user.email,
-    action: "login_success",
-    ipAddress: request.ip,
-  });
-  return { token: session.token, role: user.role, expiresAt: session.expiresAt };
-  });
+
 
   app.post("/api/auth/mfa/enroll", async (request, reply) => {
     if (!request.user) {
