@@ -11,6 +11,7 @@ import { startProductionRollupEvaluator } from "./production-rollup-evaluator.js
 import { startOffShiftEvaluator } from "./off-shift-evaluator.js";
 import { startBackupHealthEvaluator } from "./backup-health-evaluator.js";
 import { startStatusRollupEvaluator } from "./status-rollup-evaluator.js";
+import { ensureDatabaseTimezone } from "./db.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -27,6 +28,8 @@ async function main(): Promise<void> {
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`backend listening on http://${config.host}:${config.port}`);
 
+  void ensureDatabaseTimezone(app.log);
+  
   startAlertEvaluator(app.log);
   startPreventiveMaintenanceEvaluator(app.log);
   startDowntimeEvaluator(app.log);
