@@ -55,23 +55,40 @@ class MachineStateStore {
     return [...this.machines.values()].map((s) => ({ ...s }));
   }
 
-    /**
+  /**
    * Induláskor (és csak induláskor) visszatölti minden gép LEGUTÓBBI
-   * ismert állapotát a Postgres events táblájából — enélkül minden
-   * backend-újraindítás után minden gép hamisan "idle"-nek látszana,
-   * amíg a következő valódi machine_status esemény meg nem érkezik.
+   * ismert állapotát — enélkül minden backend-újraindítás után minden gép
+   * hamisan "idle"-nek látszana, amíg a következő valódi machine_status
+   * esemény meg nem érkezik.
+   *
+   * Gépenként egy indexelt LIMIT 1 lekérdezés (korábban DISTINCT ON a
+   * teljes státusztörténeten). Ha egy gépnek nincs megmaradt nyers
+   * státuszeseménye (régóta hallgat, és a nyers adat a megőrzési időn túl
+   * már törlődött), az utolsó ismert állapot az óránkénti összesítő utolsó
+   * órájának domináns állapota.
    */
   async rehydrateStatuses(): Promise<void> {
-    const result = await pool.query<{ machine_id: string; status: string; timestamp: string }>(
-      `SELECT DISTINCT ON (machine_id) machine_id, payload->>'status' AS status, "timestamp"
-       FROM events
-       WHERE type = 'machine_status'
-       ORDER BY machine_id, "timestamp" DESC`,
+    const result = await pool.query<{ machine_id: string; status: string; timestamp: Date }>(
+      `SELECT m.id AS machine_id,
+              COALESCE(ev.status, hr.status) AS status,
+              COALESCE(ev.ts, hr.ts) AS "timestamp"
+       FROM machines m
+       LEFT JOIN LATERAL (
+         SELECT payload->>'status' AS status, "timestamp" AS ts FROM events
+         WHERE machine_id = m.id AND type = 'machine_status'
+         ORDER BY "timestamp" DESC LIMIT 1
+       ) ev ON true
+       LEFT JOIN LATERAL (
+         SELECT status, bucket_start + interval '1 hour' AS ts FROM machine_status_hourly
+         WHERE machine_id = m.id
+         ORDER BY bucket_start DESC, seconds DESC LIMIT 1
+       ) hr ON ev.status IS NULL
+       WHERE COALESCE(ev.status, hr.status) IS NOT NULL`,
     );
     for (const row of result.rows) {
       const state = this.getOrCreate(row.machine_id);
       state.status = row.status as MachineStatusValue;
-      state.lastUpdated = row.timestamp;
+      state.lastUpdated = new Date(row.timestamp).toISOString();
     }
   }
 

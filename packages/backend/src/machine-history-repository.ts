@@ -55,11 +55,14 @@ function generateBucketBoundaries(from: Date, to: Date, bucket: BucketUnit): Dat
 /**
  * Tetszőleges időszak-bontású (óra/nap/hét/hónap) történeti riport egy
  * gépre: jó/selejt darabszám, státusz-időtartamok, OEE, átlagos ciklusidő.
- * A bucket-határokat Node-ban generáljuk (nem tiszta SQL date_trunc-kal),
- * mert a "hét"/"hónap" bucket-ek változó hosszúságúak — így minden
- * státusz-szakaszt a tényleges bucket-határok mentén vágunk ketté, nem
- * csak a kezdő időbélyeg szerint soroljuk be (ami hosszú "running"
- * szakaszoknál torzítana).
+ * A bucket-határokat Node-ban generáljuk (a hét/hónap változó hosszú), a gyár
+ * helyi idejében (config.timezone → process.env.TZ).
+ *
+ * Darabszám: production_counts_hourly. Állapotidők: machine_status_hourly
+ * (sql/035). Mivel minden bucket-határ egész órára esik, az órás összesítők
+ * összege PONTOSAN a bucket értéke — és a lekérdezés nem függ a nyers
+ * események megőrzési idejétől. (Korábban minden híváskor a gép TELJES
+ * nyers státusztörténetét végigolvasta.)
  */
 export async function getMachineHistory(
   machineId: string,
@@ -73,7 +76,7 @@ export async function getMachineHistory(
     bucket_start: string;
     good_count: string;
     scrap_count: string;
-    status_breakdown: Record<string, number> | null;
+    status_breakdown: Record<string, number | string> | null;
     running_seconds: string;
   }>(
     `
@@ -93,30 +96,18 @@ export async function getMachineHistory(
         AND pch.bucket_start >= vb.bucket_start AND pch.bucket_start < vb.bucket_end
       GROUP BY vb.bucket_start
     ),
-    raw_status AS (
-      SELECT payload->>'status' AS status, "timestamp" AS started_at,
-             LEAD("timestamp") OVER (ORDER BY "timestamp") AS ended_at
-      FROM events
-      WHERE type = 'machine_status' AND machine_id = $1
-    ),
-    status_overlap AS (
-      SELECT vb.bucket_start, rs.status,
-             GREATEST(rs.started_at, vb.bucket_start) AS clip_start,
-             LEAST(COALESCE(rs.ended_at, now()), vb.bucket_end) AS clip_end
+    per_status AS (
+      SELECT vb.bucket_start, msh.status, SUM(msh.seconds)::float AS seconds
       FROM valid_buckets vb
-      JOIN raw_status rs
-        ON rs.started_at < vb.bucket_end AND COALESCE(rs.ended_at, now()) > vb.bucket_start
+      JOIN machine_status_hourly msh ON msh.machine_id = $1
+        AND msh.bucket_start >= vb.bucket_start AND msh.bucket_start < vb.bucket_end
+      GROUP BY vb.bucket_start, msh.status
     ),
     status_seconds AS (
-    SELECT bucket_start,
-            COALESCE(SUM(seconds) FILTER (WHERE status = 'running'), 0) AS running_seconds,
-            jsonb_object_agg(status, seconds) AS status_breakdown
-    FROM (
-        SELECT bucket_start, status, SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) AS seconds
-        FROM status_overlap
-        WHERE clip_end > clip_start
-        GROUP BY bucket_start, status
-      ) per_status
+      SELECT bucket_start,
+             COALESCE(SUM(seconds) FILTER (WHERE status = 'running'), 0) AS running_seconds,
+             jsonb_object_agg(status, seconds) AS status_breakdown
+      FROM per_status
       GROUP BY bucket_start
     )
     SELECT
@@ -151,7 +142,8 @@ export async function getMachineHistory(
   }
 
   return result.rows.map((row) => {
-    const statusSeconds: Record<string, number> = row.status_breakdown ?? {};
+    const statusSeconds: Record<string, number> = {};
+    for (const [status, seconds] of Object.entries(row.status_breakdown ?? {})) statusSeconds[status] = Number(seconds);
     const runningSeconds = Number(row.running_seconds);
     let downLikeSeconds = 0;
     for (const [status, seconds] of Object.entries(statusSeconds)) {
@@ -183,10 +175,5 @@ export async function getMachineHistory(
       oee,
       avgCycleTimeSeconds,
     };
-  }
-
-
-);
-
-  
+  });
 }

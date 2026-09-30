@@ -287,12 +287,27 @@ export async function getCurrentShiftSummaryForAllMachines(): Promise<ShiftSumma
         AND e."timestamp" >= sw.start_ts AND e."timestamp" < sw.end_ts
       GROUP BY sw.machine_id
     ),
+    -- Csak a műszakablak eseményei + a műszak elején érvényes állapot (a
+    -- műszak előtti utolsó esemény, gépenként indexelt LIMIT 1). Korábban az
+    -- összes aktív gép TELJES státusztörténetét végigolvasta, minden Overview-
+    -- frissítésnél.
     raw_status AS (
-      SELECT machine_id, payload->>'status' AS status, "timestamp" AS started_at,
-             LEAD("timestamp") OVER (PARTITION BY machine_id ORDER BY "timestamp") AS ended_at
-      FROM events
-      WHERE type = 'machine_status'
-        AND machine_id IN (SELECT machine_id FROM shift_windows)
+      SELECT sw.machine_id, x.status, x.started_at,
+             LEAD(x.started_at) OVER (PARTITION BY sw.machine_id ORDER BY x.started_at) AS ended_at
+      FROM shift_windows sw
+      CROSS JOIN LATERAL (
+        SELECT e.payload->>'status' AS status, e."timestamp" AS started_at
+        FROM events e
+        WHERE e.machine_id = sw.machine_id AND e.type = 'machine_status'
+          AND e."timestamp" >= sw.start_ts AND e."timestamp" < sw.end_ts
+        UNION ALL
+        SELECT * FROM (
+          SELECT p.payload->>'status' AS status, sw.start_ts AS started_at
+          FROM events p
+          WHERE p.machine_id = sw.machine_id AND p.type = 'machine_status' AND p."timestamp" < sw.start_ts
+          ORDER BY p."timestamp" DESC LIMIT 1
+        ) prev
+      ) x
     ),
     status_overlap AS (
       SELECT sw.machine_id, rs.status,
