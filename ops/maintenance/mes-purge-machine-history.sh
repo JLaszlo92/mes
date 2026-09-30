@@ -47,6 +47,7 @@ CONFIG=(
   machine_status_definitions
   preventive_maintenance_schedules
   terminal_ui_machines
+  user_machine_scope
 )
 
 apply=false; assume_yes=false; allow_live=false
