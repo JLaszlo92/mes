@@ -16,12 +16,19 @@ export interface AuditEventInput {
  * console, never thrown — losing an audit row is bad, but blocking a
  * login or a machine update because the audit table had a hiccup would
  * be worse.
+ *
+ * Ha csak actorId érkezik, az actor_email-t ugyanebben az INSERT-ben a
+ * users táblából tölti ki (egy lekérdezés, extra adatbázis-kör nélkül). Az
+ * e-mail pillanatképként tárolódik: az actor_id FK-ja ON DELETE SET NULL,
+ * így egy később törölt felhasználó bejegyzéseiről is kiderül, ki volt az.
+ * Kifejezetten átadott actorEmail (pl. login_failed egy nem létező
+ * fiókra) elsőbbséget élvez.
  */
 export async function recordAuditEvent(event: AuditEventInput): Promise<void> {
   try {
     await pool.query(
       `INSERT INTO audit_log (id, actor_id, actor_email, action, target, details, ip_address)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2::text, COALESCE($3::text, (SELECT email FROM users WHERE id = $2::text)), $4, $5, $6, $7)`,
       [
         randomUUID(),
         event.actorId ?? null,
