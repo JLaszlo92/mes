@@ -457,12 +457,35 @@ hour-aligned 24 h window every 5 min, full-history backfill on first start
 events every minute. The baseline hour is prorated (error ≤ one hour of
 production).
 
-**Retention itself is not in place yet.** Still reading raw events over
-long ranges: machine history, status timeline, shift summary, work-order
-progress (since start), `state.ts` (last status per machine). These need to
-move to the rollups, or be bounded by the retention window, before a
-daily `drop_chunks` job (TimescaleDB OSS: `drop_chunks` works,
-`add_retention_policy` doesn't) is switched on. Chunks are 7 days.
+**Raw-event retention** (`raw-event-retention-evaluator.ts`, every 6 h,
+first run 10 min after start): drops `events` chunks older than
+`MES_RAW_EVENT_RETENTION_DAYS` (default **90**; `0` = off; minimum 7) with
+`drop_chunks` (TimescaleDB OSS has no `add_retention_policy`). **Dry run by
+default** — `MES_RAW_EVENT_RETENTION_DRY_RUN=false` in `/etc/mes/backend.env`
+turns deletion on; until then it only logs `would drop chunk`. Per chunk,
+oldest first:
+
+1. cutoff = LEAST(now − retention, now − 7 d, first `in_progress` transition
+   of any still-open work order − 1 d) — work-order progress still reads raw
+   events, so an open order holds retention back;
+2. the chunk's hourly rollups are **recomputed from raw before dropping**
+   (production counts; status seconds extended into the next chunk up to
+   its first status event — those hours' starting state lives in this
+   chunk, so later they can't be recomputed);
+3. verify: raw production events in the chunk = rollup sum, else stop
+   (nothing dropped, System alert);
+4. `drop_chunks`, audit `raw_events_dropped` (actor
+   `system:raw-event-retention`).
+
+Every run writes `job_status` (`raw_event_retention`); a failure raises a
+System alert that resolves on the next good run. The status rollup
+(`rollupMachineStatus`) no longer overwrites hours whose starting state is
+gone (raw truncated by retention but rollup history exists) — they keep the
+values computed from full raw data. What reads raw events after this:
+current shift / Overview / terminal (current shift only), status timeline
+within the retention window (older: hourly dominant status from the
+rollup), work-order progress (protected by the cutoff), downtime evaluator
+(recent), `state.ts` (falls back to the rollup). Chunks are 7 days.
 
 **Clocks:** the three LXC nodes share the Proxmox host's kernel clock —
 time sync is the host's `chrony` (check on the host: `chronyc tracking`),
@@ -516,6 +539,60 @@ is in `ops/backup/README.md`.
   since yesterday) silently vanished from the list. Now: all open alerts
   plus the last 24 h of resolved ones. `AlertsPanel`'s "Create ticket"
   now reports success/failure and doesn't create duplicates.
+
+## Plant hierarchy and machine registry UI — Sep 30 (evening)
+
+- **Hierarchy** (`sql/036_plant_hierarchy.sql`): `sites` → `areas` →
+  `lines` (ISA-95 Site/Area/Line). A machine **must** belong to an area and
+  **may** belong to a line (standalone machines sit directly under the area).
+  The site is derived from the area, not stored on the machine. A composite
+  FK `(line_id, area_id) → lines(id, area_id)` makes a machine-on-a-line-of-
+  another-area impossible; `ON UPDATE CASCADE` means moving a line to
+  another area moves its machines too. All hierarchy FKs are `RESTRICT`
+  (non-empty nodes can't be deleted → 409). Existing machines were placed
+  under "Main site / General" by a **one-time, guarded** backfill (runs only
+  while `machines.area_id` doesn't exist yet — no re-running
+  `WHERE … IS NULL`, cf. 023). `machines.location` is kept as legacy
+  free text; the new UI only shows it read-only.
+- **API**: `machine-registry-routes.ts` replaces the old routes in
+  `server.ts`. `GET /api/machine-registry?active=true|false` (no param =
+  all). `PATCH /api/machine-registry/:id` (also `PUT`, for old clients)
+  updates any subset of fields in **one transaction** — name, type, active,
+  area/line, shift pattern, calendar, auto off-shift, ideal cycle time,
+  micro-stop threshold; `null`/`""` clears nullable fields (the old
+  `COALESCE` update couldn't). `POST /api/machine-registry/bulk`
+  (`activate` | `deactivate` | `move`, ≤ 500 ids, all-or-nothing, rows
+  locked in id order). Audit: `machine_updated` with only the changed
+  fields (`changes: {field: {from, to}}`), one entry per machine for bulk
+  actions. Validation: pure functions in `machine-input.ts`
+  (unit-tested), errors are `400 { error, field }`. Hierarchy:
+  `GET /api/plant-hierarchy` plus `POST/PATCH/DELETE /api/sites|areas|lines`,
+  audited as `site_created`, `line_updated`, ….
+- **Bugs fixed on the way**: `POST /api/machine-registry` dropped
+  `idealCycleTimeSeconds`; new machines had no shift pattern/calendar until
+  the next restart (023's re-run line filled them) — now defaulted on
+  insert; the old registry panel's scheduling save ignored errors.
+- **Deactivated machines**: selectors in all panels load
+  `?active=true`; name lookups (Alerts, Status definitions) still see all
+  machines. Scheduling a deactivated machine is rejected with 409 (new
+  schedule endpoint and the legacy assignment POST). Reports (Pareto,
+  downtime summary, shift summary) were already active-only in SQL.
+- **UI foundation**: `theme.css` (design tokens, ISA-101 direction: neutral
+  grey, colour only for abnormal states, one steel-blue for interaction);
+  `ui/DataTable.tsx` (sorting, selection, row actions, dimmed rows — no
+  filtering, the caller filters), `ui/Drawer.tsx` (side panel, Esc/backdrop
+  close), `ui/csv.ts` (Excel-friendly export, formula-injection safe),
+  `master-data.ts` (shared types, `readJsonOrThrow`, a tiny change
+  notification so the hierarchy and machine panels refresh each other).
+  `MachineRegistryPanel` is a searchable/filterable table with bulk bar and
+  CSV export; editing/copying in `MachineEditorDrawer`;
+  `PlantHierarchyPanel` is a three-column site/area/line browser. App
+  container widened from 900 to 1280 px.
+- **Next UI steps**: move the other long lists (audit log, downtime
+  periods, alerts, work orders, fault reports) onto `DataTable` — the
+  unbounded ones with server-side paging; sidebar navigation and a global
+  site/area/line scope selector; replace the scattered inline colours with
+  tokens; `WS_URL`/`API_BASE` dedup.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
@@ -578,9 +655,9 @@ is in `ops/backup/README.md`.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
-- **Raw-event retention**: move the remaining long-range raw-event readers
-  to the rollups (see "Time, rollups and retention prep"), then a daily
-  `drop_chunks` evaluator. Needed before the pilot fills the disk.
+- **Raw-event retention is in dry run.** Review the `would drop chunk` log
+  lines once data passes 90 days (late November), then set
+  `MES_RAW_EVENT_RETENTION_DRY_RUN=false`. Before the pilot.
 - **Test-data cleanup before the pilot**: the simulator rigs produced
   ~120k status events and ~59k downtime periods. If the pilot runs on this
   database, clear the test machines' data first so reports start clean
@@ -603,6 +680,8 @@ is in `ops/backup/README.md`.
 - A data-retention policy for raw events (flagged in earlier revisions,
   still not implemented — not urgent at current volumes, worth doing
   before the pilot).
+- `state.test.ts` fails without `DATABASE_URL` (it imports `db.ts`) —
+  run tests with the env file loaded, or mock the pool.
 - Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
   `api.ts` now exports `API_BASE`, so these can become imports.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,

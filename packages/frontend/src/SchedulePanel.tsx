@@ -57,7 +57,7 @@ export default function SchedulePanel() {
     Promise.all([
       apiFetch(`${API_BASE}/api/work-order-assignments`).then((r) => r.json()),
       apiFetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
     ])
       .then(([a, wo, m]) => {
         setAssignments(a);

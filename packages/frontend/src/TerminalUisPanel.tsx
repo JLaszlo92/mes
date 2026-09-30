@@ -38,7 +38,7 @@ export default function TerminalUisPanel() {
   function load() {
     Promise.all([
       apiFetch(`${API_BASE}/api/terminal-uis`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
     ])
       .then(([u, m]) => {
         setUis(u);

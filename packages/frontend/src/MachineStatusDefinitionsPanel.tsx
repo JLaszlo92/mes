@@ -5,6 +5,7 @@ import { apiFetch, API_BASE } from "./api.js";
 interface Machine {
   id: string;
   name: string;
+  isActive: boolean;
 }
 
 interface StatusDefinition {
@@ -130,7 +131,7 @@ export default function MachineStatusDefinitionsPanel() {
           Machine<br />
           <select value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
             <option value="">All machines (global default)</option>
-            {machines.map((m) => (
+            {machines.filter((m) => m.isActive).map((m) => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>

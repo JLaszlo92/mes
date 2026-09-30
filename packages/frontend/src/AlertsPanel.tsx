@@ -27,6 +27,7 @@ interface AlertRule {
 interface Machine {
   id: string;
   name: string;
+  isActive: boolean;
 }
 
 const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
@@ -240,7 +241,7 @@ export default function AlertsPanel() {
               Machine<br />
               <select value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
                 <option value="">All machines</option>
-                {machines.map((m) => (
+                {machines.filter((m) => m.isActive).map((m) => (
                   <option key={m.id} value={m.id}>{m.name}</option>
                 ))}
               </select>

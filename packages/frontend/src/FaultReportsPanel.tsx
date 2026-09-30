@@ -76,7 +76,7 @@ export default function FaultReportsPanel() {
 
   function load() {
     Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
       apiFetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
       apiFetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
         if (res.status === 401) {

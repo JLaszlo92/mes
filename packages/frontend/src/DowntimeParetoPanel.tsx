@@ -72,7 +72,7 @@ export default function DowntimeParetoPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiFetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry?active=true`)
       .then((r) => (r.ok ? (r.json() as Promise<Machine[]>) : Promise.reject(new Error(`machines: ${r.status}`))))
       .then((m) => setMachines(m.filter((x) => x.isActive)))
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));

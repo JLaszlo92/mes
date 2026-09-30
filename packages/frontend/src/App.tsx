@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { MachineEvent, MachineStatusValue } from "@mes/shared";
 import MachineOverviewPanel from "./MachineOverviewPanel.js";
 import MachineRegistryPanel from "./MachineRegistryPanel.js";
+import PlantHierarchyPanel from "./PlantHierarchyPanel.js";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE, WS_URL } from "./api.js";
 import LoginForm from "./LoginForm.js";
@@ -166,7 +167,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 900, margin: "40px auto", padding: "0 16px" }}>
+    <div style={{ maxWidth: 1280, margin: "40px auto", padding: "0 16px" }}>
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <h1 style={{ fontSize: 20 }}>MES Dashboard</h1>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -265,6 +266,7 @@ export default function App() {
         <div>
           <CollapsibleSection title="Machines" defaultOpen>
             <MachineRegistryPanel />
+            <PlantHierarchyPanel />
             <MachineStatusDefinitionsPanel />
             <ShiftPatternsPanel />
           </CollapsibleSection>

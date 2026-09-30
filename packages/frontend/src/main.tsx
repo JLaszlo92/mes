@@ -4,6 +4,7 @@ import App from "./App.js";
 import TerminalPage from "./TerminalPage.js";
 import { AuthProvider } from "./auth-context.js";
 import "./index.css";
+import "./theme.css";
 
 const terminalMatch = window.location.pathname.match(/^\/terminal\/([^/]+)/);
 

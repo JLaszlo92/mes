@@ -40,7 +40,7 @@ export default function MachineFaultCodesPanel() {
   const isAdmin = auth?.role === "admin" || auth?.role === "manager";
 
   useEffect(() => {
-    apiFetch(`${API_BASE}/api/machine-registry`)
+    apiFetch(`${API_BASE}/api/machine-registry?active=true`)
       .then((r) => r.json())
       .then((data: Machine[]) => {
         setMachines(data);

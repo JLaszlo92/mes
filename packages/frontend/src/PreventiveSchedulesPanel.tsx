@@ -53,7 +53,7 @@ export default function PreventiveSchedulesPanel() {
 
   function load() {
     Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()),
+      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
       apiFetch(`${API_BASE}/api/preventive-schedules`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
         (res) => {
           if (res.status === 401) {

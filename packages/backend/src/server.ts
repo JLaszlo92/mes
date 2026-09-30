@@ -4,13 +4,7 @@ import websocket from "@fastify/websocket";
 import { eventHub, MACHINE_EVENT } from "./hub.js";
 import { stateStore } from "./state.js";
 import { getShiftSummary } from "./shift-summary-repository.js";
-import {
-  listMachines,
-  getMachine,
-  createMachine,
-  updateMachine,
-  isUniqueViolation,
-} from "./machines-repository.js";
+import { getMachine } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
 import { deleteSession } from "./sessions-repository.js";
 import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
@@ -168,6 +162,8 @@ import {
   WS_CLOSE_REAUTH,
 } from "./ws-tickets.js";
 import authRoutes from "./auth-routes.js";
+import machineRegistryRoutes from "./machine-registry-routes.js";
+import plantHierarchyRoutes from "./plant-hierarchy-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -178,6 +174,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(authPlugin);
   registerAuthGuard(app, authModeFromEnv());
   await app.register(authRoutes);
+  await app.register(machineRegistryRoutes);
+  await app.register(plantHierarchyRoutes);
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -192,48 +190,6 @@ export async function buildServer(): Promise<FastifyInstance> {
     return state;
   });
 
-  app.get("/api/machine-registry", async () => listMachines());
-
-  app.get<{ Params: { id: string } }>("/api/machine-registry/:id", async (request, reply) => {
-    const machine = await getMachine(request.params.id);
-    if (!machine) {
-      reply.code(404);
-      return { error: "unknown machine" };
-    }
-    return machine;
-  });
-
-  app.post<{ Body: { id: string; name: string; assetType?: string; location?: string } }>(
-    "/api/machine-registry",
-    { preHandler: requireRole("admin", "manager") },
-    async (request, reply) => {
-      const { id, name, assetType, location } = request.body;
-      if (!id || !name) {
-        reply.code(400);
-        return { error: "id and name are required" };
-      }
-      try {
-        const machine = await createMachine({ id, name, assetType, location });
-        await recordAuditEvent({
-          actorId: request.user!.id,
-          action: "machine_created",
-          target: machine.id,
-          details: { name, assetType, location },
-          ipAddress: request.ip,
-        });
-
-        reply.code(201);
-        return machine;
-      } catch (err) {
-        if (isUniqueViolation(err)) {
-          reply.code(409);
-          return { error: `machine with id "${id}" already exists` };
-        }
-        throw err;
-      }
-    },
-  );
-
   app.post("/api/auth/logout", async (request, reply) => {
     const header = request.headers.authorization;
     if (header?.startsWith("Bearer ")) {
@@ -243,30 +199,6 @@ export async function buildServer(): Promise<FastifyInstance> {
     reply.code(204);
     return null;
   });
-
-  app.put<{
-    Params: { id: string };
-    Body: { name?: string; assetType?: string; location?: string; isActive?: boolean };
-  }>(
-    "/api/machine-registry/:id",
-    { preHandler: requireRole("admin", "manager") },
-    async (request, reply) => {
-      const machine = await updateMachine(request.params.id, request.body);
-      if (!machine) {
-        reply.code(404);
-        return { error: "unknown machine" };
-      }
-      await recordAuditEvent({
-        actorId: request.user!.id,
-        action: "machine_updated",
-        target: machine.id,
-        details: request.body,
-        ipAddress: request.ip,
-      });
-      return machine;
-    },
-  );
-
 
   app.get<{ Querystring: { from?: string; to?: string; limit?: string; offset?: string } }>(
     "/api/audit-log",
@@ -438,6 +370,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     if (!workOrderId || !machineId || !plannedStart || !plannedEnd) {
       reply.code(400);
       return { error: "workOrderId, machineId, plannedStart and plannedEnd are required" };
+    }
+    const target = await getMachine(machineId);
+    if (target && !target.isActive) {
+      reply.code(409);
+      return { error: "cannot schedule work on a deactivated machine" };
     }
     try {
       const assignment = await createAssignment(request.body);
@@ -1874,6 +1811,17 @@ app.delete<{ Params: { id: string } }>(
       plan = { mode: "span", start, end };
     }
  
+    // Deaktivált gépre nem lehet új munkát tervezni (a választók sem kínálják fel).
+    const target = await getMachine(machineId);
+    if (!target) {
+      reply.code(404);
+      return { error: "unknown machine" };
+    }
+    if (!target.isActive) {
+      reply.code(409);
+      return { error: "cannot schedule work on a deactivated machine" };
+    }
+
     const planned = await planScheduleChunks(machineId, plan);
     if (!planned.ok) {
       reply.code(400);

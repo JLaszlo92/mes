@@ -1,309 +1,432 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { downloadCsv } from "./ui/csv.js";
+import MachineEditorDrawer, { type EditorTarget, type NamedOption } from "./MachineEditorDrawer.js";
+import { notifyMasterDataChanged, readJsonOrThrow, useMasterDataVersion, type Machine, type PlantHierarchy } from "./master-data.js";
 
-interface ShiftPattern {
-  id: string;
-  name: string;
-}
-interface Calendar {
-  id: string;
-  name: string;
-}
+type StatusFilter = "active" | "inactive" | "all";
 
-interface Machine {
-  id: string;
-  name: string;
-  assetType: string | null;
-  location: string | null;
-  idealCycleTimeSeconds: number | null;
-  isActive: boolean;
-  shiftPatternId: string | null;
-  calendarId: string | null;
-  autoOffshiftStatus: boolean;
-}
+const EMPTY_HIERARCHY: PlantHierarchy = { sites: [], areas: [], lines: [] };
 
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = {
-  ...buttonStyle,
-  background: "#fff",
-  color: "#0b0b0b",
-};
-
+/**
+ * Gépnyilvántartás: kereshető, szűrhető, rendezhető táblázat; tömeges
+ * műveletek (aktiválás, deaktiválás, áthelyezés, CSV export); a szerkesztés
+ * és a másolás oldalpanelben (MachineEditorDrawer).
+ *
+ * A szűrés kliensoldali — a teljes géplistát egyszer tölti le (néhány száz
+ * gépig ez a gyorsabb). Minden mentés a szerveren egy tranzakció.
+ */
 export default function MachineRegistryPanel() {
-  const { auth, logout } = useAuth();
-  const [shiftPatterns, setShiftPatterns] = useState<ShiftPattern[]>([]);
-  const [calendars, setCalendars] = useState<Calendar[]>([]);
-  const [savingSchedulingId, setSavingSchedulingId] = useState<string | null>(null);
+  const { auth } = useAuth();
+  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const masterDataVersion = useMasterDataVersion();
+
   const [machines, setMachines] = useState<Machine[]>([]);
+  const [hierarchy, setHierarchy] = useState<PlantHierarchy>(EMPTY_HIERARCHY);
+  const [shiftPatterns, setShiftPatterns] = useState<NamedOption[]>([]);
+  const [calendars, setCalendars] = useState<NamedOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ id: "", name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });  const [submitting, setSubmitting] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });
-  const [savingId, setSavingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  function load() {
+  const [query, setQuery] = useState("");
+  const [siteId, setSiteId] = useState("");
+  const [areaId, setAreaId] = useState("");
+  const [lineId, setLineId] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("active");
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [editor, setEditor] = useState<EditorTarget | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<{ areaId: string; lineId: string } | null>(null);
+
+  useEffect(() => {
     setLoading(true);
-    apiFetch(`${API_BASE}/api/machine-registry`)
-      .then((res) => res.json())
-      .then((data: Machine[]) => {
-        setMachines(data);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)))
+    Promise.all([
+      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => readJsonOrThrow<Machine[]>(r)).then(setMachines),
+      apiFetch(`${API_BASE}/api/plant-hierarchy`).then((r) => readJsonOrThrow<PlantHierarchy>(r)).then(setHierarchy),
+      apiFetch(`${API_BASE}/api/shift-patterns`).then((r) => readJsonOrThrow<NamedOption[]>(r)).then(setShiftPatterns),
+      apiFetch(`${API_BASE}/api/calendars`).then((r) => readJsonOrThrow<NamedOption[]>(r)).then(setCalendars),
+    ])
+      .then(() => setError(null))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
-    apiFetch(`${API_BASE}/api/shift-patterns`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setShiftPatterns);
-    apiFetch(`${API_BASE}/api/calendars`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-      .then((r) => (r.ok ? r.json() : []))
-      .then(setCalendars);
+  }, [masterDataVersion]);
+
+  const siteName = useMemo(() => new Map(hierarchy.sites.map((s) => [s.id, s.name])), [hierarchy]);
+  const areaName = useMemo(() => new Map(hierarchy.areas.map((a) => [a.id, a.name])), [hierarchy]);
+  const lineName = useMemo(() => new Map(hierarchy.lines.map((l) => [l.id, l.name])), [hierarchy]);
+  const patternName = useMemo(() => new Map(shiftPatterns.map((p) => [p.id, p.name])), [shiftPatterns]);
+  const calendarName = useMemo(() => new Map(calendars.map((c) => [c.id, c.name])), [calendars]);
+
+  const filtered = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return machines.filter((m) => {
+      if (status === "active" && !m.isActive) return false;
+      if (status === "inactive" && m.isActive) return false;
+      if (siteId && m.siteId !== siteId) return false;
+      if (areaId && m.areaId !== areaId) return false;
+      if (lineId && (lineId === "none" ? m.lineId !== null : m.lineId !== lineId)) return false;
+      if (words.length === 0) return true;
+      const haystack = [m.id, m.name, m.assetType, m.location, siteName.get(m.siteId), areaName.get(m.areaId), m.lineId ? lineName.get(m.lineId) : null]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return words.every((word) => haystack.includes(word));
+    });
+  }, [machines, query, status, siteId, areaId, lineId, siteName, areaName, lineName]);
+
+  // A kiszűrt gépek ne maradjanak kijelölve — a tömeges művelet csak arra
+  // hasson, amit a felhasználó éppen lát.
+  const visibleSelected = useMemo(() => {
+    const visible = new Set(filtered.map((m) => m.id));
+    return new Set([...selected].filter((id) => visible.has(id)));
+  }, [filtered, selected]);
+
+  const filterAreas = hierarchy.areas.filter((a) => !siteId || a.siteId === siteId);
+  const filterLines = hierarchy.lines.filter((l) => (areaId ? l.areaId === areaId : filterAreas.some((a) => a.id === l.areaId)));
+  const filtersActive = query !== "" || siteId !== "" || areaId !== "" || lineId !== "" || status !== "active";
+
+  function clearFilters() {
+    setQuery("");
+    setSiteId("");
+    setAreaId("");
+    setLineId("");
+    setStatus("active");
   }
 
-  useEffect(load, []);
+  function replaceMachines(updated: Machine[]) {
+    const byId = new Map(updated.map((m) => [m.id, m]));
+    setMachines((prev) => {
+      const next = prev.map((m) => byId.get(m.id) ?? m);
+      for (const m of updated) if (!prev.some((p) => p.id === m.id)) next.push(m);
+      return next;
+    });
+  }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
+  async function runBulk(body: Record<string, unknown>, verb: string) {
+    const ids = [...visibleSelected];
+    if (ids.length === 0) return;
+    setBulkBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const res = await apiFetch(`${API_BASE}/api/machine-registry`, {
+      const res = await apiFetch(`${API_BASE}/api/machine-registry/bulk`, {
         method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${auth?.token}`,
-          },        
-          body: JSON.stringify({
-          id: form.id.trim(),
-          name: form.name.trim(),
-          assetType: form.assetType.trim() || undefined,
-          location: form.location.trim() || undefined,
-          idealCycleTimeSeconds: form.idealCycleTimeSeconds ? Number(form.idealCycleTimeSeconds) : undefined,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, ids }),
       });
-      if (res.status === 401) {
-          logout();
-          throw new Error("session expired — please sign in again");
-        }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({ id: "", name: "", assetType: "", location: "", idealCycleTimeSeconds: "" });
-      load();
+      const result = await readJsonOrThrow<{ updated: number; machines: Machine[] }>(res);
+      replaceMachines(result.machines);
+      notifyMasterDataChanged(); // a hierarchia-panel géplétszámai is frissüljenek
+      setSelected(new Set());
+      setMoveTarget(null);
+      const unchanged = ids.length - result.updated;
+      setNotice(`${verb} ${result.updated} machine${result.updated === 1 ? "" : "s"}${unchanged > 0 ? ` (${unchanged} already up to date)` : ""}.`);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      setBulkBusy(false);
     }
-  }
-
-  function startEdit(m: Machine) {
-    setEditingId(m.id);
-    setEditForm({
-      name: m.name,
-      assetType: m.assetType ?? "",
-      location: m.location ?? "",
-      idealCycleTimeSeconds: m.idealCycleTimeSeconds !== null ? String(m.idealCycleTimeSeconds) : "",
-    });
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-  }
-
-  async function saveEdit(id: string) {
-    setSavingId(id);
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(id)}`, {
-        method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${auth?.token}`,
-          },
-          body: JSON.stringify({
-            name: editForm.name.trim(),
-            assetType: editForm.assetType.trim() || undefined,
-            location: editForm.location.trim() || undefined,
-            idealCycleTimeSeconds: editForm.idealCycleTimeSeconds ? Number(editForm.idealCycleTimeSeconds) : undefined,
-          }),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setEditingId(null);
-      load();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSavingId(null);
-    }
-  }
-
-  async function updateScheduling(machineId: string, changes: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean }) {
-    setSavingSchedulingId(machineId);
-    await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(machineId)}/scheduling`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify(changes),
-    });
-    load();
-    setSavingSchedulingId(null);
   }
 
   async function toggleActive(m: Machine) {
-    setSavingId(m.id);
+    if (m.isActive && !window.confirm(`Deactivate ${m.name}? It keeps its history but disappears from selectors and scheduling.`)) return;
     setError(null);
+    setNotice(null);
     try {
       const res = await apiFetch(`${API_BASE}/api/machine-registry/${encodeURIComponent(m.id)}`, {
-        method: "PUT",
-        headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${auth?.token}`,
-          },
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ isActive: !m.isActive }),
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      load();
+      replaceMachines([await readJsonOrThrow<Machine>(res)]);
+      setNotice(`${m.name} ${m.isActive ? "deactivated" : "activated"}.`);
     } catch (err) {
-      setError(String(err));
-    } finally {
-      setSavingId(null);
+      setError(err instanceof Error ? err.message : String(err));
     }
   }
 
+  function exportCsv(rows: Machine[]) {
+    downloadCsv(
+      `machines-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["ID", "Name", "Type", "Site", "Area", "Line", "Ideal cycle (s)", "Micro-stop threshold (s)", "Shift pattern", "Calendar", "Active"],
+      rows.map((m) => [
+        m.id,
+        m.name,
+        m.assetType,
+        siteName.get(m.siteId),
+        areaName.get(m.areaId),
+        m.lineId ? lineName.get(m.lineId) : "",
+        m.idealCycleTimeSeconds,
+        m.microStopThresholdSeconds,
+        m.shiftPatternId ? patternName.get(m.shiftPatternId) : "",
+        m.calendarId ? calendarName.get(m.calendarId) : "",
+        m.isActive ? "yes" : "no",
+      ]),
+    );
+  }
+
+  const nameOf = (map: Map<string, string>, id: string | null) => (id ? map.get(id) ?? null : null);
+
+  const columns: Column<Machine>[] = [
+    {
+      id: "name",
+      header: "Machine",
+      sortValue: (m) => m.name,
+      cell: (m) => (
+        <span>
+          {m.name}
+          <span className="ui-sub">{m.id}</span>
+        </span>
+      ),
+    },
+    { id: "type", header: "Type", sortValue: (m) => m.assetType, cell: (m) => m.assetType ?? "—" },
+    { id: "site", header: "Site", sortValue: (m) => nameOf(siteName, m.siteId), cell: (m) => nameOf(siteName, m.siteId) ?? "—" },
+    { id: "area", header: "Area", sortValue: (m) => nameOf(areaName, m.areaId), cell: (m) => nameOf(areaName, m.areaId) ?? "—" },
+    { id: "line", header: "Line", sortValue: (m) => nameOf(lineName, m.lineId), cell: (m) => nameOf(lineName, m.lineId) ?? "—" },
+    {
+      id: "cycle",
+      header: "Ideal cycle",
+      align: "right",
+      sortValue: (m) => m.idealCycleTimeSeconds,
+      cell: (m) => (m.idealCycleTimeSeconds !== null ? `${m.idealCycleTimeSeconds} s` : "—"),
+    },
+    {
+      id: "pattern",
+      header: "Shift pattern",
+      sortValue: (m) => nameOf(patternName, m.shiftPatternId),
+      cell: (m) => nameOf(patternName, m.shiftPatternId) ?? "—",
+    },
+    { id: "calendar", header: "Calendar", sortValue: (m) => nameOf(calendarName, m.calendarId), cell: (m) => nameOf(calendarName, m.calendarId) ?? "—" },
+    {
+      id: "status",
+      header: "Status",
+      sortValue: (m) => (m.isActive ? 0 : 1),
+      cell: (m) => (m.isActive ? "Active" : <span className="ui-pill">Deactivated</span>),
+    },
+  ];
+
+  const moveLines = moveTarget ? hierarchy.lines.filter((l) => l.areaId === moveTarget.areaId) : [];
+
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Machine registry</h2>
-
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Machine ID<br />
-          <input required value={form.id} onChange={(e) => setForm((f) => ({ ...f, id: e.target.value }))} placeholder="s7-rig-01" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Name<br />
-          <input required value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Press 3" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Type<br />
-          <input value={form.assetType} onChange={(e) => setForm((f) => ({ ...f, assetType: e.target.value }))} placeholder="Hydraulic press" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Location<br />
-          <input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))} placeholder="Line 1" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-            Ideal cycle (s)<br />
-            <input type="number" step="0.1" value={form.idealCycleTimeSeconds} onChange={(e) => setForm((f) => ({ ...f, idealCycleTimeSeconds: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Adding…" : "Add machine"}
+    <section className="ui-panel">
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Machines</h2>
+        <span className="ui-panel-count num">{filtered.length === machines.length ? machines.length : `${filtered.length} of ${machines.length}`}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn" onClick={() => exportCsv(filtered)} disabled={filtered.length === 0}>
+          Export CSV
         </button>
-      </form>
+        {canEdit && (
+          <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })} disabled={hierarchy.areas.length === 0}>
+            Add machine
+          </button>
+        )}
+      </div>
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {loading && <p style={{ color: "#898781" }}>Loading…</p>}
-      {!loading && machines.length === 0 && <p style={{ color: "#898781" }}>No machines registered yet.</p>}
+      <div className="ui-toolbar" role="search">
+        <input
+          className="ui-input ui-search"
+          type="search"
+          placeholder="Search name, ID, type, location…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search machines"
+        />
+        <select className="ui-select" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} aria-label="Status">
+          <option value="active">Active</option>
+          <option value="inactive">Deactivated</option>
+          <option value="all">All statuses</option>
+        </select>
+        <select
+          className="ui-select"
+          value={siteId}
+          onChange={(e) => {
+            setSiteId(e.target.value);
+            setAreaId("");
+            setLineId("");
+          }}
+          aria-label="Site"
+        >
+          <option value="">All sites</option>
+          {hierarchy.sites.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <select
+          className="ui-select"
+          value={areaId}
+          onChange={(e) => {
+            setAreaId(e.target.value);
+            setLineId("");
+          }}
+          aria-label="Area"
+        >
+          <option value="">All areas</option>
+          {filterAreas.map((a) => (
+            <option key={a.id} value={a.id}>
+              {a.name}
+            </option>
+          ))}
+        </select>
+        <select className="ui-select" value={lineId} onChange={(e) => setLineId(e.target.value)} aria-label="Line">
+          <option value="">All lines</option>
+          <option value="none">No line</option>
+          {filterLines.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+        {filtersActive && (
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
 
-      {machines.map((m) => {
-        const isEditing = editingId === m.id;
-        const isSaving = savingId === m.id;
-
-        if (isEditing) {
-          return (
-            <div key={m.id} style={{ border: "1px solid #0b0b0b", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-              <div style={{ fontSize: 12, color: "#898781" }}>{m.id}</div>
-              <label style={{ fontSize: 12 }}>
-                Name<br />
-                <input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} style={inputStyle} />
-              </label>
-              <label style={{ fontSize: 12 }}>
-                Type<br />
-                <input value={editForm.assetType} onChange={(e) => setEditForm((f) => ({ ...f, assetType: e.target.value }))} style={inputStyle} />
-              </label>
-              <label style={{ fontSize: 12 }}>
-                Location<br />
-                <input value={editForm.location} onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))} style={inputStyle} />
-              </label>
-              <label style={{ fontSize: 12 }}>
-                Ideal cycle (s)<br />
-                <input
-                  type="number"
-                  step="0.1"
-                  value={editForm.idealCycleTimeSeconds}
-                  onChange={(e) => setEditForm((f) => ({ ...f, idealCycleTimeSeconds: e.target.value }))}
-                  style={inputStyle}
-                />
-              </label>
-              <button type="button" onClick={() => saveEdit(m.id)} disabled={isSaving} style={buttonStyle}>
-                {isSaving ? "Saving…" : "Save"}
+      {canEdit && visibleSelected.size > 0 && (
+        <div className="ui-bulkbar" aria-live="polite">
+          <span className="ui-bulkbar-count num">{visibleSelected.size} selected</span>
+          {moveTarget ? (
+            <>
+              <select className="ui-select" value={moveTarget.areaId} onChange={(e) => setMoveTarget({ areaId: e.target.value, lineId: "" })} aria-label="Move to area">
+                {hierarchy.sites.map((s) => (
+                  <optgroup key={s.id} label={s.name}>
+                    {hierarchy.areas
+                      .filter((a) => a.siteId === s.id)
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                  </optgroup>
+                ))}
+              </select>
+              <select className="ui-select" value={moveTarget.lineId} onChange={(e) => setMoveTarget({ ...moveTarget, lineId: e.target.value })} aria-label="Move to line">
+                <option value="">No line</option>
+                {moveLines.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="ui-btn ui-btn-primary"
+                disabled={bulkBusy}
+                onClick={() => void runBulk({ action: "move", areaId: moveTarget.areaId, lineId: moveTarget.lineId || null }, "Moved")}
+              >
+                Move
               </button>
-              <button type="button" onClick={cancelEdit} style={secondaryButtonStyle}>
+              <button type="button" className="ui-btn ui-btn-ghost" onClick={() => setMoveTarget(null)}>
                 Cancel
               </button>
-            </div>
-          );
-        }
-
-        return (
-          <div key={m.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center", opacity: m.isActive ? 1 : 0.5 }}>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>ID</div><div style={{ fontWeight: 600 }}>{m.id}</div></div>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>Name</div><div style={{ fontWeight: 600 }}>{m.name}</div></div>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>Type</div><div>{m.assetType ?? "—"}</div></div>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>Location</div><div>{m.location ?? "—"}</div></div>
-            <div>
-              <div style={{ fontSize: 12, color: "#898781" }}>Ideal cycle</div>
-              <div>{m.idealCycleTimeSeconds ?? "—"}s</div>
-            </div>
-            {!m.isActive && <div style={{ fontSize: 12, color: "#d03b3b" }}>inactive</div>}
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <select value={m.shiftPatternId ?? ""} onChange={(e) => updateScheduling(m.id, { shiftPatternId: e.target.value })} style={{ ...inputStyle, fontSize: 12 }} disabled={savingSchedulingId === m.id}>
-                {shiftPatterns.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-              <select value={m.calendarId ?? ""} onChange={(e) => updateScheduling(m.id, { calendarId: e.target.value })} style={{ ...inputStyle, fontSize: 12 }} disabled={savingSchedulingId === m.id}>
-                {calendars.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 3 }}>
-                <input type="checkbox" checked={m.autoOffshiftStatus} onChange={(e) => updateScheduling(m.id, { autoOffshiftStatus: e.target.checked })} disabled={savingSchedulingId === m.id} />
-                Auto off-shift
-              </label>
-            </div>
-
-            <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-              <button type="button" onClick={() => startEdit(m)} style={secondaryButtonStyle}>
-                Edit
+            </>
+          ) : (
+            <>
+              <button type="button" className="ui-btn" disabled={bulkBusy} onClick={() => void runBulk({ action: "activate" }, "Activated")}>
+                Activate
               </button>
-              <button type="button" onClick={() => toggleActive(m)} disabled={isSaving} style={secondaryButtonStyle}>
-                {isSaving ? "…" : m.isActive ? "Deactivate" : "Activate"}
+              <button
+                type="button"
+                className="ui-btn ui-btn-danger"
+                disabled={bulkBusy}
+                onClick={() => {
+                  if (window.confirm(`Deactivate ${visibleSelected.size} machine(s)? They keep their history but disappear from selectors and scheduling.`)) {
+                    void runBulk({ action: "deactivate" }, "Deactivated");
+                  }
+                }}
+              >
+                Deactivate
               </button>
-            </div>
-          </div>
-        );
-      })}
+              <button
+                type="button"
+                className="ui-btn"
+                disabled={bulkBusy || hierarchy.areas.length === 0}
+                onClick={() => setMoveTarget({ areaId: hierarchy.areas[0]?.id ?? "", lineId: "" })}
+              >
+                Move to…
+              </button>
+              <button type="button" className="ui-btn" onClick={() => exportCsv(filtered.filter((m) => visibleSelected.has(m.id)))}>
+                Export selected
+              </button>
+              <span className="ui-toolbar-spacer" />
+              <button type="button" className="ui-btn ui-btn-ghost" onClick={() => setSelected(new Set())}>
+                Clear selection
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
+
+      {loading && machines.length === 0 ? (
+        <p className="ui-message ui-message-info">Loading machines…</p>
+      ) : (
+        <DataTable
+          ariaLabel="Machines"
+          rows={filtered}
+          columns={columns}
+          getRowId={(m) => m.id}
+          selected={canEdit ? visibleSelected : undefined}
+          onSelectedChange={canEdit ? setSelected : undefined}
+          onRowClick={(m) => setEditor({ mode: "edit", machine: m })}
+          isDimmed={(m) => !m.isActive}
+          initialSort={{ columnId: "name", dir: "asc" }}
+          rowActions={
+            canEdit
+              ? (m) => (
+                  <>
+                    <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => setEditor({ mode: "create", copyOf: m })}>
+                      Copy
+                    </button>
+                    <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => void toggleActive(m)}>
+                      {m.isActive ? "Deactivate" : "Activate"}
+                    </button>
+                  </>
+                )
+              : undefined
+          }
+          emptyText={
+            machines.length === 0 ? (
+              canEdit ? "No machines yet. Add the first one with the machine ID its edge agent sends." : "No machines registered yet."
+            ) : (
+              <>
+                No machines match these filters.{" "}
+                <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            )
+          }
+        />
+      )}
+
+      {editor && (
+        <MachineEditorDrawer
+          key={editor.mode === "edit" ? editor.machine.id : `new-${editor.copyOf?.id ?? ""}`}
+          target={editor}
+          hierarchy={hierarchy}
+          shiftPatterns={shiftPatterns}
+          calendars={calendars}
+          readOnly={!canEdit}
+          onClose={() => setEditor(null)}
+          onSaved={(machine, created) => {
+            replaceMachines([machine]);
+            notifyMasterDataChanged();
+            setEditor(null);
+            setNotice(created ? `${machine.name} created.` : `${machine.name} saved.`);
+          }}
+        />
+      )}
     </section>
   );
 }
