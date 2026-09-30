@@ -1,4 +1,5 @@
 import { pool } from "./db.js";
+import { loadShiftWindows, localDateString, type ShiftWindow } from "./shift-windows.js";
 
 export interface ShiftSummary {
   shiftDate: string;
@@ -16,233 +17,171 @@ export interface ShiftSummary {
   oee: number | null;
 }
 
-type CountsRow = {
-  shift_date: string;
-  shift_name: string;
-  machine_id: string;
-  good_count: number;
-  scrap_count: number;
-};
+const HOUR_MS = 3600_000;
 
-type DurationsRow = {
-  shift_date: string;
-  shift_name: string;
-  machine_id: string;
-  running_seconds: number;
-  down_seconds: number;
-  excluded_seconds: number;
-  status_breakdown: Record<string, number> | null;
-};
+type OeeBucket = "running" | "counts_as_down" | "excluded";
 
-/**
- * Egy adott [from, to) időszakra visszaadja a jó/rossz darabszámot, az
- * állapot-időtartamokat, és az OEE három komponensét — minden regisztrált
- * gépre, vagy ha machineId meg van adva, KIZÁRÓLAG arra az egy gépre
- * (ez utóbbi kritikus a teljesítmény szempontjából: az egy-gépes hívók,
- * mint getCurrentShiftSummaryForMachine, enélkül feleslegesen az összes
- * többi gép eseményeit is feldolgoznák a resolve_shift() LATERAL join-on
- * keresztül, majd JS-ben dobnák el őket).
- */
-export async function getShiftSummary(from: Date, to: Date, machineId?: string): Promise<ShiftSummary[]> {
-  const machineFilterCounts = machineId ? `AND e.machine_id = $3` : "";
-  const countsParams: unknown[] = machineId ? [from, to, machineId] : [from, to];
-
-  const countsResult = await pool.query<CountsRow>(
-    `SELECT
-       r.shift_date::text AS shift_date,
-       r.shift_name,
-       e.machine_id,
-       COUNT(*) FILTER (WHERE e.payload->>'result' = 'good')::int AS good_count,
-       COUNT(*) FILTER (WHERE e.payload->>'result' = 'scrap')::int AS scrap_count
-     FROM events e,
-          LATERAL resolve_shift(e.machine_id, e."timestamp") r
-     WHERE e.type = 'production_count'
-       AND e."timestamp" BETWEEN $1 AND $2
-       ${machineFilterCounts}
-     GROUP BY r.shift_date, r.shift_name, e.machine_id`,
-    countsParams,
+async function loadOeeCategories(): Promise<(machineId: string, status: string) => OeeBucket> {
+  const defs = await pool.query<{ machine_id: string | null; code: string; oee_category: string }>(
+    `SELECT machine_id, code, oee_category FROM machine_status_definitions`,
   );
-
-  const machineFilterDurations = machineId ? `AND machine_id = $3` : "";
-  const durationsParams: unknown[] = machineId ? [from, to, machineId] : [from, to];
-
-  const durationsResult = await pool.query<DurationsRow>(
-    `WITH raw_status AS (
-       SELECT
-         machine_id,
-         payload->>'status' AS status,
-         "timestamp" AS started_at,
-         LEAD("timestamp") OVER (PARTITION BY machine_id ORDER BY "timestamp") AS ended_at
-       FROM events
-       WHERE type = 'machine_status'
-         AND "timestamp" BETWEEN $1::timestamptz - INTERVAL '1 day' AND $2::timestamptz + INTERVAL '1 day'
-         ${machineFilterDurations}
-     ),
-     clipped AS (
-       SELECT
-         rs.machine_id,
-         rs.status,
-         r.shift_date,
-         r.shift_name,
-         GREATEST(rs.started_at, sw.start_ts) AS clip_start,
-         LEAST(COALESCE(rs.ended_at, now()), sw.end_ts) AS clip_end
-       FROM raw_status rs
-       JOIN LATERAL resolve_shift(rs.machine_id, rs.started_at) r ON true
-              JOIN LATERAL (
-         SELECT
-           COALESCE(
-             (r.shift_date + sps.start_time)::timestamptz,
-             r.shift_date::timestamptz
-           ) AS start_ts,
-           COALESCE(
-             CASE WHEN sps.start_time <= sps.end_time
-               THEN (r.shift_date + sps.end_time)::timestamptz
-               ELSE (r.shift_date + INTERVAL '1 day' + sps.end_time)::timestamptz
-             END,
-             (r.shift_date + INTERVAL '1 day')::timestamptz
-           ) AS end_ts
-         FROM (SELECT 1) dummy
-         LEFT JOIN machines m ON m.id = rs.machine_id
-         LEFT JOIN shift_pattern_shifts sps ON sps.shift_pattern_id = m.shift_pattern_id AND sps.name = r.shift_name
-        ) sw ON true
-     ),
-     categorized AS (
-       SELECT
-         c.*,
-         CASE
-           WHEN c.status = 'running' THEN 'running'
-           WHEN c.status = 'down' THEN 'counts_as_down'
-           ELSE COALESCE(msd_machine.oee_category, msd_global.oee_category, 'counts_as_down')
-         END AS oee_bucket
-       FROM clipped c
-       LEFT JOIN machine_status_definitions msd_machine
-         ON msd_machine.machine_id = c.machine_id AND msd_machine.code = c.status
-       LEFT JOIN machine_status_definitions msd_global
-         ON msd_global.machine_id IS NULL AND msd_global.code = c.status
-       WHERE c.clip_end > c.clip_start
-     ),
-     per_status AS (
-       SELECT
-         shift_date, shift_name, machine_id, status, oee_bucket,
-         SUM(EXTRACT(EPOCH FROM (clip_end - clip_start)))::float AS seconds
-       FROM categorized
-       GROUP BY shift_date, shift_name, machine_id, status, oee_bucket
-     )
-     SELECT
-       shift_date::text AS shift_date,
-       shift_name,
-       machine_id,
-       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'running'), 0)::float AS running_seconds,
-       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'counts_as_down'), 0)::float AS down_seconds,
-       COALESCE(SUM(seconds) FILTER (WHERE oee_bucket = 'excluded'), 0)::float AS excluded_seconds,
-       jsonb_object_agg(status, seconds) AS status_breakdown
-     FROM per_status
-     GROUP BY shift_date, shift_name, machine_id`,
-    durationsParams,
-  );
-
-  const merged = new Map<string, ShiftSummary>();
-
-  for (const row of countsResult.rows) {
-    const key = `${row.shift_date}|${row.shift_name}|${row.machine_id}`;
-    merged.set(key, {
-      shiftDate: row.shift_date,
-      shiftName: row.shift_name,
-      machineId: row.machine_id,
-      goodCount: row.good_count,
-      scrapCount: row.scrap_count,
-      statusSeconds: {},
-      runningSeconds: 0,
-      totalSeconds: 0,
-      productionRatio: 0,
-      availability: 0,
-      performance: null,
-      quality: null,
-      oee: null,
-    });
+  const perMachine = new Map<string, string>();
+  const global = new Map<string, string>();
+  for (const d of defs.rows) {
+    if (d.machine_id) perMachine.set(`${d.machine_id}|${d.code}`, d.oee_category);
+    else global.set(d.code, d.oee_category);
   }
+  return (machineId, status) => {
+    if (status === "running") return "running";
+    if (status === "down") return "counts_as_down";
+    const cat = perMachine.get(`${machineId}|${status}`) ?? global.get(status) ?? "counts_as_down";
+    return cat === "excluded" ? "excluded" : "counts_as_down";
+  };
+}
 
-  for (const row of durationsResult.rows) {
-    const key = `${row.shift_date}|${row.shift_name}|${row.machine_id}`;
-    const existing = merged.get(key) ?? {
-      shiftDate: row.shift_date,
-      shiftName: row.shift_name,
-      machineId: row.machine_id,
-      goodCount: 0,
-      scrapCount: 0,
-      statusSeconds: {},
-      runningSeconds: 0,
-      totalSeconds: 0,
-      productionRatio: 0,
-      availability: 0,
-      performance: null,
-      quality: null,
-      oee: null,
-    };
-    existing.runningSeconds = row.running_seconds;
-    existing.statusSeconds = row.status_breakdown ?? {};
-    existing.totalSeconds = row.running_seconds + row.down_seconds;
-    merged.set(key, existing);
-  }
-
+async function loadIdealCycleTimes(): Promise<Map<string, number | null>> {
   const machinesResult = await pool.query<{ id: string; ideal_cycle_time_seconds: string | null }>(
     `SELECT id, ideal_cycle_time_seconds FROM machines`,
   );
-  const idealCycleTimeByMachine = new Map<string, number | null>(
-    machinesResult.rows.map((r) => [r.id, r.ideal_cycle_time_seconds ? Number(r.ideal_cycle_time_seconds) : null]),
-  );
+  return new Map(machinesResult.rows.map((r) => [r.id, r.ideal_cycle_time_seconds ? Number(r.ideal_cycle_time_seconds) : null]));
+}
 
-  for (const summary of merged.values()) {
-    summary.productionRatio = summary.totalSeconds > 0 ? summary.runningSeconds / summary.totalSeconds : 0;
-    summary.availability = summary.productionRatio;
+function finalize(summary: ShiftSummary, idealCycleTime: number | null): ShiftSummary {
+  summary.productionRatio = summary.totalSeconds > 0 ? summary.runningSeconds / summary.totalSeconds : 0;
+  summary.availability = summary.productionRatio;
+  const totalParts = summary.goodCount + summary.scrapCount;
+  summary.quality = totalParts > 0 ? summary.goodCount / totalParts : null;
+  summary.performance =
+    idealCycleTime && summary.runningSeconds > 0 ? Math.min(1, (idealCycleTime * totalParts) / summary.runningSeconds) : null;
+  summary.oee =
+    summary.performance !== null && summary.quality !== null ? summary.availability * summary.performance * summary.quality : null;
+  return summary;
+}
 
-    const totalParts = summary.goodCount + summary.scrapCount;
-    summary.quality = totalParts > 0 ? summary.goodCount / totalParts : null;
+/**
+ * Egy adott [from, to) időszak műszakonkénti összesítője: jó/selejt darab,
+ * állapot-időtartamok és az OEE három komponense — minden gépre, vagy csak a
+ * megadottra. A műszakon kívül eső idő és darab "off_shift" sorokba kerül
+ * (dátum: az óra helyi napja).
+ *
+ * Forrás: a közös műszakablakok (shift-windows.ts, ugyanazok, mint a
+ * resolve_shift()-é és a Gantté) és az ÓRÁNKÉNTI összesítők
+ * (machine_status_hourly, production_counts_hourly). Egész órára eső
+ * műszakhatároknál (pl. 06/14/22) pontos; ha egy határ óra közepére esik, a
+ * határt tartalmazó órát arányosan osztja. Független a nyers események
+ * megőrzési idejétől, és egy havi összesítő is gyors.
+ *
+ * Korábban a nyers eseményekből számolt, és egy állapotszakaszt csak ahhoz
+ * a műszakhoz rendelt, AMELYIKBEN ELKEZDŐDÖTT (annak végéig levágva) — egy
+ * műszakhatáron át megszakítás nélkül futó gép következő műszakja így nem
+ * kapott futási időt, egy egész műszakon át futó gépé nullát.
+ */
+export async function getShiftSummary(from: Date, to: Date, machineId?: string): Promise<ShiftSummary[]> {
+  const [windows, statusRows, countRows, categoryOf, idealCycleTimes] = await Promise.all([
+    loadShiftWindows(from, to, machineId),
+    pool.query<{ machine_id: string; bucket_start: Date; status: string; seconds: string }>(
+      `SELECT machine_id, bucket_start, status, seconds FROM machine_status_hourly
+       WHERE bucket_start >= date_trunc('hour', $1::timestamptz) AND bucket_start < $2::timestamptz
+         AND ($3::text IS NULL OR machine_id = $3)`,
+      [from, to, machineId ?? null],
+    ),
+    pool.query<{ machine_id: string; bucket_start: Date; good_count: number; scrap_count: number }>(
+      `SELECT machine_id, bucket_start, good_count, scrap_count FROM production_counts_hourly
+       WHERE bucket_start >= date_trunc('hour', $1::timestamptz) AND bucket_start < $2::timestamptz
+         AND ($3::text IS NULL OR machine_id = $3)`,
+      [from, to, machineId ?? null],
+    ),
+    loadOeeCategories(),
+    loadIdealCycleTimes(),
+  ]);
 
-    const idealCycleTime = idealCycleTimeByMachine.get(summary.machineId) ?? null;
-    summary.performance =
-      idealCycleTime && summary.runningSeconds > 0
-        ? Math.min(1, (idealCycleTime * totalParts) / summary.runningSeconds)
-        : null;
-
-    summary.oee =
-      summary.performance !== null && summary.quality !== null
-        ? summary.availability * summary.performance * summary.quality
-        : null;
+  const windowsByMachine = new Map<string, ShiftWindow[]>();
+  for (const w of windows) {
+    const list = windowsByMachine.get(w.machineId) ?? [];
+    list.push(w);
+    windowsByMachine.set(w.machineId, list);
   }
 
-  return [...merged.values()].sort(
-    (a, b) => a.shiftDate.localeCompare(b.shiftDate) || a.shiftName.localeCompare(b.shiftName),
-  );
+  const summaries = new Map<string, ShiftSummary & { downSeconds: number }>();
+  const get = (shiftDate: string, shiftName: string, mid: string) => {
+    const key = `${shiftDate}|${shiftName}|${mid}`;
+    let s = summaries.get(key);
+    if (!s) {
+      s = {
+        shiftDate, shiftName, machineId: mid, goodCount: 0, scrapCount: 0, statusSeconds: {}, runningSeconds: 0,
+        totalSeconds: 0, productionRatio: 0, availability: 0, performance: null, quality: null, oee: null, downSeconds: 0,
+      };
+      summaries.set(key, s);
+    }
+    return s;
+  };
+
+  /** Egy óra [b, b+1h) ∩ [from, to) felosztása műszakokra: [shiftDate, shiftName, arány] (0–1, az órára vetítve). */
+  const splitHour = (mid: string, b: Date): [string, string, number][] => {
+    const hs = Math.max(b.getTime(), from.getTime());
+    const he = Math.min(b.getTime() + HOUR_MS, to.getTime());
+    if (he <= hs) return [];
+    const parts: [string, string, number][] = [];
+    let covered = 0;
+    for (const w of windowsByMachine.get(mid) ?? []) {
+      const ov = Math.min(he, w.end.getTime()) - Math.max(hs, w.start.getTime());
+      if (ov > 0) {
+        parts.push([w.shiftDate, w.shiftName, ov / HOUR_MS]);
+        covered += ov;
+      }
+    }
+    const rest = he - hs - covered;
+    if (rest > 0) parts.push([localDateString(new Date(hs)), "off_shift", rest / HOUR_MS]);
+    return parts;
+  };
+
+  for (const r of statusRows.rows) {
+    const seconds = Number(r.seconds);
+    const bucket = categoryOf(r.machine_id, r.status);
+    for (const [date, name, frac] of splitHour(r.machine_id, new Date(r.bucket_start))) {
+      const s = get(date, name, r.machine_id);
+      const sec = seconds * frac;
+      s.statusSeconds[r.status] = (s.statusSeconds[r.status] ?? 0) + sec;
+      if (bucket === "running") s.runningSeconds += sec;
+      else if (bucket === "counts_as_down") s.downSeconds += sec;
+    }
+  }
+  for (const r of countRows.rows) {
+    for (const [date, name, frac] of splitHour(r.machine_id, new Date(r.bucket_start))) {
+      const s = get(date, name, r.machine_id);
+      s.goodCount += r.good_count * frac;
+      s.scrapCount += r.scrap_count * frac;
+    }
+  }
+
+  return [...summaries.values()]
+    .map(({ downSeconds, ...s }) => {
+      s.goodCount = Math.round(s.goodCount);
+      s.scrapCount = Math.round(s.scrapCount);
+      s.totalSeconds = s.runningSeconds + downSeconds;
+      return finalize(s, idealCycleTimes.get(s.machineId) ?? null);
+    })
+    .sort((a, b) => a.shiftDate.localeCompare(b.shiftDate) || a.shiftName.localeCompare(b.shiftName) || a.machineId.localeCompare(b.machineId));
 }
 
 /**
- * A getShiftSummary(from, to, machineId) segítségével KIZÁRÓLAG erre az
- * egy gépre kérdez le, majd resolve_shift(machineId, now())-vel eldönti,
- * melyik a jelenlegi műszak.
+ * Egy gép jelenlegi műszakjának összesítője, percre pontosan a nyers
+ * eseményekből — ugyanaz a (helyes) számítás, mint az Overview-é, egy gépre
+ * szűrve. Korábban a getShiftSummary() régi, műszakhatárnál hibás
+ * változatát használta (terminál).
  */
 export async function getCurrentShiftSummaryForMachine(machineId: string): Promise<ShiftSummary | undefined> {
-  const now = new Date();
-  const currentShiftResult = await pool.query<{ shift_date: string; shift_name: string }>(
-    `SELECT shift_date::text, shift_name FROM resolve_shift($1, $2)`,
-    [machineId, now],
-  );
-  const current = currentShiftResult.rows[0];
-  if (!current) return undefined;
-
-  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const summaries = await getShiftSummary(from, now, machineId);
-  return summaries.find((s) => s.shiftDate === current.shift_date && s.shiftName === current.shift_name);
+  const [summary] = await getCurrentShiftSummaryForAllMachines(machineId);
+  return summary;
 }
 
 /**
- * Minden aktív gép aktuális műszakának összesítőjét EGY lekérdezésben
- * adja vissza — a resolve_shift()-et gépenként csak EGYSZER hívja (nem
- * eseményenként), és minden gépet kizárólag a SAJÁT, szűk műszak-
- * ablakára korlátozva kérdez le. Ez teszi lehetővé, hogy az Overview
- * O(1) HTTP-kérésben frissüljön, függetlenül a gépek számától.
+ * Minden aktív gép (vagy egy gép) aktuális műszakának összesítője EGY
+ * lekérdezésben, percre pontosan a nyers eseményekből — a resolve_shift()-et
+ * gépenként csak EGYSZER hívja, és minden gépet kizárólag a SAJÁT, szűk
+ * műszakablakára korlátozva kérdez le.
  */
-export async function getCurrentShiftSummaryForAllMachines(): Promise<ShiftSummary[]> {
+export async function getCurrentShiftSummaryForAllMachines(machineId?: string): Promise<ShiftSummary[]> {
   const result = await pool.query<{
     machine_id: string;
     shift_date: string;
@@ -251,11 +190,12 @@ export async function getCurrentShiftSummaryForAllMachines(): Promise<ShiftSumma
     scrap_count: string;
     running_seconds: string;
     total_seconds: string;
-  }>(`
+  }>(
+    `
     WITH machine_shifts AS (
       SELECT m.id AS machine_id, m.shift_pattern_id, m.calendar_id, r.shift_date, r.shift_name
       FROM machines m, LATERAL resolve_shift(m.id, now()) r
-      WHERE m.is_active
+      WHERE m.is_active AND ($1::text IS NULL OR m.id = $1)
     ),
     shift_windows AS (
       SELECT ms.machine_id, ms.shift_date, ms.shift_name,
@@ -279,8 +219,8 @@ export async function getCurrentShiftSummaryForAllMachines(): Promise<ShiftSumma
     ),
     counts AS (
       SELECT sw.machine_id,
-        COUNT(*) FILTER (WHERE e.payload->>'result' = 'good') AS good_count,
-        COUNT(*) FILTER (WHERE e.payload->>'result' = 'scrap') AS scrap_count
+        COUNT(e.*) FILTER (WHERE e.payload->>'result' = 'good') AS good_count,
+        COUNT(e.*) FILTER (WHERE e.payload->>'result' = 'scrap') AS scrap_count
       FROM shift_windows sw
       LEFT JOIN events e
         ON e.machine_id = sw.machine_id AND e.type = 'production_count'
@@ -344,42 +284,30 @@ export async function getCurrentShiftSummaryForAllMachines(): Promise<ShiftSumma
     FROM shift_windows sw
     LEFT JOIN counts c ON c.machine_id = sw.machine_id
     LEFT JOIN durations d ON d.machine_id = sw.machine_id
-  `);
-
-  const machinesResult = await pool.query<{ id: string; ideal_cycle_time_seconds: string | null }>(
-    `SELECT id, ideal_cycle_time_seconds FROM machines`,
-  );
-  const idealCycleTimeByMachine = new Map<string, number | null>(
-    machinesResult.rows.map((r) => [r.id, r.ideal_cycle_time_seconds ? Number(r.ideal_cycle_time_seconds) : null]),
+    `,
+    [machineId ?? null],
   );
 
-  return result.rows.map((row) => {
-    const goodCount = Number(row.good_count);
-    const scrapCount = Number(row.scrap_count);
-    const runningSeconds = Number(row.running_seconds);
-    const totalSeconds = Number(row.total_seconds);
-    const totalParts = goodCount + scrapCount;
-    const availability = totalSeconds > 0 ? runningSeconds / totalSeconds : 0;
-    const quality = totalParts > 0 ? goodCount / totalParts : null;
-    const idealCycleTime = idealCycleTimeByMachine.get(row.machine_id) ?? null;
-    const performance =
-      idealCycleTime && runningSeconds > 0 ? Math.min(1, (idealCycleTime * totalParts) / runningSeconds) : null;
-    const oee = performance !== null && quality !== null ? availability * performance * quality : null;
+  const idealCycleTimeByMachine = await loadIdealCycleTimes();
 
-    return {
-      shiftDate: row.shift_date,
-      shiftName: row.shift_name,
-      machineId: row.machine_id,
-      goodCount,
-      scrapCount,
-      statusSeconds: {},
-      runningSeconds,
-      totalSeconds,
-      productionRatio: availability,
-      availability,
-      performance,
-      quality,
-      oee,
-    };
-  });
+  return result.rows.map((row) =>
+    finalize(
+      {
+        shiftDate: row.shift_date,
+        shiftName: row.shift_name,
+        machineId: row.machine_id,
+        goodCount: Number(row.good_count),
+        scrapCount: Number(row.scrap_count),
+        statusSeconds: {},
+        runningSeconds: Number(row.running_seconds),
+        totalSeconds: Number(row.total_seconds),
+        productionRatio: 0,
+        availability: 0,
+        performance: null,
+        quality: null,
+        oee: null,
+      },
+      idealCycleTimeByMachine.get(row.machine_id) ?? null,
+    ),
+  );
 }
