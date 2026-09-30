@@ -1,6 +1,6 @@
 # Security Self-Review — IEC 62443 SL2 Baseline
 
-**Date:** September 21, 2026 · **Revised:** September 29, 2026
+**Date:** September 21, 2026 · **Revised:** September 30, 2026
 **Scope:** PRD Section 8 (Cybersecurity & OT Security), assessed against
 the current Phase 1 implementation. This is a self-review, not a formal
 audit — per PRD 8.1, formal third-party certification is deliberately
@@ -130,11 +130,21 @@ node-gate's disk. Both should be encrypted at rest per PRD 8.4,
 particularly the buffer file, which PRD explicitly calls out as more
 exposed since it sits on shop-floor hardware.
 
-❌ **Backups** — no automated backup process has been set up for the
-Postgres database at all. This is not just a security gap but a basic
-operational risk — a single disk failure on node-dc would lose all
-production, quality, and traceability data collected so far. This should
-be treated as urgent, independent of the rest of this review.
+✅ **Backups** *(was ❌, fixed Sep 30)* — daily `pg_dump` (custom format)
+via `mes-backup.timer`, verified with `pg_restore --list` before upload,
+kept locally (last 3) and in S3 (`eu-central-1`, private, versioned,
+SSE-S3): 14 daily, 8 weekly, 13 monthly, retention enforced by bucket
+lifecycle rules. The node-dc IAM user can write and read but **not
+delete** (verified: `DeleteObject` → AccessDenied), so a compromised
+node-dc cannot destroy its own backups; versioning plus a 30-day
+noncurrent-version window covers overwrites. A full restore drill
+(`mes-restore-test.sh`: download from S3 → restore into a scratch DB with
+TimescaleDB pre/post-restore → table and row-count comparison) passed on
+the first real backup (1.4 GB database, 128 MB dump). Scripts and setup:
+`ops/backup/`. Remaining: a failed backup is only visible in the systemd
+journal — no alert yet (see 8.8). Backups contain everything in the
+database (MFA secrets, session rows), so the bucket's access policy is
+part of the security boundary.
 
 ➡️ **Tenant isolation** — not yet applicable; this pilot is single-tenant
 by design (Emlid's own line). Relevant once Phase 2's multi-site/
@@ -233,15 +243,19 @@ says this should exist before the first paying customer, even if simple.
 This is a genuine, easy-to-fix gap: a short document (who gets notified,
 how, what the customer is told, expected timelines) would close it.
 
+❌ **Backup failure alerting** *(new)* — `mes-backup.service` failures
+land only in the journal. Needs an `OnFailure=` hook into MES alerting or
+an external heartbeat check, so a silently failing backup can't go
+unnoticed for weeks.
+
 ➡️ **SIEM export** — correctly a Later-phase item per PRD 8.8 itself.
 
 ## Priority summary — what to actually do next
 
 Ordered by how much real risk each closes relative to the effort:
 
-1. **Set up automated Postgres backups.** Not technically in Section 8,
-   but the single highest-consequence gap found in this review — an
-   unrecoverable single point of failure for every module built so far.
+1. **Alert on backup failure.** Backups exist now (Sep 30); the
+   remaining risk is one failing silently. Small change.
 2. **Add login rate limiting and lockout.** Small change, closes the
    brute-force path to every non-MFA account.
 3. **Write the incident-response document.** A few hours of writing, and

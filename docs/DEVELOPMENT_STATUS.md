@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** September 29, 2026 (late evening)
+**Last updated:** September 30, 2026
 
 ## Where things stand
 
@@ -267,6 +267,33 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
   `systemctl restart mes-backend`. Do not skip the `\password` step —
   the backend will fail with `password authentication failed`.
 
+## Backups (node-dc → S3)
+
+Daily at 02:30 UTC `mes-backup.timer` runs `mes-backup.sh`: `pg_dump`
+(custom format) as postgres via peer auth, archive checked with
+`pg_restore --list`, last 3 kept in `/var/backups/mes`, uploaded to
+`s3://<bucket>/daily/` (Sundays also `weekly/`, the 1st also `monthly/`,
+server-side copies). Retention (14 daily / 60-day weekly / 400-day
+monthly, noncurrent versions 30 days) is enforced by **S3 lifecycle
+rules**; the node-dc IAM user `mes-backup-node-dc` has only
+`ListBucket` / `PutObject` / `GetObject` — no delete. Bucket in
+`eu-central-1`, private, versioned, SSE-S3. Config in
+`/etc/mes/backup.env` (no secrets); AWS key in `/root/.aws/` (profile
+`mes-backup`). Everything, including the full AWS console walkthrough,
+is in `ops/backup/README.md`.
+
+- **Restore drill**: `mes-restore-test.sh` (latest from S3 → scratch DB
+  `mes_restore_test` → table/row-count comparison → dropped). First run
+  Sep 30: PASSED, 1.4 GB database → 128 MB dump. Run it monthly and after
+  any Postgres/TimescaleDB upgrade; it needs free disk ≈ the database size.
+- `pg_dump` warnings about circular foreign keys on `hypertable`,
+  `chunk`, `continuous_agg` are TimescaleDB catalog noise, not errors.
+- A real restore needs the **same TimescaleDB version** on the target and
+  the `timescaledb_pre_restore()` / `post_restore()` wrapping (README).
+- `S3_ENDPOINT_URL` switches the target to an on-prem S3-compatible store
+  (e.g. MinIO) for customers whose data may not leave the site.
+- **Not yet**: alerting when a backup fails — currently journal only.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -313,6 +340,12 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 
 ## Still open (lower priority, not blocking)
 
+- **Backup failure alerting** (`OnFailure=` → MES alerts or an external
+  heartbeat), so a failing backup can't go unnoticed.
+- **Check the 58k `downtime_periods` rows** — very high for 7 machines;
+  possibly status flapping (e.g. the signal-presence watchdog) creating a
+  period per flap. Worth a look before the pilot's downtime Pareto relies
+  on it.
 - **Login rate limiting / lockout** — `POST /api/auth/login` and
   `/api/auth/mfa/login` accept unlimited attempts; non-MFA accounts are
   brute-forceable. See `docs/SECURITY_REVIEW.md` for the full, updated
@@ -327,5 +360,7 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 - A data-retention policy for raw events (flagged in earlier revisions,
   still not implemented — not urgent at current volumes, worth doing
   before the pilot).
+- Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
+  `api.ts` now exports `API_BASE`, so these can become imports.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,
   downtime Pareto analysis, multilingual work instructions) — not started.
