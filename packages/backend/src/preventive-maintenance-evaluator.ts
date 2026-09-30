@@ -16,7 +16,15 @@ async function hasOpenWorkOrderForSchedule(scheduleId: string): Promise<boolean>
   return result.rows[0]?.exists ?? false;
 }
 
-async function isDue(schedule: PreventiveSchedule): Promise<boolean> {
+/**
+ * Esedékes-e az ütemterv? Az üzemóra és a darabszám az óránkénti
+ * összesítőkből (machine_status_hourly, production_counts_hourly) jön, nem a
+ * nyers eseményekből: így a nyers események megőrzési ideje nem befolyásolja
+ * (egy hónapokig tartó intervallum számlálója sem esik vissza), és nem kell
+ * percenként hónapnyi eseményt végigolvasni. A kiinduló (utolsó karbantartás)
+ * óráját arányosan számolja — a hiba legfeljebb egyórányi termelés.
+ */
+export async function isDue(schedule: PreventiveSchedule): Promise<boolean> {
   const baseline = schedule.lastTriggeredAt ?? schedule.createdAt;
 
   if (schedule.triggerType === "calendar") {
@@ -28,30 +36,33 @@ async function isDue(schedule: PreventiveSchedule): Promise<boolean> {
   }
 
   if (schedule.triggerType === "usage_hours") {
-    const result = await pool.query<{ running_seconds: number }>(
-      `WITH raw_status AS (
-         SELECT payload->>'status' AS status, "timestamp" AS started_at,
-                LEAD("timestamp") OVER (ORDER BY "timestamp") AS ended_at
-         FROM events
-         WHERE type = 'machine_status' AND machine_id = $1 AND "timestamp" >= $2::timestamptz
-       )
-       SELECT COALESCE(SUM(
-         EXTRACT(EPOCH FROM (LEAST(COALESCE(ended_at, now()), now()) - GREATEST(started_at, $2::timestamptz)))
-       ) FILTER (WHERE status = 'running'), 0) AS running_seconds
-       FROM raw_status`,
+    const result = await pool.query<{ running_seconds: string }>(
+      `SELECT COALESCE(SUM(
+         seconds * CASE WHEN bucket_start < $2::timestamptz
+                        THEN EXTRACT(EPOCH FROM (bucket_start + interval '1 hour' - $2::timestamptz)) / 3600
+                        ELSE 1 END
+       ), 0) AS running_seconds
+       FROM machine_status_hourly
+       WHERE machine_id = $1 AND status = 'running' AND bucket_start + interval '1 hour' > $2::timestamptz`,
       [schedule.machineId, baseline],
     );
-    const runningHours = (result.rows[0]?.running_seconds ?? 0) / 3600;
+    const runningHours = Number(result.rows[0]?.running_seconds ?? 0) / 3600;
     return runningHours >= schedule.intervalValue;
   }
 
   // part_count — minden legyártott darab számít (jó és selejt is), mert
   // ez fizikailag a gép ciklusszámát (kopását) reprezentálja.
-  const result = await pool.query<{ count: string }>(
-    `SELECT COUNT(*) FROM events WHERE type = 'production_count' AND machine_id = $1 AND "timestamp" >= $2::timestamptz`,
+  const result = await pool.query<{ parts: string }>(
+    `SELECT COALESCE(SUM(
+       (good_count + scrap_count) * CASE WHEN bucket_start < $2::timestamptz
+                                         THEN EXTRACT(EPOCH FROM (bucket_start + interval '1 hour' - $2::timestamptz)) / 3600
+                                         ELSE 1 END
+     ), 0) AS parts
+     FROM production_counts_hourly
+     WHERE machine_id = $1 AND bucket_start + interval '1 hour' > $2::timestamptz`,
     [schedule.machineId, baseline],
   );
-  return Number(result.rows[0]?.count ?? 0) >= schedule.intervalValue;
+  return Number(result.rows[0]?.parts ?? 0) >= schedule.intervalValue;
 }
 
 export function startPreventiveMaintenanceEvaluator(log: FastifyBaseLogger): void {
