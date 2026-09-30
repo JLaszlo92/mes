@@ -51,6 +51,8 @@ Since September 30 (morning):
   threshold (the "to explain" list went from 58,947 to 617 rows), downtime
   summary, race-safe explain (migrations 033, 034), and a **downtime
   Pareto** by reason.
+- **Three data-correctness bugs found and fixed** while preparing a
+  raw-event retention policy — see "Time, rollups and retention prep".
 
 ## The Gantt scheduler (item 8)
 
@@ -410,6 +412,65 @@ line will look different. But three real problems surfaced and are fixed:
   `oeeCategory = counts_as_down` are not considered by the evaluator —
   none exist today; revisit if they're introduced.
 
+## Time, rollups and retention prep — Sep 30
+
+Preparing a retention policy for raw `events` (≈ 490 MB/week with three
+simulated machines — the 32 GB node-dc disk would fill within the pilot)
+meant checking everything that reads raw events. That surfaced three bugs:
+
+1. **Shift boundaries were interpreted as UTC.** The database ran in
+   `Etc/UTC` and the shift functions (`resolve_shift`, off-shift segments)
+   never name a time zone, so 06:00 / 14:00 / 22:00 meant UTC — 2 h off in
+   summer, 1 h in winter (23:00 Budapest came out as "afternoon"). Every
+   per-shift count, shift OEE, the Gantt's off-shift shading and the
+   scheduling windows were shifted. Fix: **`MES_TIMEZONE`** (default
+   `Europe/Budapest`, validated at startup, `config.ts`) is the single
+   source: it sets `process.env.TZ` for the Node process and
+   `-c timezone=…` on every pool connection (`db.ts`), and
+   `ensureDatabaseTimezone()` sets the database default on start (so ad-hoc
+   `psql` shows local time too). Not only `ALTER DATABASE`, because
+   **`pg_dump` doesn't carry database-level settings** — after a restore the
+   bug would have returned silently. Stored timestamps are unchanged (UTC
+   instants); shift summaries are computed on read, so past shifts are
+   correct immediately. Multi-site will need a per-site zone (Phase 2).
+2. **`production_counts_hourly` undercounted every hour since 2026-09-28.**
+   The rollup recomputed "the last 3 hours" from `now() - 3 h` — mid-hour —
+   so the oldest bucket was recomputed from a partial hour and `DO UPDATE`
+   overwrote the correct value with a smaller one, every 5 minutes, until
+   each hour kept only its last few minutes. Hours before 2026-09-28 were
+   fine only because the initial backfill had filled them. Fix: window
+   starts on an hour boundary (`date_trunc`) and covers 24 h (late,
+   buffered events); a one-off full recompute repaired all 1,480 buckets.
+   **Rule: a rollup that overwrites buckets must recompute whole buckets.**
+3. **Migration 027 rebuilt the `events` primary key on every start**
+   (unconditional `DROP CONSTRAINT` + `ADD PRIMARY KEY` on a 1.9M-row
+   hypertable, table locked meanwhile — `migrate.ts` re-runs every file).
+   Now guarded; restart-to-ready went from 5.0 s to 3.3 s, and it would
+   have kept growing with the table.
+
+Also added: **`machine_status_hourly`** (`sql/035`,
+`status-rollup-evaluator.ts`) — seconds per status per machine per hour,
+hour-aligned 24 h window every 5 min, full-history backfill on first start
+(2.2 s for 120k events). **Preventive maintenance** (`usage_hours`,
+`part_count`) now counts from the two hourly rollups instead of raw events
+— independent of raw-event retention, and no longer re-reads months of
+events every minute. The baseline hour is prorated (error ≤ one hour of
+production).
+
+**Retention itself is not in place yet.** Still reading raw events over
+long ranges: machine history, status timeline, shift summary, work-order
+progress (since start), `state.ts` (last status per machine). These need to
+move to the rollups, or be bounded by the retention window, before a
+daily `drop_chunks` job (TimescaleDB OSS: `drop_chunks` works,
+`add_retention_policy` doesn't) is switched on. Chunks are 7 days.
+
+**Clocks:** the three LXC nodes share the Proxmox host's kernel clock —
+time sync is the host's `chrony` (check on the host: `chronyc tracking`),
+not something to configure in the containers. Event timestamps come from
+the edge agent's clock and are compared with node-dc's `now()`, so **in a
+real deployment the edge gateway (separate hardware) needs the same NTP
+source as the server.**
+
 ## Backups (node-dc → S3)
 
 Daily at 02:30 UTC `mes-backup.timer` runs `mes-backup.sh`: `pg_dump`
@@ -517,14 +578,20 @@ is in `ops/backup/README.md`.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
+- **Raw-event retention**: move the remaining long-range raw-event readers
+  to the rollups (see "Time, rollups and retention prep"), then a daily
+  `drop_chunks` evaluator. Needed before the pilot fills the disk.
 - **Test-data cleanup before the pilot**: the simulator rigs produced
   ~120k status events and ~59k downtime periods. If the pilot runs on this
   database, clear the test machines' data first so reports start clean
   (a scoped cleanup script, not ad-hoc SQL).
 - `mfa_pending_logins` stores raw pending tokens — hash like sessions
   (low risk, low effort).
-- Next security items per `docs/SECURITY_REVIEW.md`: incident-response
-  document, then TLS (Mosquitto, API, Postgres) with CORS pinning and
+- **Incident response**: `docs/INCIDENT_RESPONSE.md` is a draft — fill in
+  contacts, customer timelines and legal's notification scope before the
+  first external customer. Machine-history purge for the pilot:
+  `ops/maintenance/` (dry run by default; not run yet).
+- Next security items per `docs/SECURITY_REVIEW.md`: TLS (Mosquitto, API, Postgres) with CORS pinning and
   `trustProxy`.
 - Several config mutations still write **no audit event**: shift pattern
   / shift / calendar create-update-delete and `PUT

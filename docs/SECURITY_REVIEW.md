@@ -263,10 +263,15 @@ actually look at from the dashboard. A machine going offline is currently
 only visible as a machine_status event and a raised alert, not as a
 distinct, attributable audit entry.
 
-❌ **Documented incident-response process** — does not exist. PRD 8.8
-says this should exist before the first paying customer, even if simple.
-This is a genuine, easy-to-fix gap: a short document (who gets notified,
-how, what the customer is told, expected timelines) would close it.
+⚠️ **Documented incident-response process** *(was ❌, draft Sep 30)* —
+`docs/INCIDENT_RESPONSE.md`: what counts as an incident, SEV1–3 with
+response times, roles, a first-hour checklist, playbooks tied to this
+deployment (evidence preservation commands, containment per situation —
+sessions, Postgres/AWS/edge secrets, MQTT, node isolation — and restore
+from the S3 backups), customer communication and a post-incident review.
+Still open: names, contacts, customer notification timelines, and the
+GDPR / NIS2 scope confirmed by legal (placeholders in the document); a
+first tabletop exercise.
 
 ✅ **Backup failure alerting** *(fixed Sep 30)* — dead man's switch:
 every backup run records its result in `job_status`; the backend raises a
@@ -282,8 +287,8 @@ external heartbeat would be needed for that.
 
 Ordered by how much real risk each closes relative to the effort:
 
-1. **Write the incident-response document.** A few hours of writing, and
-   PRD explicitly wants it before any paying customer.
+1. **Complete the incident-response document** — fill in the contacts and
+   have legal confirm the notification duties (the draft exists).
 2. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
    largest cluster of related gaps (8.2, 8.3, 8.4) — genuinely blocking
    for any customer whose IT/OT team reviews this seriously, and now also
