@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface DowntimePeriod {
   id: string;
@@ -18,9 +18,6 @@ interface FaultCode {
   name: string;
   isActive: boolean;
 }
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 const secondaryButtonStyle = {
   padding: "8px 14px",

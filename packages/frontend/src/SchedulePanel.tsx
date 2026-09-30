@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface WorkOrder {
   id: string;
@@ -25,9 +25,6 @@ interface Assignment {
   quantity: number;
   machineName: string;
 }
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
 const buttonStyle = {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface Machine {
   id: string;
@@ -86,9 +86,6 @@ type DragState =
 type ScheduleRequest =
   | { machineId: string; plannedStart: string; durationMs: number }
   | { machineId: string; plannedStart: string; plannedEnd: string };
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 const PX_PER_HOUR = 40;
 const ROW_HEIGHT = 56;

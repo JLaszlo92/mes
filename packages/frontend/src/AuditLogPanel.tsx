@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface AuditEntry {
   id: string;
@@ -11,8 +11,6 @@ interface AuditEntry {
   ipAddress: string | null;
 }
 
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 const PAGE_SIZE = 50;
 
 const ACTION_COLOR: Record<string, string> = {

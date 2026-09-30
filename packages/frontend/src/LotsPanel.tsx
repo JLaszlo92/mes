@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface Lot {
   id: string;
@@ -13,9 +13,6 @@ interface Lot {
   goodCount: number;
   scrapCount: number;
 }
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 export default function LotsPanel() {
   const { auth, logout } = useAuth();

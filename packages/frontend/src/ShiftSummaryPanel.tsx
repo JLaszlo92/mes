@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface ShiftSummary {
   shiftDate: string;
@@ -25,9 +25,6 @@ function colorForStatus(status: string, fallbackIndex: number): string {
 }
 
 const SHIFT_ORDER = ["day", "afternoon", "night"];
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);

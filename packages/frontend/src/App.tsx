@@ -3,7 +3,7 @@ import type { MachineEvent, MachineStatusValue } from "@mes/shared";
 import MachineOverviewPanel from "./MachineOverviewPanel.js";
 import MachineRegistryPanel from "./MachineRegistryPanel.js";
 import { useAuth } from "./auth-context.js";
-import { apiFetch, API_BASE } from "./api.js";
+import { apiFetch, API_BASE, WS_URL } from "./api.js";
 import LoginForm from "./LoginForm.js";
 import AuditLogPanel from "./AuditLogPanel";
 import WorkOrdersPanel from "./WorkOrdersPanel";
@@ -35,8 +35,6 @@ interface MachineState {
 type ServerMessage =
   | { type: "snapshot"; machines: MachineState[] }
   | { type: "event"; event: MachineEvent };
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
 
 /** A backend ws-tickets.ts close kódjaival szinkronban tartandó. */
 const WS_CLOSE_REAUTH = 4000;

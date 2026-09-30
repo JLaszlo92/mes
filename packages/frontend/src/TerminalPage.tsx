@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import LoginForm from "./LoginForm.js";
-import { apiFetch } from "./api.js";
+import { apiFetch, API_BASE } from "./api.js";
 
 interface TerminalUi {
   id: string;
@@ -61,9 +61,6 @@ interface ShiftSummary {
 }
 
 const HISTORICAL_STATUSES = new Set(["completed", "cancelled"]);
-
-const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
-const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 const startButtonStyle = {
   padding: "10px 20px",
