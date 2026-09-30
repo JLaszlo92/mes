@@ -49,7 +49,8 @@ Since September 30 (morning):
 - **Downtime periods**: evaluator rewritten (no split periods, incremental —
   136 s → 0.12 s per tick on 120k events), per-machine micro-stop
   threshold (the "to explain" list went from 58,947 to 617 rows), downtime
-  summary, race-safe explain (migrations 033, 034).
+  summary, race-safe explain (migrations 033, 034), and a **downtime
+  Pareto** by reason.
 
 ## The Gantt scheduler (item 8)
 
@@ -393,6 +394,18 @@ line will look different. But three real problems surfaced and are fixed:
   and created two fault reports for one stop. The link is now a
   conditional update; the loser's report is deleted. The panel also locks
   the buttons while a save is in flight.
+- **Pareto** (`GET /api/downtime-periods/pareto?hours=168&machineId=…`,
+  `DowntimeParetoPanel.tsx`, Quality → Downtime): downtime *time* per
+  reason, descending, with share and cumulative %, for 24 h / 7 d / 30 d,
+  all machines or one. Classification: a non-rejected fault report → its
+  code (even for a stop under the threshold — an explicit reason wins);
+  else under the threshold → "Micro-stops"; else "Unexplained" (a
+  rejected explanation lands here too). Codes are per machine; the
+  all-machines view merges them by code + name, so the same fault entered
+  differently on two machines shows as two bars — a shared fault-code
+  catalog would fix that if the pilot needs it. The panel warns when less
+  than 80 % of the above-threshold downtime has a reason, because the
+  ranking isn't trustworthy until then.
 - Only status `down` counts as downtime. Custom status definitions with
   `oeeCategory = counts_as_down` are not considered by the evaluator —
   none exist today; revisit if they're introduced.
@@ -508,8 +521,6 @@ is in `ops/backup/README.md`.
   ~120k status events and ~59k downtime periods. If the pilot runs on this
   database, clear the test machines' data first so reports start clean
   (a scoped cleanup script, not ad-hoc SQL).
-- Downtime **Pareto** view on top of explained periods (now that the list
-  is usable).
 - `mfa_pending_logins` stores raw pending tokens — hash like sessions
   (low risk, low effort).
 - Next security items per `docs/SECURITY_REVIEW.md`: incident-response
