@@ -1,0 +1,13 @@
+[Unit]
+Description=MES Postgres backup (local + S3)
+Documentation=file:///root/mes/ops/backup/README.md
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mes-backup.sh
+# Ne vegye el az erőforrást a futó backendtől.
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

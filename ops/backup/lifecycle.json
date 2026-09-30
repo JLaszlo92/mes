@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    { "ID": "daily-14d",   "Status": "Enabled", "Filter": { "Prefix": "daily/" },   "Expiration": { "Days": 14 } },
+    { "ID": "weekly-60d",  "Status": "Enabled", "Filter": { "Prefix": "weekly/" },  "Expiration": { "Days": 60 } },
+    { "ID": "monthly-400d","Status": "Enabled", "Filter": { "Prefix": "monthly/" }, "Expiration": { "Days": 400 } },
+    {
+      "ID": "noncurrent-and-multipart-cleanup",
+      "Status": "Enabled",
+      "Filter": {},
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}

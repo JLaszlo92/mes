@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily MES Postgres backup
+
+[Timer]
+# node-dc UTC-ben fut: 02:30 UTC = 03:30 / 04:30 budapesti idő (téli / nyári).
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10min
+# Ha a gép a tervezett időpontban állt, induláskor pótolja.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
