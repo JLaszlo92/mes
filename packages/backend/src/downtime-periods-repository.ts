@@ -105,6 +105,87 @@ export async function getDowntimeSummary(hours: number): Promise<DowntimeSummary
   }));
 }
 
+export type ParetoKind = "code" | "unexplained" | "micro";
+
+export interface ParetoItem {
+  kind: ParetoKind;
+  /** Csak kind = "code" esetén. */
+  code: string | null;
+  name: string | null;
+  periods: number;
+  seconds: number;
+}
+
+export interface DowntimePareto {
+  hours: number;
+  machineId: string | null;
+  totalSeconds: number;
+  /** A küszöb feletti leállási időből ennyi másodpercnek van (el nem utasított) oka. */
+  explainedSeconds: number;
+  /** A küszöb feletti leállási idő (a lefedettség nevezője). */
+  explainableSeconds: number;
+  /** Csökkenő idő szerint. */
+  items: ParetoItem[];
+}
+
+/**
+ * Leállási idő okonként (Pareto), az utolsó `hours` órában lezárult
+ * periódusokra, opcionálisan egy gépre szűrve.
+ *
+ * Besorolás, ebben a sorrendben:
+ *  1. van oka (el nem utasított hibajelentés) → a hibakód sávja — akkor is,
+ *     ha a leállás rövidebb a küszöbnél (a kifejezett magyarázat nyer);
+ *  2. rövidebb a gép küszöbénél → "micro" (mikroleállások összesen);
+ *  3. különben → "unexplained" (ide tartozik az elutasított magyarázat is,
+ *     mert a valódi ok ismeretlen).
+ * A hibakódok gépenként definiáltak; az összes gépre vetített nézetben a
+ * kód + név szerint vonódnak össze.
+ */
+export async function getDowntimePareto(hours: number, machineId: string | null): Promise<DowntimePareto> {
+  const result = await pool.query<{ kind: ParetoKind; code: string | null; name: string | null; periods: string; seconds: string }>(
+    `WITH p AS (
+       SELECT dp.duration_seconds,
+              CASE
+                WHEN fc.id IS NOT NULL AND fr.status <> 'rejected' THEN 'code'
+                WHEN dp.duration_seconds < m.micro_stop_threshold_seconds THEN 'micro'
+                ELSE 'unexplained'
+              END AS kind,
+              fc.code, fc.name
+       FROM downtime_periods dp
+       JOIN machines m ON m.id = dp.machine_id AND m.is_active
+       LEFT JOIN fault_reports fr ON fr.id = dp.fault_report_id
+       LEFT JOIN machine_fault_codes fc ON fc.id = fr.fault_code_id
+       WHERE dp.ended_at > now() - make_interval(hours => $1)
+         AND ($2::text IS NULL OR dp.machine_id = $2)
+     )
+     SELECT kind,
+            CASE WHEN kind = 'code' THEN code END AS code,
+            CASE WHEN kind = 'code' THEN name END AS name,
+            count(*) AS periods,
+            sum(duration_seconds) AS seconds
+     FROM p
+     GROUP BY 1, 2, 3
+     ORDER BY sum(duration_seconds) DESC, 1, 2, 3`,
+    [hours, machineId],
+  );
+  const items = result.rows.map((r) => ({
+    kind: r.kind,
+    code: r.code,
+    name: r.name,
+    periods: Number(r.periods),
+    seconds: Number(r.seconds),
+  }));
+  const sumOf = (kinds: ParetoKind[]) => items.filter((i) => kinds.includes(i.kind)).reduce((a, i) => a + i.seconds, 0);
+  return {
+    hours,
+    machineId,
+    totalSeconds: sumOf(["code", "unexplained", "micro"]),
+    explainedSeconds: sumOf(["code"]),
+    explainableSeconds: sumOf(["code", "unexplained"]),
+    items,
+  };
+}
+
 /** A gép mikroleállási küszöbe. `undefined`, ha a gép nem létezik. */
 export async function setMicroStopThreshold(machineId: string, seconds: number): Promise<{ previous: number } | undefined> {
   const result = await pool.query<{ previous: number }>(

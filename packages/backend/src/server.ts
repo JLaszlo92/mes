@@ -129,6 +129,7 @@ import {
   explainDowntimePeriod,
   getDowntimeSummary,
   setMicroStopThreshold,
+  getDowntimePareto,
 } from "./downtime-periods-repository.js";
 import { getMachineHistory, type BucketUnit } from "./machine-history-repository.js";
 import { getWorkOrderProgress } from "./work-orders-repository.js";
@@ -1460,6 +1461,16 @@ app.delete<{ Params: { id: string } }>(
       return { error: "hours must be an integer between 1 and 744" };
     }
     return getDowntimeSummary(hours);
+  });
+
+  /** Leállási idő okonként (Pareto). hours: 1–744 (alapértelmezés 168 = 7 nap), machineId opcionális. */
+  app.get<{ Querystring: { hours?: string; machineId?: string } }>("/api/downtime-periods/pareto", async (request, reply) => {
+    const hours = request.query.hours === undefined ? 168 : Number(request.query.hours);
+    if (!Number.isInteger(hours) || hours < 1 || hours > 24 * 31) {
+      reply.code(400);
+      return { error: "hours must be an integer between 1 and 744" };
+    }
+    return getDowntimePareto(hours, request.query.machineId || null);
   });
  
   /** A gép mikroleállási küszöbe másodpercben (0–3600); 0 = minden leállást magyarázni kell. */

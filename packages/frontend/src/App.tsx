@@ -25,6 +25,7 @@ import MachineHistoryPanel from "./MachineHistoryPanel";
 import CollapsibleSection from "./CollapsibleSection.js";
 import ShiftPatternsPanel from "./ShiftPatternsPanel.js";
 import GanttSchedulePanel from "./GanttSchedulePanel";
+import DowntimeParetoPanel from "./DowntimeParetoPanel.js";
 
 interface MachineState {
   machineId: string;
@@ -238,6 +239,7 @@ export default function App() {
             <WorkInstructionsPanel />
           </CollapsibleSection>
           <CollapsibleSection title="Downtime">
+            <DowntimeParetoPanel />
             <DowntimePeriodsPanel />
           </CollapsibleSection>
         </div>
