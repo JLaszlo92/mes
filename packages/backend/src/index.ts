@@ -9,6 +9,7 @@ import { startWorkOrderAutoCompleteEvaluator } from "./work-order-auto-complete-
 import { stateStore } from "./state.js";
 import { startProductionRollupEvaluator } from "./production-rollup-evaluator.js";
 import { startOffShiftEvaluator } from "./off-shift-evaluator.js";
+import { startBackupHealthEvaluator } from "./backup-health-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -31,6 +32,7 @@ async function main(): Promise<void> {
   startWorkOrderAutoCompleteEvaluator(app.log);
   startProductionRollupEvaluator(app.log);
   startOffShiftEvaluator(app.log);
+  startBackupHealthEvaluator(app.log);
 }
 
 main().catch((err) => {

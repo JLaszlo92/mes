@@ -32,6 +32,18 @@ Since the last save point (September 28):
   root-only env file; the hardcoded fallback connection string was
   removed from `config.ts`. `docs/SECURITY_REVIEW.md` revised to match.
 
+Since September 30 (morning):
+
+- **Automated Postgres backups to S3** with a passing restore drill (see
+  "Backups" below).
+- **Session tokens stored as SHA-256 hashes** (migration 028), expired
+  sessions cleaned up on login.
+- **Audit log always records who did it** — the actor's email is
+  snapshotted on write (migration 029 backfilled old rows).
+- **Calendars / shift patterns**: rapid day toggles no longer lose
+  updates, API errors are shown, and a calendar or pattern still assigned
+  to a machine can no longer be deleted (migration 030).
+
 ## The Gantt scheduler (item 8)
 
 The original build (September 28) delivered the visual layer, hour-level
@@ -267,6 +279,46 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
   `systemctl restart mes-backend`. Do not skip the `\password` step —
   the backend will fail with `password authentication failed`.
 
+## Sessions, audit log and scheduling config — Sep 30 fixes
+
+- **Session tokens are hashed at rest** (`sql/028_hash_session_tokens.sql`,
+  `sessions-repository.ts`). The `sessions` table holds `token_hash` =
+  SHA-256 of the 256-bit random token; the raw token exists only on the
+  client. Previously it was the raw bearer token (and the primary key), so
+  anyone with read access to the DB or a backup got live sessions,
+  admins included, bypassing MFA. Plain SHA-256 is enough for random
+  tokens (no slow password hash needed). The migration hashes existing
+  rows in place and is guarded so re-running can't hash twice.
+  `createSession` also deletes expired sessions, so the table can't grow
+  past the live ones. `mfa_pending_logins` still stores raw tokens — low
+  risk (useless without the TOTP code, minutes-long), left as a todo.
+- **Audit actor email** (`audit-repository.ts`, `sql/029_…`): most routes
+  pass only `actorId`, and `actor_email` was only filled when the caller
+  passed it — so the Audit log panel showed "—" for nearly everything.
+  `recordAuditEvent` now fills it in the same INSERT
+  (`COALESCE($3, (SELECT email FROM users WHERE id = $2))`). It's a
+  snapshot on purpose: `audit_log.actor_id` is `ON DELETE SET NULL`, so
+  without the email a deleted user's entries would become anonymous.
+  Migration 029 backfilled old rows with the user's *current* email.
+- **Calendar day toggles** (`ShiftPatternsPanel.tsx`): each toggle built
+  the new array from the last *loaded* state, so a second quick click
+  overwrote the first (lost update — visible in the audit log as
+  near-simultaneous `calendar_updated` rows). Now: built from the latest
+  local state, applied optimistically, and the calendar's checkboxes are
+  locked while its save is in flight. All mutations in the panel now
+  check the response and show the API error.
+- **In-use calendars / patterns can't be deleted**
+  (`sql/030_restrict_machine_calendar_pattern_delete.sql`): the
+  `machines.calendar_id` / `shift_pattern_id` FKs were `ON DELETE SET
+  NULL`, so deleting an assigned calendar silently emptied the machine's
+  assignment — and then **migration 023's re-run line** (`UPDATE machines
+  SET calendar_id = 'default-247' WHERE calendar_id IS NULL`) quietly gave
+  that machine a 24/7 calendar on the next restart (no more off-shift
+  time; availability/OEE computed on a different basis). Now `ON DELETE
+  RESTRICT`; the DELETE routes return 409 "still assigned to a machine".
+  The migration finds the FK by column, not by name, and only swaps it if
+  it isn't RESTRICT yet.
+
 ## Backups (node-dc → S3)
 
 Daily at 02:30 UTC `mes-backup.timer` runs `mes-backup.sh`: `pg_dump`
@@ -292,7 +344,26 @@ is in `ops/backup/README.md`.
   the `timescaledb_pre_restore()` / `post_restore()` wrapping (README).
 - `S3_ENDPOINT_URL` switches the target to an on-prem S3-compatible store
   (e.g. MinIO) for customers whose data may not leave the site.
-- **Not yet**: alerting when a backup fails — currently journal only.
+- **Alerting (dead man's switch)**: every run, success or failure, writes
+  its result to `job_status` (`name = 'db_backup'`; failing step on
+  failure, file/size/sha256 on success). `backup-health-evaluator.ts`
+  checks it every 5 min and raises a **System** alert (Alerts tab, no
+  machine) if the last run failed or there's been no successful backup
+  for 26 h — which also catches a timer that never ran. One open alert
+  per type (its message is updated, not duplicated); it resolves itself
+  after the next successful backup. Verified on node-dc Sep 30 with a
+  deliberately wrong bucket name. Limit: if node-dc is down, nothing on
+  it can alert — that needs an external heartbeat (not set up).
+- **System alerts** (`sql/031`): `alerts.machine_id` / `rule_id` are
+  nullable for alerts not tied to a machine (CHECK: both or neither;
+  unique partial index: one open system alert per type). The list shows
+  them as machine "System"; `AlertsPanel` never offers "Create ticket"
+  for them.
+- **Fixed on the way**: `listAlerts` returned only alerts *raised* in the
+  last 24 h, so an alert open for more than a day (e.g. a machine down
+  since yesterday) silently vanished from the list. Now: all open alerts
+  plus the last 24 h of resolved ones. `AlertsPanel`'s "Create ticket"
+  now reports success/failure and doesn't create duplicates.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
@@ -311,6 +382,19 @@ is in `ops/backup/README.md`.
   calendar (`setDate(getDate() + n)`) and position by real timestamps, or
   DST changes shift everything by an hour. Hungary switches on the last
   Sunday of March and October.
+- **`migrate.ts` re-runs every `.sql` file on every start — design
+  migrations for that.** Data-changing migrations need a guard (028 checks
+  the old column still exists; 029's `WHERE actor_email IS NULL` is
+  naturally idempotent). And remember that old migrations keep running:
+  023's `SET calendar_id = 'default-247' WHERE calendar_id IS NULL` is
+  still live on every start, which is what turned a silent `SET NULL`
+  into a silent 24/7 calendar.
+- **Check the FK `ON DELETE` behaviour before relying on an FK error.**
+  `SET NULL` / `CASCADE` never raise, so a route's "409 if in use" branch
+  is dead code unless the FK is `RESTRICT` / `NO ACTION`.
+- **UI state after a mutation: build the next value from local state, not
+  from the last server response**, and lock the control while the save is
+  in flight — otherwise quick consecutive edits overwrite each other.
 - **Multi-step writes that must succeed together belong in one backend
   transaction**, not a client-side loop of REST calls. The Gantt's old
   segment-by-segment POST/DELETE is the cautionary example.
@@ -340,12 +424,14 @@ is in `ops/backup/README.md`.
 
 ## Still open (lower priority, not blocking)
 
-- **Backup failure alerting** (`OnFailure=` → MES alerts or an external
-  heartbeat), so a failing backup can't go unnoticed.
+- **External heartbeat** for node-dc itself (backup alerting can't fire
+  if the host is down) — decide before the pilot whether it's needed.
 - **Check the 58k `downtime_periods` rows** — very high for 7 machines;
   possibly status flapping (e.g. the signal-presence watchdog) creating a
   period per flap. Worth a look before the pilot's downtime Pareto relies
   on it.
+- `mfa_pending_logins` stores raw pending tokens — hash like sessions
+  (low risk, low effort).
 - **Login rate limiting / lockout** — `POST /api/auth/login` and
   `/api/auth/mfa/login` accept unlimited attempts; non-MFA accounts are
   brute-forceable. See `docs/SECURITY_REVIEW.md` for the full, updated

@@ -1,6 +1,6 @@
 # Security Self-Review — IEC 62443 SL2 Baseline
 
-**Date:** September 21, 2026 · **Revised:** September 30, 2026
+**Date:** September 21, 2026 · **Revised:** September 30, 2026 (afternoon)
 **Scope:** PRD Section 8 (Cybersecurity & OT Security), assessed against
 the current Phase 1 implementation. This is a self-review, not a formal
 audit — per PRD 8.1, formal third-party certification is deliberately
@@ -78,6 +78,16 @@ from anywhere that can reach the API. Fix: per-IP and per-account
 throttling (e.g. `@fastify/rate-limit` on the auth routes) plus a
 temporary lockout after repeated failures.
 
+✅ **Session tokens hashed at rest** *(fixed Sep 30)* — the `sessions`
+table previously held raw bearer tokens (as its primary key), so read
+access to the database or to a backup yielded live sessions, admin ones
+included, bypassing MFA — made more pressing by backups now leaving the
+host. Only the SHA-256 of each 256-bit token is stored now (migration
+028; existing sessions hashed in place). Expired sessions are purged on
+login. Remaining: `mfa_pending_logins` still stores raw pending tokens —
+low risk, since a pending token is useless without the TOTP code and
+lives only minutes.
+
 ⚠️ **Session token storage** *(new finding)* — the browser keeps the
 session token in `localStorage`, readable by any script running on the
 page. The practical risk is an XSS bug anywhere in the frontend turning
@@ -141,8 +151,7 @@ noncurrent-version window covers overwrites. A full restore drill
 (`mes-restore-test.sh`: download from S3 → restore into a scratch DB with
 TimescaleDB pre/post-restore → table and row-count comparison) passed on
 the first real backup (1.4 GB database, 128 MB dump). Scripts and setup:
-`ops/backup/`. Remaining: a failed backup is only visible in the systemd
-journal — no alert yet (see 8.8). Backups contain everything in the
+`ops/backup/`. Failures and missed runs raise a MES alert (see 8.8). Backups contain everything in the
 database (MFA secrets, session rows), so the bucket's access policy is
 part of the security boundary.
 
@@ -224,6 +233,11 @@ segments, `work_order_assignment_updated`), shift patterns, shifts,
 calendars and machine scheduling assignments — previously unaudited.
 New routes are expected to audit every mutation; the remaining
 known exceptions are adding parts and labor to maintenance work orders.
+*Fixed Sep 30:* most entries had no attributable actor in the admin view
+(`actor_email` was only filled when the caller passed it). The email is
+now snapshotted on every write and old rows were backfilled — which also
+keeps entries attributable after a user is deleted (`actor_id` is
+`ON DELETE SET NULL`).
 
 ⚠️ **Access-denied events** — requests rejected by the auth guard (401)
 and rejected WebSocket connections (`dashboard websocket rejected`) are
@@ -243,10 +257,13 @@ says this should exist before the first paying customer, even if simple.
 This is a genuine, easy-to-fix gap: a short document (who gets notified,
 how, what the customer is told, expected timelines) would close it.
 
-❌ **Backup failure alerting** *(new)* — `mes-backup.service` failures
-land only in the journal. Needs an `OnFailure=` hook into MES alerting or
-an external heartbeat check, so a silently failing backup can't go
-unnoticed for weeks.
+✅ **Backup failure alerting** *(fixed Sep 30)* — dead man's switch:
+every backup run records its result in `job_status`; the backend raises a
+System alert if the last run failed or no backup succeeded in 26 h
+(catching a timer that never ran, not just a failing one), and resolves
+it after the next success. Verified end to end with a simulated S3
+failure. Remaining: if node-dc itself is down nothing can alert — an
+external heartbeat would be needed for that.
 
 ➡️ **SIEM export** — correctly a Later-phase item per PRD 8.8 itself.
 
@@ -254,24 +271,22 @@ unnoticed for weeks.
 
 Ordered by how much real risk each closes relative to the effort:
 
-1. **Alert on backup failure.** Backups exist now (Sep 30); the
-   remaining risk is one failing silently. Small change.
-2. **Add login rate limiting and lockout.** Small change, closes the
+1. **Add login rate limiting and lockout.** Small change, closes the
    brute-force path to every non-MFA account.
-3. **Write the incident-response document.** A few hours of writing, and
+2. **Write the incident-response document.** A few hours of writing, and
    PRD explicitly wants it before any paying customer.
-4. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
+3. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
    largest cluster of related gaps (8.2, 8.3, 8.4) — genuinely blocking
    for any customer whose IT/OT team reviews this seriously, and now also
    what protects the session tokens and WebSocket tickets in transit.
    Pin CORS to the frontend origin in the same pass.
-5. **Add MQTT broker authentication + per-device credentials.** Closes
+4. **Add MQTT broker authentication + per-device credentials.** Closes
    the biggest identity gap; a reasonable next step after TLS is in place
    (credentials should travel encrypted).
-6. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
+5. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
-7. After TLS: consider moving the session token from `localStorage` to an
+6. After TLS: consider moving the session token from `localStorage` to an
    `HttpOnly` cookie (with CSRF protection).
-8. Everything marked ➡️ above stays deferred, matching PRD's own guidance
+7. Everything marked ➡️ above stays deferred, matching PRD's own guidance
    — revisit only when a specific customer's requirement makes it
    concrete, not speculatively.

@@ -3,8 +3,11 @@ import { pool } from "./db.js";
 
 export interface Alert {
   id: string;
-  ruleId: string;
-  machineId: string;
+  /** Rendszerriasztásnál (pl. mentés) null. */
+  ruleId: string | null;
+  /** Rendszerriasztásnál (pl. mentés) null. */
+  machineId: string | null;
+  /** Rendszerriasztásnál "System". */
   machineName: string;
   type: string;
   message: string;
@@ -16,8 +19,8 @@ export interface Alert {
 
 type AlertRow = {
   id: string;
-  rule_id: string;
-  machine_id: string;
+  rule_id: string | null;
+  machine_id: string | null;
   machine_name: string;
   type: string;
   message: string;
@@ -42,17 +45,23 @@ function toAlert(row: AlertRow): Alert {
   };
 }
 
+// LEFT JOIN: a rendszerriasztásokhoz nem tartozik gép (sql/031).
 const SELECT_JOINED = `
-  SELECT a.*, m.name AS machine_name
+  SELECT a.*, COALESCE(m.name, 'System') AS machine_name
   FROM alerts a
-  JOIN machines m ON m.id = a.machine_id
+  LEFT JOIN machines m ON m.id = a.machine_id
 `;
 
-/** Az elmúlt 24 óra összes riasztása, a még nyitottak elöl. */
+/**
+ * Az összes még nyitott riasztás (korától függetlenül), plusz az elmúlt 24
+ * óra lezárt riasztásai; a nyitottak elöl. Korábban csak a 24 órán belül
+ * keletkezetteket adta vissza, így egy egy napnál régebben nyitott riasztás
+ * — pl. egy tegnap óta álló gép — megoldatlanul eltűnt a listáról.
+ */
 export async function listAlerts(): Promise<Alert[]> {
   const result = await pool.query<AlertRow>(
     `${SELECT_JOINED}
-     WHERE a.raised_at > now() - INTERVAL '24 hours'
+     WHERE a.resolved_at IS NULL OR a.raised_at > now() - INTERVAL '24 hours'
      ORDER BY a.resolved_at IS NOT NULL, a.raised_at DESC`,
   );
   return result.rows.map(toAlert);
@@ -81,6 +90,41 @@ export async function resolveOpenAlert(ruleId: string, machineId: string): Promi
     ruleId,
     machineId,
   ]);
+}
+
+// --- Rendszerriasztások (géphez és alert_rule-hoz nem kötött) -------------
+
+/**
+ * Nyit egy rendszerriasztást az adott típusra, vagy ha már van nyitott,
+ * frissíti az üzenetét (pl. "failed" → "no backup for 26 h"). Egy típusból
+ * egyszerre egy lehet nyitva — ezt a sql/031 egyedi indexe is kikényszeríti,
+ * így két párhuzamos hívás sem nyithat duplikátumot. Visszatér: true, ha új
+ * riasztás nyílt.
+ */
+export async function raiseOrUpdateSystemAlert(type: string, message: string): Promise<boolean> {
+  const updated = await pool.query(
+    `UPDATE alerts SET message = $2
+     WHERE type = $1 AND machine_id IS NULL AND resolved_at IS NULL AND message IS DISTINCT FROM $2`,
+    [type, message],
+  );
+  if ((updated.rowCount ?? 0) > 0) return false;
+
+  const inserted = await pool.query(
+    `INSERT INTO alerts (id, rule_id, machine_id, type, message)
+     VALUES ($1, NULL, NULL, $2, $3)
+     ON CONFLICT (type) WHERE resolved_at IS NULL AND machine_id IS NULL DO NOTHING`,
+    [randomUUID(), type, message],
+  );
+  return (inserted.rowCount ?? 0) > 0;
+}
+
+/** Lezárja az adott típus nyitott rendszerriasztását. Visszatér: true, ha volt mit lezárni. */
+export async function resolveSystemAlert(type: string): Promise<boolean> {
+  const result = await pool.query(
+    `UPDATE alerts SET resolved_at = now() WHERE type = $1 AND machine_id IS NULL AND resolved_at IS NULL`,
+    [type],
+  );
+  return (result.rowCount ?? 0) > 0;
 }
 
 export async function acknowledgeAlert(id: string, userId: string): Promise<Alert | undefined> {

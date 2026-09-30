@@ -4,7 +4,8 @@ import { apiFetch, API_BASE } from "./api.js";
 
 interface Alert {
   id: string;
-  machineId: string;
+  /** Rendszerriasztásnál (pl. sikertelen mentés) null — ilyenkor machineName "System". */
+  machineId: string | null;
   machineName: string;
   type: string;
   message: string;
@@ -41,12 +42,22 @@ const buttonStyle = {
 const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
 const ROLES = ["operator", "supervisor", "maintenance", "manager", "admin"];
 
+/** A backend hibaüzenete, vagy egy általános üzenet, ha a válasz nem JSON. */
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => ({}))) as { error?: string };
+  return body.error ?? `${fallback} (${res.status})`;
+}
+
 export default function AlertsPanel() {
-  const { auth, logout } = useAuth();
+  const { auth } = useAuth();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  /** Riasztások, amelyekhez ebben a munkamenetben már készült munkarendelés — a gomb ne duplikáljon. */
+  const [ticketCreatedFor, setTicketCreatedFor] = useState<Set<string>>(new Set());
+  const [creatingTicketFor, setCreatingTicketFor] = useState<string | null>(null);
   const [form, setForm] = useState({
     type: "machine_down" as "machine_down" | "scrap_rate",
     machineId: "",
@@ -59,26 +70,18 @@ export default function AlertsPanel() {
   const canCreateTicket =
     auth?.role === "supervisor" || auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
 
+  // A token hozzáadását és a 401-es kiléptetést az apiFetch végzi.
   function load() {
-    const calls: Promise<void>[] = [
-      apiFetch(`${API_BASE}/api/alerts`).then((r) => r.json()).then(setAlerts),
-      apiFetch(`${API_BASE}/api/machine-registry`).then((r) => r.json()).then(setMachines),
-    ];
-    if (isAdmin) {
-      calls.push(
-        apiFetch(`${API_BASE}/api/alert-rules`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-          .then((res) => {
-            if (res.status === 401) {
-              logout();
-              throw new Error("session expired — please sign in again");
-            }
-            if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-            return res.json();
-          })
-          .then(setRules),
+    const getJson = <T,>(path: string) =>
+      apiFetch(`${API_BASE}${path}`).then((r) =>
+        r.ok ? (r.json() as Promise<T>) : Promise.reject(new Error(`${path}: ${r.status}`)),
       );
-    }
-    Promise.all(calls).catch((err) => setError(String(err)));
+    const calls: Promise<void>[] = [
+      getJson<Alert[]>("/api/alerts").then(setAlerts),
+      getJson<Machine[]>("/api/machine-registry").then(setMachines),
+    ];
+    if (isAdmin) calls.push(getJson<AlertRule[]>("/api/alert-rules").then(setRules));
+    Promise.all(calls).catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
   useEffect(() => {
@@ -90,33 +93,40 @@ export default function AlertsPanel() {
 
   async function acknowledge(id: string) {
     setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${auth?.token}` },
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      load();
-    } catch (err) {
-      setError(String(err));
-    }
+    const res = await apiFetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, { method: "POST" });
+    if (!res.ok) setError(await errorMessage(res, "Failed to acknowledge alert"));
+    load();
   }
 
-  async function createMaintenanceTicket(machineId: string, title: string, sourceType: string, sourceId: string) {
-    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ machineId, title, sourceType, sourceId }),
-    });
-    if (res.status === 401) {
-      logout();
+  /**
+   * Karbantartási munkarendelés egy gépriasztásból. Korábban a választ nem
+   * nézte: nem derült ki, sikerült-e, és többszöri kattintás több azonos
+   * munkarendelést hozott létre.
+   */
+  async function createMaintenanceTicket(alert: Alert) {
+    if (!alert.machineId || creatingTicketFor) return;
+    setError(null);
+    setNotice(null);
+    setCreatingTicketFor(alert.id);
+    try {
+      const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          machineId: alert.machineId,
+          title: `Investigate: ${alert.message}`,
+          sourceType: "alert",
+          sourceId: alert.id,
+        }),
+      });
+      if (res.ok) {
+        setTicketCreatedFor((prev) => new Set(prev).add(alert.id));
+        setNotice(`Maintenance work order created for ${alert.machineName}.`);
+      } else {
+        setError(await errorMessage(res, "Failed to create maintenance work order"));
+      }
+    } finally {
+      setCreatingTicketFor(null);
     }
   }
 
@@ -134,7 +144,7 @@ export default function AlertsPanel() {
     try {
       const res = await apiFetch(`${API_BASE}/api/alert-rules`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type: form.type,
           machineId: form.machineId || undefined,
@@ -142,18 +152,12 @@ export default function AlertsPanel() {
           notifyRoles: form.notifyRoles,
         }),
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+        setError(await errorMessage(res, "Failed to add rule"));
+        return;
       }
       setForm({ type: "machine_down", machineId: "", threshold: "", notifyRoles: ["supervisor", "manager"] });
       load();
-    } catch (err) {
-      setError(String(err));
     } finally {
       setSubmitting(false);
     }
@@ -162,25 +166,16 @@ export default function AlertsPanel() {
   async function toggleRuleActive(rule: AlertRule) {
     const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ isActive: !rule.isActive }),
     });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
+    if (!res.ok) setError(await errorMessage(res, "Failed to update rule"));
     load();
   }
 
   async function removeRule(id: string) {
-    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
+    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (!res.ok) setError(await errorMessage(res, "Failed to remove rule"));
     load();
   }
 
@@ -192,6 +187,7 @@ export default function AlertsPanel() {
       <h2 style={{ fontSize: 16 }}>Alerts</h2>
 
       {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
+      {notice && <p style={{ color: "#0ca30c", fontSize: 13 }}>{notice}</p>}
       {openAlerts.length === 0 && <p style={{ color: "#898781" }}>No active alerts.</p>}
 
       {openAlerts.map((a) => (
@@ -204,19 +200,24 @@ export default function AlertsPanel() {
             <div style={{ fontSize: 13 }}>{a.message}</div>
             <div style={{ fontSize: 11, color: "#898781" }}>{new Date(a.raisedAt).toLocaleString()}</div>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            {canCreateTicket && a.type === "machine_down" && (
-              <button
-                style={secondaryButtonStyle}
-                onClick={() => createMaintenanceTicket(a.machineId, `Investigate: ${a.message}`, "alert", a.id)}
-              >
-                Create ticket
-              </button>
-            )}
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {/* Munkarendelés csak gépriasztásból — rendszerriasztásnak (machineId null) nincs gépe. */}
+            {canCreateTicket && a.type === "machine_down" && a.machineId !== null &&
+              (ticketCreatedFor.has(a.id) ? (
+                <span style={{ fontSize: 12, color: "#0ca30c" }}>Ticket created</span>
+              ) : (
+                <button
+                  style={secondaryButtonStyle}
+                  disabled={creatingTicketFor !== null}
+                  onClick={() => void createMaintenanceTicket(a)}
+                >
+                  {creatingTicketFor === a.id ? "Creating…" : "Create ticket"}
+                </button>
+              ))}
             {a.acknowledgedAt ? (
               <span style={{ fontSize: 12, color: "#898781" }}>Acknowledged</span>
             ) : (
-              <button style={secondaryButtonStyle} onClick={() => acknowledge(a.id)}>
+              <button style={secondaryButtonStyle} onClick={() => void acknowledge(a.id)}>
                 Acknowledge
               </button>
             )}
@@ -271,10 +272,10 @@ export default function AlertsPanel() {
               <div><div style={{ fontSize: 12, color: "#898781" }}>Threshold</div><div>{r.threshold}</div></div>
               <div><div style={{ fontSize: 12, color: "#898781" }}>Notify</div><div>{r.notifyRoles.join(", ")}</div></div>
               <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                <button type="button" onClick={() => toggleRuleActive(r)} style={secondaryButtonStyle}>
+                <button type="button" onClick={() => void toggleRuleActive(r)} style={secondaryButtonStyle}>
                   {r.isActive ? "Disable" : "Enable"}
                 </button>
-                <button type="button" onClick={() => removeRule(r.id)} style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }}>
+                <button type="button" onClick={() => void removeRule(r.id)} style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }}>
                   Remove
                 </button>
               </div>

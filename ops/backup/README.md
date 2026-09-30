@@ -98,6 +98,14 @@ systemctl list-timers mes-backup.timer
   the **same TimescaleDB version** as the backup source.
 - Rotating the AWS key: create a new key for the IAM user,
   `aws configure --profile mes-backup`, run a manual backup, delete the old key.
-- **Known gap**: a failed backup is only visible in the journal. Wiring
-  `OnFailure=` into the MES alerting (or an external heartbeat check) is
-  the next step, so a silently failing backup can't go unnoticed.
+- **Alerting**: every run (success *and* failure) writes its result to
+  the `job_status` table (`name = 'db_backup'`, with the failing step on
+  failure and file/size/sha256 on success). The backend's
+  `backup-health-evaluator.ts` checks it every 5 minutes and raises a
+  **System** alert in the MES Alerts view if the last run failed, or if
+  there has been no successful backup for 26 hours — which also catches
+  a timer that never ran. The alert resolves itself once a backup
+  succeeds. Check it by hand:
+  `psql -h localhost -U mes mes -c "SELECT * FROM job_status;"`
+- **Limit**: if node-dc itself is down, nothing on node-dc can alert.
+  Covering that needs an external heartbeat check (not set up).
