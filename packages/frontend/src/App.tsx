@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { MachineEvent, MachineStatusValue } from "@mes/shared";
 import MachineOverviewPanel from "./MachineOverviewPanel.js";
 import MachineRegistryPanel from "./MachineRegistryPanel.js";
@@ -22,7 +22,8 @@ import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
-import CollapsibleSection from "./CollapsibleSection.js";
+import AppShell, { pathOf, type NavGroup } from "./AppShell.js";
+import { navigate, usePath } from "./router.js";
 import ShiftPatternsPanel from "./ShiftPatternsPanel.js";
 import GanttSchedulePanel from "./GanttSchedulePanel";
 import DowntimeParetoPanel from "./DowntimeParetoPanel.js";
@@ -44,16 +45,165 @@ const WS_CLOSE_REAUTH = 4000;
 const RETRY_BASE_MS = 2000;
 const RETRY_MAX_MS = 30_000;
 
-const TABS = [
-  { id: "overview", label: "Overview" },
-  { id: "production", label: "Production" },
-  { id: "quality", label: "Quality" },
-  { id: "maintenance", label: "Maintenance" },
-  { id: "alerts", label: "Alerts" },
-  { id: "admin", label: "Admin" },
-] as const;
+type Role = "admin" | "manager" | "supervisor" | "maintenance" | "operator" | string;
 
-type TabId = (typeof TABS)[number]["id"];
+interface ViewDef {
+  id: string;
+  label: string;
+  /** Ha meg van adva, csak ezek a szerepkörök látják (a backend is ezt kényszeríti ki). */
+  roles?: Role[];
+}
+
+interface GroupDef extends Omit<NavGroup, "items" | "badge"> {
+  roles?: Role[];
+  items: ViewDef[];
+}
+
+const MANAGERS: Role[] = ["admin", "manager"];
+
+/**
+ * A navigáció: modul → nézet. Minden nézet egy URL (/modul/nézet), és egyszerre
+ * egy nézet látszik — a korábbi fülek + egymás alatti lenyitható szekciók helyett.
+ */
+const NAV: GroupDef[] = [
+  {
+    id: "overview",
+    label: "Overview",
+    icon: "overview",
+    items: [
+      { id: "live", label: "Live status" },
+      { id: "history", label: "Machine history" },
+    ],
+  },
+  {
+    id: "production",
+    label: "Production",
+    icon: "production",
+    items: [
+      { id: "work-orders", label: "Work orders" },
+      { id: "schedule", label: "Gantt schedule" },
+      { id: "lots", label: "Lots" },
+      { id: "materials", label: "Material lots" },
+    ],
+  },
+  {
+    id: "quality",
+    label: "Quality",
+    icon: "quality",
+    items: [
+      { id: "fault-reports", label: "Fault reports" },
+      { id: "downtime", label: "Downtime" },
+      { id: "work-instructions", label: "Work instructions", roles: MANAGERS },
+    ],
+  },
+  {
+    id: "maintenance",
+    label: "Maintenance",
+    icon: "maintenance",
+    items: [
+      { id: "work-orders", label: "Work orders" },
+      { id: "preventive", label: "Preventive schedules", roles: ["maintenance", "manager", "admin"] },
+    ],
+  },
+  { id: "alerts", label: "Alerts", icon: "alerts", items: [{ id: "all", label: "Alerts" }] },
+  {
+    id: "admin",
+    label: "Admin",
+    icon: "admin",
+    roles: MANAGERS,
+    items: [
+      { id: "machines", label: "Machines" },
+      { id: "plant", label: "Sites, areas and lines" },
+      { id: "shifts", label: "Shifts and calendars" },
+      { id: "statuses", label: "Status definitions" },
+      { id: "fault-codes", label: "Fault codes" },
+      { id: "terminals", label: "Terminals" },
+      { id: "edge-nodes", label: "Edge nodes" },
+      { id: "audit-log", label: "Audit log", roles: ["admin"] },
+    ],
+  },
+];
+
+function navForRole(role: Role): NavGroup[] {
+  return NAV.filter((g) => !g.roles || g.roles.includes(role))
+    .map((g) => ({ ...g, items: g.items.filter((i) => !i.roles || i.roles.includes(role)) }))
+    .filter((g) => g.items.length > 0);
+}
+
+/** Nyugtázatlan, nyitott riasztások száma az oldalsávhoz — percenként frissül. */
+function useOpenAlertCount(enabled: boolean): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const load = () =>
+      apiFetch(`${API_BASE}/api/alerts`)
+        .then((r) => (r.ok ? r.json() : []))
+        .then((alerts: { resolvedAt: string | null; acknowledgedAt: string | null }[]) => {
+          if (!cancelled) setCount(alerts.filter((a) => !a.resolvedAt && !a.acknowledgedAt).length);
+        })
+        .catch(() => {});
+    void load();
+    const timer = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [enabled]);
+  return count;
+}
+
+function renderView(groupId: string, viewId: string, liveState: Record<string, MachineState>) {
+  switch (`${groupId}/${viewId}`) {
+    case "overview/live":
+      return <MachineOverviewPanel liveState={liveState} />;
+    case "overview/history":
+      return <MachineHistoryPanel />;
+    case "production/work-orders":
+      return <WorkOrdersPanel />;
+    case "production/schedule":
+      return <GanttSchedulePanel />;
+    case "production/lots":
+      return <LotsPanel />;
+    case "production/materials":
+      return <MaterialLotsPanel />;
+    case "quality/fault-reports":
+      return <FaultReportsPanel />;
+    case "quality/downtime":
+      return (
+        <>
+          <DowntimeParetoPanel />
+          <DowntimePeriodsPanel />
+        </>
+      );
+    case "quality/work-instructions":
+      return <WorkInstructionsPanel />;
+    case "maintenance/work-orders":
+      return <MaintenanceWorkOrdersPanel />;
+    case "maintenance/preventive":
+      return <PreventiveSchedulesPanel />;
+    case "alerts/all":
+      return <AlertsPanel />;
+    case "admin/machines":
+      return <MachineRegistryPanel />;
+    case "admin/plant":
+      return <PlantHierarchyPanel />;
+    case "admin/shifts":
+      return <ShiftPatternsPanel />;
+    case "admin/statuses":
+      return <MachineStatusDefinitionsPanel />;
+    case "admin/fault-codes":
+      return <MachineFaultCodesPanel />;
+    case "admin/terminals":
+      return <TerminalUisPanel />;
+    case "admin/edge-nodes":
+      return <EdgeNodesPanel />;
+    case "admin/audit-log":
+      return <AuditLogPanel />;
+    default:
+      return null;
+  }
+}
 
 function applyEventToMachines(
   machines: Record<string, MachineState>,
@@ -73,7 +223,6 @@ function applyEventToMachines(
 export default function App() {
   const [machines, setMachines] = useState<Record<string, MachineState>>({});
   const [connected, setConnected] = useState(false);
-  const [activeTab, setActiveTab] = useState<TabId>("overview");
   const socketRef = useRef<WebSocket | null>(null);
 
   const { auth, logout, mfaSetupRequired } = useAuth();
@@ -157,6 +306,19 @@ export default function App() {
     };
   }, [token]);
 
+  const role = auth?.role;
+  const groups = useMemo(() => (role ? navForRole(role) : []), [role]);
+  const path = usePath();
+  const [, groupId = "", viewId = ""] = path.split("/");
+  const activeGroup = groups.find((g) => g.id === groupId);
+  const activeView = activeGroup?.items.find((i) => i.id === viewId);
+  const alertCount = useOpenAlertCount(!!auth && !mfaSetupRequired);
+
+  // "/" vagy ismeretlen / nem engedélyezett útvonal → az első elérhető nézet.
+  useEffect(() => {
+    if (auth && groups.length > 0 && !activeView) navigate(pathOf(groups[0]!, groups[0]!.items[0]!), { replace: true });
+  }, [auth, groups, activeView]);
+
   if (mfaSetupRequired) {
     return <MfaSetup />;
   }
@@ -165,118 +327,18 @@ export default function App() {
     return <LoginForm />;
   }
 
+  const navGroups = groups.map((g) => (g.id === "alerts" ? { ...g, badge: alertCount } : g));
+
   return (
-    <div style={{ maxWidth: 1280, margin: "40px auto", padding: "0 16px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h1 style={{ fontSize: 20 }}>MES Dashboard</h1>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 13, color: "#898781" }}>{auth.role}</span>
-          <button
-            onClick={logout}
-            style={{ fontSize: 13, padding: "4px 10px", border: "1px solid #e1e0d9", borderRadius: 6, background: "#fff", cursor: "pointer" }}
-          >
-            Sign out
-          </button>
-          <span style={{ fontSize: 13, color: connected ? "#0ca30c" : "#d03b3b" }}>
-            {connected ? "● live" : "○ disconnected — retrying…"}
-          </span>
-        </div>
-      </header>
-
-      <nav style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid #e1e0d9" }}>
-        {TABS.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: "8px 16px",
-              border: "none",
-              borderBottom: activeTab === tab.id ? "2px solid #0b0b0b" : "2px solid transparent",
-              background: "none",
-              fontSize: 14,
-              fontWeight: activeTab === tab.id ? 600 : 400,
-              color: activeTab === tab.id ? "#0b0b0b" : "#898781",
-              cursor: "pointer",
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
-      </nav>
-
-      {activeTab === "overview" && (
-        <div>
-          <MachineOverviewPanel liveState={machines} />
-          <MachineHistoryPanel />
-        </div>
-      )}
-
-            {activeTab === "production" && (
-        <div>
-          <CollapsibleSection title="Work orders" defaultOpen>
-            <WorkOrdersPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Gantt schedule" defaultOpen>
-            <GanttSchedulePanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Traceability (lots & material)">
-            <LotsPanel />
-            <MaterialLotsPanel />
-          </CollapsibleSection>
-        </div>
-      )}
-
-      {activeTab === "quality" && (
-        <div>
-          <CollapsibleSection title="Fault codes & reports" defaultOpen>
-            <MachineFaultCodesPanel />
-            <FaultReportsPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Work instructions">
-            <WorkInstructionsPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Downtime">
-            <DowntimeParetoPanel />
-            <DowntimePeriodsPanel />
-          </CollapsibleSection>
-        </div>
-      )}
-      {activeTab === "maintenance" && (
-        <div>
-          <CollapsibleSection title="Work orders" defaultOpen>
-            <MaintenanceWorkOrdersPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Preventive schedules">
-            <PreventiveSchedulesPanel />
-          </CollapsibleSection>
-        </div>
-      )}
-
-      {activeTab === "alerts" && (
-        <div>
-          <AlertsPanel />
-        </div>
-      )}
-
-      {activeTab === "admin" && (
-        <div>
-          <CollapsibleSection title="Machines" defaultOpen>
-            <MachineRegistryPanel />
-            <PlantHierarchyPanel />
-            <MachineStatusDefinitionsPanel />
-            <ShiftPatternsPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Terminals">
-            <TerminalUisPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Edge nodes">
-            <EdgeNodesPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Audit log">
-            <AuditLogPanel />
-          </CollapsibleSection>
-        </div>
-      )}
-    </div>
+    <AppShell
+      groups={navGroups}
+      activeGroupId={activeGroup?.id ?? ""}
+      activeItemId={activeView?.id ?? ""}
+      connected={connected}
+      role={auth.role}
+      onSignOut={logout}
+    >
+      {activeGroup && activeView ? renderView(activeGroup.id, activeView.id, machines) : null}
+    </AppShell>
   );
 }

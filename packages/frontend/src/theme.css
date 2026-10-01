@@ -566,3 +566,293 @@ body {
   gap: var(--space-2);
   align-items: flex-end;
 }
+
+/* ---- Alkalmazás-keret: oldalsáv + felső sáv ---- */
+
+.shell {
+  --nav-w: 232px;
+  display: grid;
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
+  min-height: 100vh;
+}
+.shell[data-collapsed="true"] {
+  --nav-w: 60px;
+}
+.shell-nav {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--c-surface);
+  border-right: 1px solid var(--c-border);
+  overflow: hidden;
+}
+.shell-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 52px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--c-border);
+}
+.shell-brand-mark {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  background: var(--c-accent);
+  box-shadow: inset 0 -6px 0 rgba(255, 255, 255, 0.18);
+}
+.shell-brand-name {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.shell-groups {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+.shell-group + .shell-group {
+  margin-top: 2px;
+}
+.shell-group-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  height: 36px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: none;
+  color: var(--c-text-muted);
+  font: inherit;
+  font-size: var(--text-m);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.shell-group-btn > svg {
+  flex: none;
+}
+.shell-group-btn:hover {
+  background: var(--c-surface-sunken);
+  color: var(--c-text);
+}
+.shell-group-btn[data-active="true"] {
+  color: var(--c-text);
+  font-weight: 600;
+}
+.shell-group-btn[data-active="true"] > svg {
+  color: var(--c-accent);
+}
+.shell-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-chevron {
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  opacity: 0.6;
+  transition: transform 120ms ease;
+}
+.shell-chevron[data-open="true"] {
+  transform: rotate(45deg);
+}
+.shell-badge {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--c-alarm);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+}
+.shell-items {
+  margin: 2px 0 6px;
+  padding: 0;
+  list-style: none;
+}
+.shell-item {
+  display: block;
+  height: 32px;
+  padding: 0 10px 0 40px;
+  border-radius: var(--radius-m);
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+  line-height: 32px;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-item:hover {
+  background: var(--c-surface-sunken);
+  color: var(--c-text);
+}
+.shell-item[aria-current="page"] {
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
+  font-weight: 500;
+}
+.shell-nav-foot {
+  padding: var(--space-2);
+  border-top: 1px solid var(--c-border);
+}
+
+/* Ikonsáv mód: csak ikonok; a jelvény az ikon sarkába kerül. */
+.shell[data-collapsed="true"] .shell-label,
+.shell[data-collapsed="true"] .shell-brand-name {
+  display: none;
+}
+.shell[data-collapsed="true"] .shell-group-btn {
+  position: relative;
+  justify-content: center;
+  padding: 0;
+}
+.shell[data-collapsed="true"] .shell-badge {
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  font-size: 10px;
+  line-height: 16px;
+}
+.shell[data-collapsed="true"] .shell-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.shell-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.shell-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 52px;
+  padding: 0 var(--space-6);
+  background: color-mix(in srgb, var(--c-bg) 88%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--c-border);
+}
+.shell-crumbs {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+  font-size: var(--text-m);
+  white-space: nowrap;
+}
+.shell-crumb-group {
+  color: var(--c-text-muted);
+}
+.shell-crumb-sep {
+  color: var(--c-text-faint);
+}
+.shell-crumb-item {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+}
+.shell-live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--c-accent);
+}
+.shell-role {
+  color: var(--c-text-faint);
+  font-size: var(--text-s);
+}
+.shell-content {
+  width: 100%;
+  max-width: 1440px;
+  padding: var(--space-2) var(--space-6) var(--space-6);
+  box-sizing: border-box;
+}
+.shell-menu-btn {
+  display: none;
+  padding: 0 6px;
+}
+.shell-scrim {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .shell,
+  .shell[data-collapsed="true"] {
+    --nav-w: 248px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .shell-nav {
+    position: fixed;
+    left: 0;
+    z-index: 60;
+    width: var(--nav-w);
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+  }
+  .shell[data-mobile-open="true"] .shell-nav {
+    transform: none;
+    box-shadow: 12px 0 32px rgba(20, 28, 38, 0.18);
+  }
+  .shell-scrim {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 59;
+    background: rgba(20, 28, 38, 0.28);
+  }
+  /* Mobilon nincs ikonsáv mód — mindig teljes címkék. */
+  .shell .shell-label,
+  .shell .shell-brand-name {
+    display: initial;
+  }
+  .shell .shell-group-btn {
+    justify-content: flex-start;
+    padding: 0 10px;
+  }
+  .shell-nav-foot {
+    display: none;
+  }
+  .shell-menu-btn {
+    display: inline-flex;
+  }
+  .shell-top,
+  .shell-content {
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
+  }
+  .shell-role {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shell-nav,
+  .shell-chevron {
+    transition: none;
+  }
+}

@@ -541,6 +541,33 @@ is in `ops/backup/README.md`.
   now reports success/failure and doesn't create duplicates.
 - Server-side copies to weekly/ / monthly/ use --copy-props none: by default aws s3 cp copies tags too, which needs s3:GetObjectTagging — deliberately not granted to the node-dc IAM user. Found on the first monthly run (Oct 1).
 
+## Navigation: sidebar + one view per URL — Oct 1
+
+- The tab bar and the stacked `CollapsibleSection`s are gone
+  (`CollapsibleSection.tsx` deleted). `AppShell.tsx` is the frame: a left
+  sidebar with two levels (module → view), a top bar with breadcrumb,
+  connection state, role and sign-out, and exactly **one view** below.
+- **Every view has a URL**: `/overview/live`, `/production/work-orders`,
+  `/production/schedule`, `/maintenance/preventive`, `/admin/machines`, …
+  (`router.ts`, History API, no dependency). Back button, bookmarks and
+  shared links work. `/` and unknown or not-permitted paths redirect to the
+  first view the role may see. `/terminal/:id` is unchanged (`main.tsx`).
+  **When the frontend moves from `pnpm dev` to a static build behind a web
+  server, that server needs an SPA fallback** (serve `index.html` for
+  unknown paths), or deep links 404.
+- The navigation is defined once in `App.tsx` (`NAV`): modules, views and
+  which roles see them, mirroring the backend checks (Admin: admin/manager;
+  Audit log: admin; Preventive schedules: maintenance/manager/admin; Work
+  instructions: admin/manager). `renderView()` maps `module/view` to the
+  panel. New view = one entry in `NAV` + one `case`.
+- Admin is split into separate views: Machines, Sites/areas/lines, Shifts
+  and calendars, Status definitions, Fault codes (moved here from Quality —
+  it's configuration), Terminals, Edge nodes, Audit log.
+- The sidebar collapses to an icon rail (remembered in `localStorage`);
+  below 900 px it becomes an overlay opened from the top bar. The Alerts
+  entry shows the number of open, unacknowledged alerts (polled every
+  60 s) — the only red element in the frame, per the ISA-101 direction.
+
 ## Work orders, maintenance and tables — Oct 1
 
 - **Work orders as a table** (`WorkOrdersPanel.tsx`, `WorkOrderDrawer.tsx`):
@@ -647,7 +674,7 @@ is in `ops/backup/README.md`.
   CSV export; editing/copying in `MachineEditorDrawer`;
   `PlantHierarchyPanel` is a three-column site/area/line browser. App
   container widened from 900 to 1280 px.
-- **Next UI steps**: move the other long lists (audit log, downtime
+- **Next UI steps** (sidebar done Oct 1): move the other long lists (audit log, downtime
   periods, alerts, work orders, fault reports) onto `DataTable` — the
   unbounded ones with server-side paging; sidebar navigation and a global
   site/area/line scope selector; replace the scattered inline colours with
