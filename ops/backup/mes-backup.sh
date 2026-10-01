@@ -121,12 +121,12 @@ echo "uploaded: s3://$S3_BUCKET/daily/$name"
 # Szerveroldali másolás, nem újrafeltöltés.
 if [[ "$(date -u +%u)" == "7" ]]; then
   step="copying to weekly/"
-  aws_s3 cp "s3://$S3_BUCKET/daily/$name" "s3://$S3_BUCKET/weekly/$name" --only-show-errors
+  aws_s3 cp --copy-props none "s3://$S3_BUCKET/daily/$name" "s3://$S3_BUCKET/weekly/$name" --only-show-errors
   echo "copied to weekly/"
 fi
 if [[ "$(date -u +%d)" == "01" ]]; then
   step="copying to monthly/"
-  aws_s3 cp "s3://$S3_BUCKET/daily/$name" "s3://$S3_BUCKET/monthly/$name" --only-show-errors
+  aws_s3 cp --copy-props none "s3://$S3_BUCKET/daily/$name" "s3://$S3_BUCKET/monthly/$name" --only-show-errors
   echo "copied to monthly/"
 fi
 
