@@ -1,3 +1,4 @@
+import { mqttTlsOptions } from "./mqtt-tls.js";
 import mqtt from "mqtt";
 import { ackTopic, EVENT_TOPIC_WILDCARD, safeParseMachineEvent } from "@mes/shared";
 import type { FastifyBaseLogger } from "fastify";
@@ -16,6 +17,7 @@ export function startMqttSubscriber(log: FastifyBaseLogger): mqtt.MqttClient {
   // below (see handleMessage) is what closes the rest of it — including
   // the broker itself restarting, which drops persisted sessions too.
   const client = mqtt.connect(config.mqttUrl, {
+    ...mqttTlsOptions(),
     reconnectPeriod: 2000,
     clientId: "backend-ingest",
     clean: false,

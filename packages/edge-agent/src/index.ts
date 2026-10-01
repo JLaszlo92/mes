@@ -1,3 +1,4 @@
+import { mqttTlsOptions } from "./mqtt-tls.js";
 import { randomUUID } from "node:crypto";
 import mqtt, { type MqttClient } from "mqtt";
 import pino from "pino";
@@ -113,7 +114,7 @@ function runLegacyMode(): void {
     for (const event of pending) publishBestEffort(event);
   }
 
-  const client = mqtt.connect(config.mqttUrl, { reconnectPeriod: 2000, clientId: `edge-agent-${config.machineId}` });
+  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, clientId: `edge-agent-${config.machineId}` });
 
   client.on("connect", () => {
     log.info({ url: config.mqttUrl }, "connected to broker");
@@ -333,7 +334,7 @@ async function runRegistryMode(token: string): Promise<void> {
   const { sessionId, channels } = await claimEdgeNode(token);
   log.info({ channelCount: channels.length }, "claimed edge node, starting channels");
 
-  const client = mqtt.connect(config.mqttUrl, { reconnectPeriod: 2000, clientId: `edge-node-${randomUUID()}` });
+  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, clientId: `edge-node-${randomUUID()}` });
   client.on("reconnect", () => log.warn("reconnecting to broker…"));
   client.on("close", () => log.warn("connection to broker closed"));
   client.on("error", (err) => log.error({ err }, "mqtt client error"));
