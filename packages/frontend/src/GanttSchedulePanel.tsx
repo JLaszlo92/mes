@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
 
 interface Machine {
   id: string;
@@ -194,6 +195,7 @@ function ResizeHandle({ side, onMouseDown }: { side: "start" | "end"; onMouseDow
 }
 
 export default function GanttSchedulePanel() {
+  const { isInScope } = useScope();
   const { auth, logout } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [offShiftByMachine, setOffShiftByMachine] = useState<Record<string, OffShiftSegment[]>>({});
@@ -307,6 +309,8 @@ export default function GanttSchedulePanel() {
 
   const workOrderById = useMemo(() => new Map(workOrders.map((wo) => [wo.id, wo])), [workOrders]);
   const machineNameById = useMemo(() => new Map(machines.map((m) => [m.id, m.name])), [machines]);
+  // A globális hatókör (telephely/részleg/sor) csak a megjelenített sorokat szűri.
+  const visibleMachines = useMemo(() => machines.filter((m) => isInScope(m.id)), [machines, isInScope]);
 
   const unscheduled = workOrders.filter(
     (wo) => !groups.has(wo.id) && (wo.status === "planned" || wo.status === "released"),
@@ -617,7 +621,7 @@ export default function GanttSchedulePanel() {
           >
             <div style={{ width: LABEL_WIDTH, flexShrink: 0, borderRight: `1px solid ${COLORS.border}` }}>
               <div style={{ height: HEADER_HEIGHT, borderBottom: `1px solid ${COLORS.border}` }} />
-              {machines.map((m) => (
+              {visibleMachines.map((m) => (
                 <div
                   key={m.id}
                   style={{
@@ -753,7 +757,7 @@ export default function GanttSchedulePanel() {
                   />
                 )}
 
-                {machines.map((m) => {
+                {visibleMachines.map((m) => {
                   const rowAssignments = assignments.filter((a) => a.machineId === m.id);
                   const offSegments = offShiftByMachine[m.id] ?? [];
                   const isDropTarget =

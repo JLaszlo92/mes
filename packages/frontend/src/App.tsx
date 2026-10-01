@@ -24,6 +24,8 @@ import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
 import AppShell, { pathOf, type NavGroup } from "./AppShell.js";
 import { navigate, usePath } from "./router.js";
+import { ScopeProvider } from "./scope.js";
+import ScopeSelector from "./ScopeSelector.js";
 import ShiftPatternsPanel from "./ShiftPatternsPanel.js";
 import GanttSchedulePanel from "./GanttSchedulePanel";
 import DowntimeParetoPanel from "./DowntimeParetoPanel.js";
@@ -330,15 +332,18 @@ export default function App() {
   const navGroups = groups.map((g) => (g.id === "alerts" ? { ...g, badge: alertCount } : g));
 
   return (
-    <AppShell
-      groups={navGroups}
-      activeGroupId={activeGroup?.id ?? ""}
-      activeItemId={activeView?.id ?? ""}
-      connected={connected}
-      role={auth.role}
-      onSignOut={logout}
-    >
-      {activeGroup && activeView ? renderView(activeGroup.id, activeView.id, machines) : null}
-    </AppShell>
+    <ScopeProvider>
+      <AppShell
+        groups={navGroups}
+        activeGroupId={activeGroup?.id ?? ""}
+        activeItemId={activeView?.id ?? ""}
+        connected={connected}
+        role={auth.role}
+        onSignOut={logout}
+        topBarControls={<ScopeSelector />}
+      >
+        {activeGroup && activeView ? renderView(activeGroup.id, activeView.id, machines) : null}
+      </AppShell>
+    </ScopeProvider>
   );
 }

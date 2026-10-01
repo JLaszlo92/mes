@@ -541,6 +541,29 @@ is in `ops/backup/README.md`.
   now reports success/failure and doesn't create duplicates.
 - Server-side copies to weekly/ / monthly/ use --copy-props none: by default aws s3 cp copies tags too, which needs s3:GetObjectTagging — deliberately not granted to the node-dc IAM user. Found on the first monthly run (Oct 1).
 
+## Global scope selector and Overview redesign — Oct 1
+
+- **Scope** (`scope.tsx`, `ScopeSelector.tsx`): a site → area → line picker
+  in the top bar; the choice is kept per browser (`localStorage`) and reset
+  if the saved site/area/line no longer exists. `useScope()` gives
+  `isInScope(machineId)` (unknown machine or `null` → in scope, so system
+  alerts and brand-new machines never vanish), the full machine list and
+  the hierarchy. Applied to: Overview, Gantt rows, production work orders
+  (unscheduled orders always show — they aren't tied to a machine yet),
+  maintenance work orders, alerts, machine registry (shows an "Only …"
+  pill on top of its own filters).
+- **This is a display filter, not access control.** The API still returns
+  everything the role may see. Per-user scoping (PRD 5.8) belongs on the
+  server and can build on the same hierarchy.
+- Not yet scoped: Machine history, Downtime (Pareto is aggregated
+  server-side and would need a machine-set parameter), fault reports, lots.
+- **Overview** (`MachineOverviewPanel.tsx`, rewritten): a KPI row for the
+  scope (running x / y, down, average shift OEE, good parts and scrap rate,
+  open alerts linking to Alerts) and compact machine tiles grouped by line
+  (machines without a line under their area). ISA-101 colouring: only
+  `down` is red, "no live data" is amber, off-shift is greyed, running is
+  neutral. Down machines sort first within a group.
+
 ## Navigation: sidebar + one view per URL — Oct 1
 
 - The tab bar and the stacked `CollapsibleSection`s are gone

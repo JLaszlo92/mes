@@ -5,6 +5,7 @@ import DataTable, { type Column } from "./ui/DataTable.js";
 import { downloadCsv } from "./ui/csv.js";
 import { formatDate, formatDateTime, formatDuration } from "./ui/format.js";
 import { readJsonOrThrow, useMasterDataVersion, type Machine } from "./master-data.js";
+import { useScope } from "./scope.js";
 import WorkOrderDrawer, { isLate, STATUS_LABEL, type WorkOrder, type WorkOrderStatus, type WorkOrderTarget } from "./WorkOrderDrawer.js";
 
 type StatusFilter = "open" | "all" | WorkOrderStatus;
@@ -20,6 +21,7 @@ export default function WorkOrdersPanel() {
   const { auth } = useAuth();
   const canEdit = auth?.role === "admin" || auth?.role === "manager";
   const masterDataVersion = useMasterDataVersion();
+  const { isInScope } = useScope();
 
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -52,6 +54,8 @@ export default function WorkOrdersPanel() {
   const filtered = useMemo(() => {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return workOrders.filter((wo) => {
+      // Ütemezetlen rendelés nem gépfüggő — a hatókörtől függetlenül látszik.
+      if (!isInScope(wo.schedule?.machineId)) return false;
       if (status === "open" && !OPEN.includes(wo.status)) return false;
       if (status !== "open" && status !== "all" && wo.status !== status) return false;
       if (machineFilter === "none" && wo.schedule) return false;
@@ -61,7 +65,7 @@ export default function WorkOrdersPanel() {
       const haystack = [wo.orderNumber, wo.partName, wo.notes, wo.schedule?.machineName].filter(Boolean).join(" ").toLowerCase();
       return words.every((w) => haystack.includes(w));
     });
-  }, [workOrders, query, status, machineFilter, lateOnly]);
+  }, [workOrders, query, status, machineFilter, lateOnly, isInScope]);
 
   const visibleSelected = useMemo(() => {
     const visible = new Set(filtered.map((w) => w.id));

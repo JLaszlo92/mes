@@ -856,3 +856,204 @@ body {
     transition: none;
   }
 }
+
+/* ---- Hatókör-választó (felső sáv) ---- */
+
+.scope {
+  position: relative;
+}
+.scope-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 320px;
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-m);
+  background: var(--c-surface);
+  color: var(--c-text);
+  font: inherit;
+  font-size: var(--text-s);
+  cursor: pointer;
+}
+.scope-btn[data-filtered="true"] {
+  border-color: var(--c-accent);
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
+}
+.scope-btn-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scope-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  display: grid;
+  gap: var(--space-3);
+  width: 260px;
+  padding: var(--space-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-l);
+  background: var(--c-surface);
+  box-shadow: 0 12px 32px rgba(20, 28, 38, 0.16);
+}
+@media (max-width: 900px) {
+  .scope-btn {
+    max-width: 160px;
+  }
+}
+
+/* ---- Overview: KPI-sor és gépcsempék (ISA-101: szín csak rendellenességre) ---- */
+
+.kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--space-3);
+  margin-bottom: var(--space-6);
+}
+.kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-l);
+  background: var(--c-surface);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.kpi-link {
+  cursor: pointer;
+}
+.kpi-link:hover {
+  border-color: var(--c-border-strong);
+}
+.kpi-label {
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+}
+.kpi-value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.kpi-of {
+  color: var(--c-text-faint);
+  font-size: var(--text-l);
+  font-weight: 500;
+}
+.kpi-note {
+  color: var(--c-text-faint);
+  font-size: var(--text-xs);
+}
+.kpi[data-state="alarm"] {
+  border-color: var(--c-alarm);
+  background: var(--c-alarm-soft);
+}
+.kpi[data-state="alarm"] .kpi-value,
+.kpi[data-state="alarm"] .kpi-label {
+  color: var(--c-alarm);
+}
+
+.tile-group + .tile-group {
+  margin-top: var(--space-6);
+}
+.tile-group-title {
+  margin: 0 0 var(--space-2);
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+  font-weight: 500;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--c-border);
+  border-left: 4px solid var(--c-border);
+  border-radius: var(--radius-l);
+  background: var(--c-surface);
+}
+.tile-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.tile-name {
+  flex: 1;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tile-status {
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+}
+.tile-body {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.tile-oee {
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+}
+.tile-caption {
+  margin-left: 6px;
+  color: var(--c-text-faint);
+  font-size: var(--text-xs);
+}
+.tile-counts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+}
+.tile-foot {
+  display: flex;
+  gap: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--c-border);
+  color: var(--c-text-muted);
+  font-size: var(--text-xs);
+}
+.tile-time {
+  margin-left: auto;
+  color: var(--c-text-faint);
+}
+.tile[data-state="alarm"] {
+  border-color: var(--c-alarm);
+  border-left-color: var(--c-alarm);
+  background: var(--c-alarm-soft);
+}
+.tile[data-state="alarm"] .tile-status {
+  color: var(--c-alarm);
+  font-weight: 600;
+}
+.tile[data-state="warning"] {
+  border-left-color: var(--c-warning);
+}
+.tile[data-state="warning"] .tile-status {
+  color: var(--c-warning);
+}
+.tile[data-state="inactive"] {
+  background: var(--c-surface-sunken);
+}
+.tile[data-state="inactive"] .tile-oee,
+.tile[data-state="inactive"] .tile-name {
+  color: var(--c-text-muted);
+}

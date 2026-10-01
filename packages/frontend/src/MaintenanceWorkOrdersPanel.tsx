@@ -5,6 +5,7 @@ import DataTable, { type Column } from "./ui/DataTable.js";
 import { downloadCsv } from "./ui/csv.js";
 import { formatDateTime } from "./ui/format.js";
 import { readJsonOrThrow, useMasterDataVersion, type Machine } from "./master-data.js";
+import { useScope } from "./scope.js";
 import MaintenanceDrawer, {
   MAINTENANCE_STATUS_LABEL,
   PRIORITY_LABEL,
@@ -31,6 +32,7 @@ export default function MaintenanceWorkOrdersPanel() {
   const canEdit = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
   const canLogParts = canEdit || auth?.role === "supervisor";
   const masterDataVersion = useMasterDataVersion();
+  const { isInScope } = useScope();
 
   const [orders, setOrders] = useState<MaintenanceWorkOrder[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -69,6 +71,7 @@ export default function MaintenanceWorkOrdersPanel() {
   const filtered = useMemo(() => {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return orders.filter((o) => {
+      if (!isInScope(o.machineId)) return false;
       if (status === "open" && o.status === "closed") return false;
       if (status !== "open" && status !== "all" && o.status !== status) return false;
       if (machineFilter && o.machineId !== machineFilter) return false;
@@ -81,7 +84,7 @@ export default function MaintenanceWorkOrdersPanel() {
         .toLowerCase();
       return words.every((w) => haystack.includes(w));
     });
-  }, [orders, query, status, machineFilter, planFilter]);
+  }, [orders, query, status, machineFilter, planFilter, isInScope]);
 
   const filtersActive = query !== "" || status !== "open" || machineFilter !== "" || planFilter !== "";
   function clearFilters() {

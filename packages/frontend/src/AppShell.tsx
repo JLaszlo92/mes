@@ -56,6 +56,7 @@ export default function AppShell({
   connected,
   role,
   onSignOut,
+  topBarControls,
   children,
 }: {
   groups: NavGroup[];
@@ -64,6 +65,8 @@ export default function AppShell({
   connected: boolean;
   role: string;
   onSignOut: () => void;
+  /** A felső sáv bal oldalán, a morzsamenü után (hatókör-választó). */
+  topBarControls?: ReactNode;
   children: ReactNode;
 }) {
   const [collapsedPref, setCollapsed] = useState(readCollapsed);
@@ -193,6 +196,7 @@ export default function AppShell({
               </>
             )}
           </div>
+          {topBarControls}
           <span className="ui-toolbar-spacer" />
           {connected ? (
             <span className="shell-live">Live</span>

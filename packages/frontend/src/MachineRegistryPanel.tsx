@@ -4,6 +4,7 @@ import { apiFetch, API_BASE } from "./api.js";
 import DataTable, { type Column } from "./ui/DataTable.js";
 import { downloadCsv } from "./ui/csv.js";
 import MachineEditorDrawer, { type EditorTarget, type NamedOption } from "./MachineEditorDrawer.js";
+import { useScope } from "./scope.js";
 import { notifyMasterDataChanged, readJsonOrThrow, useMasterDataVersion, type Machine, type PlantHierarchy } from "./master-data.js";
 
 type StatusFilter = "active" | "inactive" | "all";
@@ -22,6 +23,7 @@ export default function MachineRegistryPanel() {
   const { auth } = useAuth();
   const canEdit = auth?.role === "admin" || auth?.role === "manager";
   const masterDataVersion = useMasterDataVersion();
+  const { isInScope, isFiltered: scopeFiltered, label: scopeLabel } = useScope();
 
   const [machines, setMachines] = useState<Machine[]>([]);
   const [hierarchy, setHierarchy] = useState<PlantHierarchy>(EMPTY_HIERARCHY);
@@ -64,6 +66,7 @@ export default function MachineRegistryPanel() {
   const filtered = useMemo(() => {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return machines.filter((m) => {
+      if (!isInScope(m.id)) return false;
       if (status === "active" && !m.isActive) return false;
       if (status === "inactive" && m.isActive) return false;
       if (siteId && m.siteId !== siteId) return false;
@@ -76,7 +79,7 @@ export default function MachineRegistryPanel() {
         .toLowerCase();
       return words.every((word) => haystack.includes(word));
     });
-  }, [machines, query, status, siteId, areaId, lineId, siteName, areaName, lineName]);
+  }, [machines, query, status, siteId, areaId, lineId, siteName, areaName, lineName, isInScope]);
 
   // A kiszűrt gépek ne maradjanak kijelölve — a tömeges művelet csak arra
   // hasson, amit a felhasználó éppen lát.
@@ -216,6 +219,7 @@ export default function MachineRegistryPanel() {
       <div className="ui-panel-head">
         <h2 className="ui-panel-title">Machines</h2>
         <span className="ui-panel-count num">{filtered.length === machines.length ? machines.length : `${filtered.length} of ${machines.length}`}</span>
+        {scopeFiltered && <span className="ui-pill ui-pill-accent">Only {scopeLabel}</span>}
         <span className="ui-toolbar-spacer" />
         <button type="button" className="ui-btn" onClick={() => exportCsv(filtered)} disabled={filtered.length === 0}>
           Export CSV

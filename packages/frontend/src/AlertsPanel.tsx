@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
 
 interface Alert {
   id: string;
@@ -50,6 +51,7 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 }
 
 export default function AlertsPanel() {
+  const { isInScope } = useScope();
   const { auth } = useAuth();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
@@ -180,7 +182,7 @@ export default function AlertsPanel() {
     load();
   }
 
-  const openAlerts = alerts.filter((a) => !a.resolvedAt);
+  const openAlerts = alerts.filter((a) => !a.resolvedAt && isInScope(a.machineId));
   const machineName = (id: string) => machines.find((m) => m.id === id)?.name ?? id;
 
   return (
