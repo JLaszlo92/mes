@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.js";
+import { likePattern, likePrefix } from "./paging.js";
 
 export interface AuditEventInput {
   actorId?: string | null;
@@ -91,37 +92,60 @@ export interface AuditLogPage {
   total: number;
 }
 
-export async function listAuditLog(options: ListAuditLogOptions = {}): Promise<AuditLogPage> {
-  const limit = options.limit ?? 100;
-  const offset = options.offset ?? 0;
+export interface AuditLogFilter {
+  from?: string;
+  to?: string;
+  /** Pontos művelet, vagy "prefix*" (pl. "work_order_*"). */
+  action?: string;
+  /** Részlet a végrehajtó e-mail-címéből. */
+  actor?: string;
+  /** Pontos cél-azonosító (gép, rendelés, felhasználó…). */
+  target?: string;
+  /** Szabad szöveg a műveletben, célban, végrehajtóban és a részletekben. */
+  q?: string;
+  limit?: number;
+  offset?: number;
+}
 
+export async function listAuditLog(options: AuditLogFilter = {}): Promise<AuditLogPage> {
+  const limit = options.limit ?? 50;
+  const offset = options.offset ?? 0;
   const conditions: string[] = [];
   const params: unknown[] = [];
-
-  if (options.from) {
-    params.push(options.from);
-    conditions.push(`occurred_at >= $${params.length}`);
+  const add = (sql: (n: number) => string, value: unknown) => {
+    params.push(value);
+    conditions.push(sql(params.length));
+  };
+  if (options.from) add((n) => `occurred_at >= $${n}`, options.from);
+  if (options.to) add((n) => `occurred_at <= $${n}`, options.to);
+  if (options.action) {
+    if (options.action.endsWith("*")) add((n) => `action LIKE $${n}`, likePrefix(options.action.slice(0, -1)));
+    else add((n) => `action = $${n}`, options.action);
   }
-  if (options.to) {
-    params.push(options.to);
-    conditions.push(`occurred_at <= $${params.length}`);
+  if (options.actor) add((n) => `actor_email ILIKE $${n}`, likePattern(options.actor));
+  if (options.target) add((n) => `target = $${n}`, options.target);
+  if (options.q) {
+    add(
+      (n) => `(action ILIKE $${n} OR target ILIKE $${n} OR actor_email ILIKE $${n} OR details::text ILIKE $${n} OR ip_address ILIKE $${n})`,
+      likePattern(options.q),
+    );
   }
-
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
   const countResult = await pool.query<{ count: string }>(`SELECT COUNT(*) FROM audit_log ${whereClause}`, params);
-
-  const queryParams = [...params, limit, offset];
-  const limitParamIndex = queryParams.length - 1;
-  const offsetParamIndex = queryParams.length;
-
   const result = await pool.query<AuditRow>(
-    `SELECT * FROM audit_log ${whereClause} ORDER BY occurred_at DESC LIMIT $${limitParamIndex} OFFSET $${offsetParamIndex}`,
-    queryParams,
+    `SELECT * FROM audit_log ${whereClause} ORDER BY occurred_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
   );
-
   return {
     entries: result.rows.map(toAuditEntry),
     total: Number(countResult.rows[0]?.count ?? 0),
   };
+}
+
+/** A naplóban előforduló műveletek — a szűrő legördülőjéhez. */
+export async function listAuditActions(): Promise<{ action: string; count: number }[]> {
+  const result = await pool.query<{ action: string; count: string }>(
+    `SELECT action, count(*) AS count FROM audit_log GROUP BY action ORDER BY action`,
+  );
+  return result.rows.map((r) => ({ action: r.action, count: Number(r.count) }));
 }

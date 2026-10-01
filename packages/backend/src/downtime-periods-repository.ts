@@ -141,7 +141,7 @@ export interface DowntimePareto {
  * A hibakódok gépenként definiáltak; az összes gépre vetített nézetben a
  * kód + név szerint vonódnak össze.
  */
-export async function getDowntimePareto(hours: number, machineId: string | null): Promise<DowntimePareto> {
+export async function getDowntimePareto(hours: number, machineId: string | null, machineIds?: string[]): Promise<DowntimePareto> {
   const result = await pool.query<{ kind: ParetoKind; code: string | null; name: string | null; periods: string; seconds: string }>(
     `WITH p AS (
        SELECT dp.duration_seconds,
@@ -157,6 +157,7 @@ export async function getDowntimePareto(hours: number, machineId: string | null)
        LEFT JOIN machine_fault_codes fc ON fc.id = fr.fault_code_id
        WHERE dp.ended_at > now() - make_interval(hours => $1)
          AND ($2::text IS NULL OR dp.machine_id = $2)
+         AND ($3::text[] IS NULL OR dp.machine_id = ANY($3::text[]))
      )
      SELECT kind,
             CASE WHEN kind = 'code' THEN code END AS code,
@@ -166,7 +167,7 @@ export async function getDowntimePareto(hours: number, machineId: string | null)
      FROM p
      GROUP BY 1, 2, 3
      ORDER BY sum(duration_seconds) DESC, 1, 2, 3`,
-    [hours, machineId],
+    [hours, machineId, machineIds ?? null],
   );
   const items = result.rows.map((r) => ({
     kind: r.kind,

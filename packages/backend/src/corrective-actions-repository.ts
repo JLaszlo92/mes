@@ -43,8 +43,11 @@ const SELECT_JOINED = `
   LEFT JOIN users signer ON signer.id = ca.signed_off_by
 `;
 
-export async function listCorrectiveActions(): Promise<CorrectiveAction[]> {
-  const result = await pool.query<CorrectiveActionRow>(`${SELECT_JOINED} ORDER BY ca.performed_at DESC`);
+/** faultReportId megadásával csak az adott jelentés intézkedései (a hibajelentés-panel ezt kéri). */
+export async function listCorrectiveActions(faultReportId?: string): Promise<CorrectiveAction[]> {
+  const result = faultReportId
+    ? await pool.query<CorrectiveActionRow>(`${SELECT_JOINED} WHERE ca.fault_report_id = $1 ORDER BY ca.performed_at`, [faultReportId])
+    : await pool.query<CorrectiveActionRow>(`${SELECT_JOINED} ORDER BY ca.performed_at DESC`);
   return result.rows.map(toCorrectiveAction);
 }
 

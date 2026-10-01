@@ -1,18 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import Drawer from "./ui/Drawer.js";
+import Field from "./ui/Field.js";
+import Pager from "./ui/Pager.js";
+import { formatDateTime } from "./ui/format.js";
+import { useServerList } from "./ui/useServerList.js";
+import { readJsonOrThrow } from "./master-data.js";
 
-interface Machine {
-  id: string;
-  name: string;
-}
-
-interface FaultCode {
-  id: string;
-  machineId: string;
-  code: string;
-  name: string;
-}
+type ReportStatus = "pending" | "confirmed" | "modified" | "rejected";
 
 interface FaultReport {
   id: string;
@@ -22,16 +20,24 @@ interface FaultReport {
   faultName: string;
   occurrenceCount: number;
   comment: string | null;
-  status: "pending" | "confirmed" | "modified" | "rejected";
+  status: ReportStatus;
   reportedByEmail: string | null;
   reportedAt: string;
   reviewedByEmail: string | null;
+  reviewedAt: string | null;
   reviewerNote: string | null;
+}
+
+interface FaultCode {
+  id: string;
+  machineId: string;
+  code: string;
+  name: string;
+  isActive?: boolean;
 }
 
 interface CorrectiveAction {
   id: string;
-  faultReportId: string;
   description: string;
   performedByEmail: string | null;
   performedAt: string;
@@ -39,303 +45,379 @@ interface CorrectiveAction {
   signedOffAt: string | null;
 }
 
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
+const STATUS_LABEL: Record<ReportStatus, string> = { pending: "Pending review", confirmed: "Confirmed", modified: "Confirmed (adjusted)", rejected: "Rejected" };
 
-const STATUS_COLOR: Record<string, string> = {
-  pending: "#eda100",
-  confirmed: "#0ca30c",
-  modified: "#185fa5",
-  rejected: "#d03b3b",
-};
-
+/**
+ * Hibajelentések szerveroldali lapozással: alapból a felülvizsgálatra
+ * várók. A részletek (felülvizsgálat, korrekciós intézkedések, munkarendelés)
+ * az oldalpanelben.
+ */
 export default function FaultReportsPanel() {
-  const { auth, logout } = useAuth();
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [faultCodes, setFaultCodes] = useState<FaultCode[]>([]);
-  const [reports, setReports] = useState<FaultReport[]>([]);
-  const [correctiveActions, setCorrectiveActions] = useState<CorrectiveAction[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ machineId: "", faultCodeId: "", occurrenceCount: "1", comment: "" });
-  const [submitting, setSubmitting] = useState(false);
-  const [actionDrafts, setActionDrafts] = useState<Record<string, string>>({});
+  const { auth } = useAuth();
+  const { isFiltered, machines, isInScope } = useScope();
+  const [status, setStatus] = useState<ReportStatus | "reviewed" | "">("pending");
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState<FaultReport | null>(null);
+  const [reporting, setReporting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const canReview = auth?.role === "manager" || auth?.role === "admin";
-  const canSignOff = auth?.role === "supervisor" || auth?.role === "manager" || auth?.role === "admin";
-  const canCreateTicket =
-    auth?.role === "supervisor" || auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const machineIds = useMemo(() => (isFiltered ? machines.filter((m) => isInScope(m.id)).map((m) => m.id).join(",") || "-" : undefined), [isFiltered, machines, isInScope]);
+  const list = useServerList<FaultReport>("/api/fault-reports/page", { status: status || undefined, q: query.trim() || undefined, machineIds }, { refreshMs: 30_000 });
 
-  function load() {
-    Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/fault-codes`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
-        if (res.status === 401) {
-          logout();
-          throw new Error("session expired — please sign in again");
-        }
-        return res.json();
-      }),
-      apiFetch(`${API_BASE}/api/corrective-actions`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
-        (res) => {
-          if (res.status === 401) {
-            logout();
-            throw new Error("session expired — please sign in again");
-          }
-          return res.json();
-        },
+  const columns: Column<FaultReport>[] = [
+    { id: "reported", header: "Reported", cell: (r) => formatDateTime(r.reportedAt) },
+    { id: "machine", header: "Machine", cell: (r) => r.machineName },
+    {
+      id: "fault",
+      header: "Fault",
+      cell: (r) => (
+        <span>
+          {r.faultCode}
+          <span className="ui-sub">{r.faultName}</span>
+        </span>
       ),
-    ])
-      .then(([m, fc, fr, ca]) => {
-        setMachines(m);
-        setFaultCodes(fc);
-        setReports(fr);
-        setCorrectiveActions(ca);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)));
+    },
+    { id: "count", header: "Count", align: "right", cell: (r) => r.occurrenceCount },
+    { id: "status", header: "Status", cell: (r) => (r.status === "pending" ? <span className="ui-pill ui-pill-warning">{STATUS_LABEL[r.status]}</span> : STATUS_LABEL[r.status]) },
+    { id: "by", header: "Reported by", cell: (r) => r.reportedByEmail ?? "—" },
+    { id: "comment", header: "Comment", cell: (r) => (r.comment ? <span title={r.comment}>{r.comment}</span> : "—") },
+  ];
+
+  return (
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Fault reports</h2>
+        <span className="ui-panel-count num">{list.total.toLocaleString()}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setReporting(true)} disabled={!auth}>
+          Report a fault
+        </button>
+      </div>
+      <div className="ui-toolbar" role="search">
+        <input className="ui-input ui-search" type="search" placeholder="Search machine, code, comment…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search fault reports" />
+        <select className="ui-select" value={status} onChange={(e) => setStatus(e.target.value as ReportStatus | "reviewed" | "")} aria-label="Status">
+          <option value="pending">Pending review</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="confirmed">Confirmed</option>
+          <option value="modified">Confirmed (adjusted)</option>
+          <option value="rejected">Rejected</option>
+          <option value="">All</option>
+        </select>
+      </div>
+      {list.error && <p className="ui-message ui-message-error">{list.error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
+      <DataTable
+        ariaLabel="Fault reports"
+        rows={list.rows}
+        columns={columns}
+        getRowId={(r) => r.id}
+        onRowClick={setOpen}
+        isDimmed={(r) => r.status === "rejected"}
+        emptyText={list.loading ? "Loading…" : status === "pending" ? "Nothing waiting for review." : "No fault reports match these filters."}
+      />
+      <Pager offset={list.offset} limit={list.limit} total={list.total} onChange={list.setPage} />
+
+      {open && (
+        <FaultReportDrawer
+          report={open}
+          role={auth?.role ?? ""}
+          onClose={() => setOpen(null)}
+          onChanged={(r, message) => {
+            setOpen(r);
+            setNotice(message);
+            list.reload();
+          }}
+        />
+      )}
+      {reporting && (
+        <ReportFaultDrawer
+          machines={machines.filter((m) => m.isActive && isInScope(m.id))}
+          onClose={() => setReporting(false)}
+          onCreated={() => {
+            setReporting(false);
+            setNotice("Fault reported.");
+            list.reload();
+          }}
+        />
+      )}
+    </section>
+  );
+}
+
+function FaultReportDrawer({ report, role, onClose, onChanged }: { report: FaultReport; role: string; onClose: () => void; onChanged: (r: FaultReport, message: string) => void }) {
+  const canReview = role === "manager" || role === "admin";
+  const canSignOff = ["supervisor", "manager", "admin"].includes(role);
+  const canCreateTicket = ["supervisor", "maintenance", "manager", "admin"].includes(role);
+  const [actions, setActions] = useState<CorrectiveAction[]>([]);
+  const [count, setCount] = useState(String(report.occurrenceCount));
+  const [note, setNote] = useState("");
+  const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function loadActions() {
+    apiFetch(`${API_BASE}/api/corrective-actions?faultReportId=${encodeURIComponent(report.id)}`)
+      .then((r) => readJsonOrThrow<CorrectiveAction[]>(r))
+      .then(setActions)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }
+  useEffect(loadActions, [report.id]);
+
+  async function call<T>(url: string, method: string, body: Record<string, unknown> | undefined, after: (result: T) => void) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}${url}`, {
+        method,
+        headers: body ? { "Content-Type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      after(await readJsonOrThrow<T>(res));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
-  useEffect(load, []);
+  function review(status: "confirmed" | "modified" | "rejected") {
+    const adjusted = Number(count);
+    if (status === "modified" && (!Number.isInteger(adjusted) || adjusted < 1)) return setError("Enter the corrected count.");
+    void call<FaultReport>(
+      `/api/fault-reports/${encodeURIComponent(report.id)}/review`,
+      "PUT",
+      { status, adjustedCount: status === "modified" ? adjusted : undefined, reviewerNote: note.trim() || undefined },
+      (r) => onChanged({ ...report, ...r }, `Report ${status === "rejected" ? "rejected" : "confirmed"}.`),
+    );
+  }
 
-  const availableCodes = faultCodes.filter((f) => f.machineId === form.machineId);
+  const reviewed = report.status !== "pending";
 
-  async function handleSubmit(e: FormEvent) {
+  return (
+    <Drawer title={`${report.faultCode} on ${report.machineName}`} subtitle={report.faultName} onRequestClose={onClose}>
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      <section className="ui-section">
+        <dl className="ui-facts">
+          <dt>Status</dt>
+          <dd>{STATUS_LABEL[report.status]}</dd>
+          <dt>Count</dt>
+          <dd className="num">{report.occurrenceCount}</dd>
+          <dt>Reported</dt>
+          <dd>
+            {formatDateTime(report.reportedAt)} by {report.reportedByEmail ?? "—"}
+          </dd>
+          {report.comment && (
+            <>
+              <dt>Comment</dt>
+              <dd>{report.comment}</dd>
+            </>
+          )}
+          {reviewed && (
+            <>
+              <dt>Reviewed</dt>
+              <dd>
+                {formatDateTime(report.reviewedAt)} by {report.reviewedByEmail ?? "—"}
+              </dd>
+              {report.reviewerNote && (
+                <>
+                  <dt>Note</dt>
+                  <dd>{report.reviewerNote}</dd>
+                </>
+              )}
+            </>
+          )}
+        </dl>
+        {canCreateTicket && (report.status === "confirmed" || report.status === "modified") && (
+          <button
+            type="button"
+            className="ui-btn"
+            disabled={busy}
+            onClick={() =>
+              void call(
+                "/api/maintenance-work-orders",
+                "POST",
+                { machineId: report.machineId, title: `${report.faultCode} — ${report.faultName}`, description: report.comment ?? undefined, sourceType: "fault_report", sourceId: report.id },
+                () => onChanged(report, "Maintenance work order created."),
+              )
+            }
+          >
+            Create maintenance work order
+          </button>
+        )}
+      </section>
+
+      {canReview && !reviewed && (
+        <section className="ui-section">
+          <h3 className="ui-section-title">Review</h3>
+          <div className="ui-grid-2">
+            <Field label="Count" hint="Change it to confirm with a corrected count.">
+              <input className="ui-input num" inputMode="numeric" value={count} onChange={(e) => setCount(e.target.value)} />
+            </Field>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <Field label="Note (optional)">
+              <input className="ui-input" value={note} onChange={(e) => setNote(e.target.value)} />
+            </Field>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button type="button" className="ui-btn ui-btn-primary" disabled={busy} onClick={() => review(Number(count) === report.occurrenceCount ? "confirmed" : "modified")}>
+              {Number(count) === report.occurrenceCount ? "Confirm" : `Confirm with count ${count}`}
+            </button>
+            <button type="button" className="ui-btn ui-btn-danger" disabled={busy} onClick={() => review("rejected")}>
+              Reject
+            </button>
+          </div>
+        </section>
+      )}
+
+      {report.status !== "rejected" && (
+        <section className="ui-section">
+          <h3 className="ui-section-title">Corrective actions</h3>
+          {actions.length === 0 ? (
+            <p className="ui-field-hint" style={{ marginTop: 0 }}>
+              None logged yet.
+            </p>
+          ) : (
+            <ul className="ui-mini-list">
+              {actions.map((a) => (
+                <li key={a.id}>
+                  <span style={{ flex: 1 }}>
+                    {a.description}
+                    <span className="ui-sub">
+                      {a.performedByEmail ?? "—"}, {formatDateTime(a.performedAt)}
+                    </span>
+                  </span>
+                  {a.signedOffAt ? (
+                    <span className="ui-sub">Signed off by {a.signedOffByEmail}</span>
+                  ) : canSignOff ? (
+                    <button
+                      type="button"
+                      className="ui-btn ui-btn-small"
+                      disabled={busy}
+                      onClick={() => void call(`/api/corrective-actions/${encodeURIComponent(a.id)}/sign-off`, "PUT", undefined, () => loadActions())}
+                    >
+                      Sign off
+                    </button>
+                  ) : (
+                    <span className="ui-pill ui-pill-warning">Awaiting sign-off</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+          <form
+            className="ui-inline-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (!draft.trim()) return;
+              void call("/api/corrective-actions", "POST", { faultReportId: report.id, description: draft.trim() }, () => {
+                setDraft("");
+                loadActions();
+              });
+            }}
+          >
+            <input className="ui-input" style={{ flex: 1, minWidth: 200 }} placeholder="What was done about it" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Corrective action" />
+            <button type="submit" className="ui-btn" disabled={busy || !draft.trim()}>
+              Log action
+            </button>
+          </form>
+        </section>
+      )}
+    </Drawer>
+  );
+}
+
+function ReportFaultDrawer({ machines, onClose, onCreated }: { machines: { id: string; name: string }[]; onClose: () => void; onCreated: () => void }) {
+  const [codes, setCodes] = useState<FaultCode[]>([]);
+  const [form, setForm] = useState({ machineId: machines[0]?.id ?? "", faultCodeId: "", occurrenceCount: "1", comment: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    apiFetch(`${API_BASE}/api/fault-codes`)
+      .then((r) => readJsonOrThrow<FaultCode[]>(r))
+      .then(setCodes)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const available = codes.filter((c) => c.machineId === form.machineId && c.isActive !== false);
+  const valid = form.machineId && form.faultCodeId && Number(form.occurrenceCount) >= 1;
+
+  async function submit(e: FormEvent) {
     e.preventDefault();
-    setSubmitting(true);
+    if (!valid) return;
+    setSaving(true);
     setError(null);
     try {
       const res = await apiFetch(`${API_BASE}/api/fault-reports`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           machineId: form.machineId,
           faultCodeId: form.faultCodeId,
-          occurrenceCount: Number(form.occurrenceCount) || 1,
+          occurrenceCount: Number(form.occurrenceCount),
           comment: form.comment.trim() || undefined,
         }),
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({ machineId: "", faultCodeId: "", occurrenceCount: "1", comment: "" });
-      load();
+      await readJsonOrThrow<unknown>(res);
+      onCreated();
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      setSaving(false);
     }
-  }
-
-  async function review(id: string, status: "confirmed" | "modified" | "rejected", adjustedCount?: number) {
-    const res = await apiFetch(`${API_BASE}/api/fault-reports/${encodeURIComponent(id)}/review`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ status, adjustedCount }),
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    load();
-  }
-
-  async function createMaintenanceTicket(r: FaultReport) {
-    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({
-        machineId: r.machineId,
-        title: `${r.faultCode} — ${r.faultName}`,
-        description: r.comment ?? undefined,
-        sourceType: "fault_report",
-        sourceId: r.id,
-      }),
-    });
-    if (res.status === 401) {
-      logout();
-    }
-  }
-
-  async function addCorrectiveAction(faultReportId: string) {
-    const description = (actionDrafts[faultReportId] ?? "").trim();
-    if (!description) return;
-    const res = await apiFetch(`${API_BASE}/api/corrective-actions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ faultReportId, description }),
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    setActionDrafts((prev) => ({ ...prev, [faultReportId]: "" }));
-    load();
-  }
-
-  async function signOff(actionId: string) {
-    const res = await apiFetch(`${API_BASE}/api/corrective-actions/${encodeURIComponent(actionId)}/sign-off`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    load();
-  }
-
-  const pending = reports.filter((r) => r.status === "pending");
-  const reviewed = reports.filter((r) => r.status !== "pending");
-
-  function renderCorrectiveActions(reportId: string) {
-    const actions = correctiveActions.filter((a) => a.faultReportId === reportId);
-    return (
-      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e1e0d9" }}>
-        <div style={{ fontSize: 11, color: "#898781", marginBottom: 6 }}>Corrective actions</div>
-        {actions.map((a) => (
-          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, marginBottom: 4 }}>
-            <div style={{ flex: 1 }}>
-              {a.description}
-              <span style={{ color: "#898781" }}> — {a.performedByEmail ?? "—"}, {new Date(a.performedAt).toLocaleString()}</span>
-            </div>
-            {a.signedOffAt ? (
-              <span style={{ color: "#0ca30c" }}>✓ signed off by {a.signedOffByEmail}</span>
-            ) : canSignOff ? (
-              <button style={{ ...secondaryButtonStyle, padding: "3px 8px", fontSize: 11 }} onClick={() => signOff(a.id)}>
-                Sign off
-              </button>
-            ) : (
-              <span style={{ color: "#eda100" }}>pending sign-off</span>
-            )}
-          </div>
-        ))}
-        <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-          <input
-            placeholder="What was done about it…"
-            value={actionDrafts[reportId] ?? ""}
-            onChange={(e) => setActionDrafts((prev) => ({ ...prev, [reportId]: e.target.value }))}
-            style={{ ...inputStyle, flex: 1, fontSize: 12 }}
-          />
-          <button style={{ ...secondaryButtonStyle, padding: "4px 10px", fontSize: 12 }} onClick={() => addCorrectiveAction(reportId)}>
-            Log action
-          </button>
-        </div>
-      </div>
-    );
   }
 
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Fault reports</h2>
-
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Machine<br />
-          <select required value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value, faultCodeId: "" }))} style={inputStyle}>
-            <option value="" disabled>select…</option>
-            {machines.map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Fault code<br />
-          <select required value={form.faultCodeId} onChange={(e) => setForm((f) => ({ ...f, faultCodeId: e.target.value }))} style={inputStyle} disabled={!form.machineId}>
-            <option value="" disabled>select…</option>
-            {availableCodes.map((fc) => (
-              <option key={fc.id} value={fc.id}>{fc.code} — {fc.name}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Count<br />
-          <input type="number" min="1" value={form.occurrenceCount} onChange={(e) => setForm((f) => ({ ...f, occurrenceCount: e.target.value }))} style={{ ...inputStyle, width: 70 }} />
-        </label>
-        <label style={{ fontSize: 12, flex: "1 1 200px" }}>
-          Comment<br />
-          <input value={form.comment} onChange={(e) => setForm((f) => ({ ...f, comment: e.target.value }))} style={{ ...inputStyle, width: "100%" }} />
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Reporting…" : "Report"}
-        </button>
-      </form>
-
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {pending.length === 0 && <p style={{ color: "#898781" }}>No pending fault reports.</p>}
-
-      {pending.map((r) => (
-        <div key={r.id} style={{ border: "1px solid #eda100", borderRadius: 10, padding: 12, marginTop: 8 }}>
-          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>
-                {r.machineName} — {r.faultCode} ({r.faultName}) × {r.occurrenceCount}
-              </div>
-              {r.comment && <div style={{ fontSize: 13 }}>{r.comment}</div>}
-              <div style={{ fontSize: 11, color: "#898781" }}>
-                {r.reportedByEmail ?? "—"} · {new Date(r.reportedAt).toLocaleString()}
-              </div>
-            </div>
-            {canReview && (
-              <div style={{ display: "flex", gap: 6 }}>
-                <button style={secondaryButtonStyle} onClick={() => review(r.id, "confirmed")}>
-                  Confirm
-                </button>
-                <button
-                  style={secondaryButtonStyle}
-                  onClick={() => {
-                    const adjusted = window.prompt("Adjusted count:", String(r.occurrenceCount));
-                    if (adjusted !== null) review(r.id, "modified", Number(adjusted));
-                  }}
-                >
-                  Modify
-                </button>
-                <button style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }} onClick={() => review(r.id, "rejected")}>
-                  Reject
-                </button>
-              </div>
-            )}
+    <Drawer
+      title="Report a fault"
+      onRequestClose={onClose}
+      footer={
+        <>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="ui-btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" form="report-fault-form" className="ui-btn ui-btn-primary" disabled={saving || !valid}>
+            {saving ? "Reporting…" : "Report"}
+          </button>
+        </>
+      }
+    >
+      <form id="report-fault-form" onSubmit={submit}>
+        <section className="ui-section">
+          {error && <p className="ui-message ui-message-error">{error}</p>}
+          <div className="ui-grid-2">
+            <Field label="Machine">
+              <select className="ui-select" value={form.machineId} onChange={(e) => setForm({ ...form, machineId: e.target.value, faultCodeId: "" })}>
+                {machines.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Fault code" hint={form.machineId && available.length === 0 ? "This machine has no fault codes yet (Admin → Fault codes)." : undefined}>
+              <select className="ui-select" value={form.faultCodeId} onChange={(e) => setForm({ ...form, faultCodeId: e.target.value })} disabled={available.length === 0}>
+                <option value="">Choose…</option>
+                {available.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.code} — {c.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Count">
+              <input className="ui-input num" inputMode="numeric" value={form.occurrenceCount} onChange={(e) => setForm({ ...form, occurrenceCount: e.target.value })} />
+            </Field>
           </div>
-          {renderCorrectiveActions(r.id)}
-        </div>
-      ))}
-
-      {reviewed.length > 0 && (
-        <details style={{ marginTop: 16 }} open>
-          <summary style={{ fontSize: 13, color: "#898781", cursor: "pointer" }}>{reviewed.length} reviewed</summary>
-          {reviewed.map((r) => (
-            <div key={r.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontWeight: 600 }}>
-                  {r.machineName} — {r.faultCode} × {r.occurrenceCount}{" "}
-                  <span style={{ color: STATUS_COLOR[r.status], fontSize: 11 }}>{r.status}</span>
-                </div>
-                {canCreateTicket && r.status === "confirmed" && (
-                  <button style={secondaryButtonStyle} onClick={() => createMaintenanceTicket(r)}>
-                    Create ticket
-                  </button>
-                )}
-              </div>
-              <div style={{ fontSize: 11, color: "#898781" }}>reviewed by {r.reviewedByEmail ?? "—"}</div>
-              {r.status !== "rejected" && renderCorrectiveActions(r.id)}
-            </div>
-          ))}
-        </details>
-      )}
-    </section>
+          <div style={{ marginTop: 12 }}>
+            <Field label="Comment (optional)">
+              <textarea className="ui-textarea" value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
+            </Field>
+          </div>
+        </section>
+      </form>
+    </Drawer>
   );
 }

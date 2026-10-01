@@ -132,3 +132,37 @@ export async function acknowledgeAlert(id: string, userId: string): Promise<Aler
   const result = await pool.query<AlertRow>(`${SELECT_JOINED} WHERE a.id = $1`, [id]);
   return result.rows[0] ? toAlert(result.rows[0]) : undefined;
 }
+
+export interface AlertHistoryFilter {
+  status: "open" | "resolved" | "all";
+  machineIds?: string[];
+  from?: string;
+  to?: string;
+  limit: number;
+  offset: number;
+}
+
+/**
+ * Lapozott riasztás-előzmény (a 24 órás /api/alerts listán túl). A
+ * rendszerriasztások (machine_id NULL) gép-szűrésnél is benne maradnak.
+ */
+export async function listAlertHistory(f: AlertHistoryFilter): Promise<{ rows: Alert[]; total: number }> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const add = (sql: (n: number) => string, value: unknown) => {
+    params.push(value);
+    conditions.push(sql(params.length));
+  };
+  if (f.status === "open") conditions.push("a.resolved_at IS NULL");
+  if (f.status === "resolved") conditions.push("a.resolved_at IS NOT NULL");
+  if (f.machineIds) add((n) => `(a.machine_id IS NULL OR a.machine_id = ANY($${n}::text[]))`, f.machineIds);
+  if (f.from) add((n) => `a.raised_at >= $${n}`, f.from);
+  if (f.to) add((n) => `a.raised_at <= $${n}`, f.to);
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const total = await pool.query<{ count: string }>(`SELECT count(*) FROM alerts a ${where}`, params);
+  const rows = await pool.query<AlertRow>(
+    `${SELECT_JOINED} ${where} ORDER BY a.raised_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, f.limit, f.offset],
+  );
+  return { rows: rows.rows.map(toAlert), total: Number(total.rows[0]?.count ?? 0) };
+}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
 
 type ParetoKind = "code" | "unexplained" | "micro";
 
@@ -65,6 +66,7 @@ function label(item: ParetoItem): string {
  * az ábra nem ad megbízható képet az okokról.
  */
 export default function DowntimeParetoPanel() {
+  const { isInScope, isFiltered: scopeFiltered, machines: scopeMachines } = useScope();
   const [hours, setHours] = useState(168);
   const [machineId, setMachineId] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
@@ -81,6 +83,8 @@ export default function DowntimeParetoPanel() {
   useEffect(() => {
     const params = new URLSearchParams({ hours: String(hours) });
     if (machineId) params.set("machineId", machineId);
+    // Globális hatókör: a Pareto szerveroldalon aggregál, ezért a gépek listáját küldjük.
+    if (scopeFiltered) params.set("machineIds", scopeMachines.filter((m) => isInScope(m.id)).map((m) => m.id).join(",") || "-");
     apiFetch(`${API_BASE}/api/downtime-periods/pareto?${params}`)
       .then((r) => (r.ok ? (r.json() as Promise<DowntimePareto>) : Promise.reject(new Error(`pareto: ${r.status}`))))
       .then((p) => {
@@ -88,7 +92,7 @@ export default function DowntimeParetoPanel() {
         setError(null);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [hours, machineId]);
+  }, [hours, machineId, scopeFiltered, scopeMachines, isInScope]);
 
   const maxSeconds = Math.max(1, ...(pareto?.items.map((i) => i.seconds) ?? [1]));
   const coverage = pareto && pareto.explainableSeconds > 0 ? pareto.explainedSeconds / pareto.explainableSeconds : null;
@@ -105,7 +109,7 @@ export default function DowntimeParetoPanel() {
         </select>
         <select value={machineId} onChange={(e) => setMachineId(e.target.value)} style={selectStyle}>
           <option value="">All machines</option>
-          {machines.map((m) => (
+          {machines.filter((m) => isInScope(m.id)).map((m) => (
             <option key={m.id} value={m.id}>{m.name}</option>
           ))}
         </select>

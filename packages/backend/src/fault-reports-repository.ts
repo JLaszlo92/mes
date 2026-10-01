@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { pool } from "./db.js";
+import { likePattern } from "./paging.js";
 
 export type FaultReportStatus = "pending" | "confirmed" | "modified" | "rejected";
 
@@ -135,4 +136,35 @@ export async function reviewFaultReport(
 
 export function isForeignKeyViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23503";
+}
+export interface FaultReportFilter {
+  status?: FaultReportStatus | "reviewed";
+  machineIds?: string[];
+  q?: string;
+  limit: number;
+  offset: number;
+}
+
+/** Lapozott, szűrhető lista; a függőben lévők elöl, azon belül a legújabb. */
+export async function listFaultReportsPage(f: FaultReportFilter): Promise<{ rows: FaultReport[]; total: number }> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  const add = (sql: (n: number) => string, value: unknown) => {
+    params.push(value);
+    conditions.push(sql(params.length));
+  };
+  if (f.status === "reviewed") conditions.push("fr.status <> 'pending'");
+  else if (f.status) add((n) => `fr.status = $${n}`, f.status);
+  if (f.machineIds) add((n) => `fr.machine_id = ANY($${n}::text[])`, f.machineIds);
+  if (f.q) add((n) => `(m.name ILIKE $${n} OR fc.code ILIKE $${n} OR fc.name ILIKE $${n} OR fr.comment ILIKE $${n})`, likePattern(f.q));
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const total = await pool.query<{ count: string }>(
+    `SELECT count(*) FROM fault_reports fr JOIN machines m ON m.id = fr.machine_id JOIN machine_fault_codes fc ON fc.id = fr.fault_code_id ${where}`,
+    params,
+  );
+  const rows = await pool.query<FaultReportRow>(
+    `${SELECT_JOINED} ${where} ORDER BY fr.status = 'pending' DESC, fr.reported_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, f.limit, f.offset],
+  );
+  return { rows: rows.rows.map(toFaultReport), total: Number(total.rows[0]?.count ?? 0) };
 }

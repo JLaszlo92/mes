@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from "recharts";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
 
 interface Machine {
   id: string;
@@ -49,6 +50,7 @@ function formatBucketLabel(iso: string, bucket: string): string {
 }
 
 export default function MachineHistoryPanel() {
+  const { isInScope } = useScope();
   const { auth, logout } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [machineId, setMachineId] = useState("");
@@ -138,7 +140,7 @@ export default function MachineHistoryPanel() {
         <label style={{ fontSize: 12 }}>
           Machine<br />
           <select value={machineId} onChange={(e) => setMachineId(e.target.value)} style={inputStyle}>
-            {machines.map((m) => (
+            {machines.filter((m) => isInScope(m.id) || m.id === machineId).map((m) => (
               <option key={m.id} value={m.id}>{m.name}</option>
             ))}
           </select>

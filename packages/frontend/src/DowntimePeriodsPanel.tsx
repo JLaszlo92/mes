@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { useScope } from "./scope.js";
 
 interface DowntimePeriod {
   id: string;
@@ -99,6 +100,7 @@ function ThresholdInput({ summary, onSave }: { summary: DowntimeSummary; onSave:
 }
 
 export default function DowntimePeriodsPanel() {
+  const { isInScope } = useScope();
   const { auth } = useAuth();
   const [periods, setPeriods] = useState<DowntimePeriod[]>([]);
   const [faultCodes, setFaultCodes] = useState<FaultCode[]>([]);
@@ -186,7 +188,7 @@ export default function DowntimePeriodsPanel() {
               </tr>
             </thead>
             <tbody>
-              {summary.map((s) => (
+              {summary.filter((s) => isInScope(s.machineId)).map((s) => (
                 <tr key={s.machineId}>
                   <td style={{ ...cell, textAlign: "left", fontWeight: 600 }}>{s.machineName}</td>
                   <td style={cell}>{s.stops}</td>
@@ -213,7 +215,7 @@ export default function DowntimePeriodsPanel() {
       <h3 style={{ fontSize: 14, marginTop: 24 }}>Unexplained downtime</h3>
       {periods.length === 0 && <p style={{ color: "#898781" }}>No unexplained downtime.</p>}
 
-      {periods.map((p) => {
+      {periods.filter((p) => isInScope(p.machineId)).map((p) => {
         const codes = faultCodes.filter((fc) => fc.machineId === p.machineId && fc.isActive);
         const busy = explainingId !== null;
         return (

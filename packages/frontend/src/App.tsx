@@ -11,6 +11,8 @@ import WorkOrdersPanel from "./WorkOrdersPanel";
 import TerminalUisPanel from "./TerminalUisPanel";
 import MfaSetup from "./MfaSetup.js";
 import AlertsPanel from "./AlertsPanel.js";
+import AlertHistoryPanel from "./AlertHistoryPanel.js";
+import AlertRulesPanel from "./AlertRulesPanel.js";
 import MachineFaultCodesPanel from "./MachineFaultCodesPanel";
 import FaultReportsPanel from "./FaultReportsPanel";
 import MaterialLotsPanel from "./MaterialLotsPanel";
@@ -107,7 +109,16 @@ const NAV: GroupDef[] = [
       { id: "preventive", label: "Preventive schedules", roles: ["maintenance", "manager", "admin"] },
     ],
   },
-  { id: "alerts", label: "Alerts", icon: "alerts", items: [{ id: "all", label: "Alerts" }] },
+  {
+    id: "alerts",
+    label: "Alerts",
+    icon: "alerts",
+    items: [
+      { id: "all", label: "Active" },
+      { id: "history", label: "History" },
+      { id: "rules", label: "Rules", roles: MANAGERS },
+    ],
+  },
   {
     id: "admin",
     label: "Admin",
@@ -186,6 +197,10 @@ function renderView(groupId: string, viewId: string, liveState: Record<string, M
       return <PreventiveSchedulesPanel />;
     case "alerts/all":
       return <AlertsPanel />;
+    case "alerts/history":
+      return <AlertHistoryPanel />;
+    case "alerts/rules":
+      return <AlertRulesPanel />;
     case "admin/machines":
       return <MachineRegistryPanel />;
     case "admin/plant":

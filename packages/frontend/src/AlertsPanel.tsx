@@ -1,291 +1,151 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { formatDateTime, formatDuration } from "./ui/format.js";
+import { readJsonOrThrow } from "./master-data.js";
+import { alertTypeLabel, type Alert } from "./alert-types.js";
 
-interface Alert {
-  id: string;
-  /** Rendszerriasztásnál (pl. sikertelen mentés) null — ilyenkor machineName "System". */
-  machineId: string | null;
-  machineName: string;
-  type: string;
-  message: string;
-  raisedAt: string;
-  resolvedAt: string | null;
-  acknowledgedBy: string | null;
-  acknowledgedAt: string | null;
-}
-
-interface AlertRule {
-  id: string;
-  type: "machine_down" | "scrap_rate";
-  machineId: string | null;
-  threshold: number;
-  notifyRoles: string[];
-  isActive: boolean;
-}
-
-interface Machine {
-  id: string;
-  name: string;
-  isActive: boolean;
-}
-
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
-const ROLES = ["operator", "supervisor", "maintenance", "manager", "admin"];
-
-/** A backend hibaüzenete, vagy egy általános üzenet, ha a válasz nem JSON. */
-async function errorMessage(res: Response, fallback: string): Promise<string> {
-  const body = (await res.json().catch(() => ({}))) as { error?: string };
-  return body.error ?? `${fallback} (${res.status})`;
-}
-
+/**
+ * Aktív (nyitott) riasztások táblázatban, 15 mp-enként frissítve. A
+ * nyugtázatlanok elöl és pirossal — ez az egyetlen hely, ahol a riasztásszín
+ * felületként jelenik meg. Nyugtázás egyenként vagy tömegesen; gépriasztásból
+ * karbantartási munkarendelés nyitható.
+ */
 export default function AlertsPanel() {
   const { isInScope } = useScope();
   const { auth } = useAuth();
   const [alerts, setAlerts] = useState<Alert[]>([]);
-  const [rules, setRules] = useState<AlertRule[]>([]);
-  const [machines, setMachines] = useState<Machine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
   /** Riasztások, amelyekhez ebben a munkamenetben már készült munkarendelés — a gomb ne duplikáljon. */
   const [ticketCreatedFor, setTicketCreatedFor] = useState<Set<string>>(new Set());
-  const [creatingTicketFor, setCreatingTicketFor] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    type: "machine_down" as "machine_down" | "scrap_rate",
-    machineId: "",
-    threshold: "",
-    notifyRoles: ["supervisor", "manager"] as string[],
-  });
-  const [submitting, setSubmitting] = useState(false);
+  const canCreateTicket = ["supervisor", "maintenance", "manager", "admin"].includes(auth?.role ?? "");
 
-  const isAdmin = auth?.role === "admin" || auth?.role === "manager";
-  const canCreateTicket =
-    auth?.role === "supervisor" || auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
-
-  // A token hozzáadását és a 401-es kiléptetést az apiFetch végzi.
   function load() {
-    const getJson = <T,>(path: string) =>
-      apiFetch(`${API_BASE}${path}`).then((r) =>
-        r.ok ? (r.json() as Promise<T>) : Promise.reject(new Error(`${path}: ${r.status}`)),
-      );
-    const calls: Promise<void>[] = [
-      getJson<Alert[]>("/api/alerts").then(setAlerts),
-      getJson<Machine[]>("/api/machine-registry").then(setMachines),
-    ];
-    if (isAdmin) calls.push(getJson<AlertRule[]>("/api/alert-rules").then(setRules));
-    Promise.all(calls).catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    apiFetch(`${API_BASE}/api/alerts`)
+      .then((r) => readJsonOrThrow<Alert[]>(r))
+      .then((list) => {
+        setAlerts(list);
+        setError(null);
+      })
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
   useEffect(() => {
     load();
-    const timer = setInterval(load, 15000);
+    const timer = setInterval(load, 15_000);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function acknowledge(id: string) {
-    setError(null);
-    const res = await apiFetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, { method: "POST" });
-    if (!res.ok) setError(await errorMessage(res, "Failed to acknowledge alert"));
-    load();
-  }
+  const open = useMemo(() => alerts.filter((a) => !a.resolvedAt && isInScope(a.machineId)), [alerts, isInScope]);
+  const visibleSelected = useMemo(() => new Set([...selected].filter((id) => open.some((a) => a.id === id && !a.acknowledgedAt))), [selected, open]);
 
-  /**
-   * Karbantartási munkarendelés egy gépriasztásból. Korábban a választ nem
-   * nézte: nem derült ki, sikerült-e, és többszöri kattintás több azonos
-   * munkarendelést hozott létre.
-   */
-  async function createMaintenanceTicket(alert: Alert) {
-    if (!alert.machineId || creatingTicketFor) return;
+  async function acknowledge(ids: string[]) {
+    setBusy(true);
     setError(null);
     setNotice(null);
-    setCreatingTicketFor(alert.id);
+    try {
+      // Nincs tömeges végpont; a nyugtázás riasztásonként független, így itt nincs részleges-mentés kockázat.
+      const results = await Promise.all(
+        ids.map((id) => apiFetch(`${API_BASE}/api/alerts/${encodeURIComponent(id)}/acknowledge`, { method: "POST" }).then((r) => r.ok)),
+      );
+      const failed = results.filter((ok) => !ok).length;
+      setNotice(failed ? `${ids.length - failed} acknowledged, ${failed} failed.` : `${ids.length} acknowledged.`);
+      setSelected(new Set());
+      load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createTicket(a: Alert) {
+    if (!a.machineId) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
     try {
       const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          machineId: alert.machineId,
-          title: `Investigate: ${alert.message}`,
-          sourceType: "alert",
-          sourceId: alert.id,
-        }),
+        body: JSON.stringify({ machineId: a.machineId, title: `Investigate: ${a.message}`, sourceType: "alert", sourceId: a.id }),
       });
-      if (res.ok) {
-        setTicketCreatedFor((prev) => new Set(prev).add(alert.id));
-        setNotice(`Maintenance work order created for ${alert.machineName}.`);
-      } else {
-        setError(await errorMessage(res, "Failed to create maintenance work order"));
-      }
+      await readJsonOrThrow<unknown>(res);
+      setTicketCreatedFor((prev) => new Set(prev).add(a.id));
+      setNotice(`Maintenance work order created for ${a.machineName}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setCreatingTicketFor(null);
+      setBusy(false);
     }
   }
 
-  function toggleRole(role: string) {
-    setForm((f) => ({
-      ...f,
-      notifyRoles: f.notifyRoles.includes(role) ? f.notifyRoles.filter((r) => r !== role) : [...f.notifyRoles, role],
-    }));
-  }
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/alert-rules`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: form.type,
-          machineId: form.machineId || undefined,
-          threshold: Number(form.threshold),
-          notifyRoles: form.notifyRoles,
-        }),
-      });
-      if (!res.ok) {
-        setError(await errorMessage(res, "Failed to add rule"));
-        return;
-      }
-      setForm({ type: "machine_down", machineId: "", threshold: "", notifyRoles: ["supervisor", "manager"] });
-      load();
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function toggleRuleActive(rule: AlertRule) {
-    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(rule.id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isActive: !rule.isActive }),
-    });
-    if (!res.ok) setError(await errorMessage(res, "Failed to update rule"));
-    load();
-  }
-
-  async function removeRule(id: string) {
-    const res = await apiFetch(`${API_BASE}/api/alert-rules/${encodeURIComponent(id)}`, { method: "DELETE" });
-    if (!res.ok) setError(await errorMessage(res, "Failed to remove rule"));
-    load();
-  }
-
-  const openAlerts = alerts.filter((a) => !a.resolvedAt && isInScope(a.machineId));
-  const machineName = (id: string) => machines.find((m) => m.id === id)?.name ?? id;
+  const now = Date.now();
+  const columns: Column<Alert>[] = [
+    {
+      id: "state",
+      header: "",
+      sortValue: (a) => (a.acknowledgedAt ? 1 : 0),
+      cell: (a) => (a.acknowledgedAt ? <span className="ui-pill">Acknowledged</span> : <span className="ui-pill ui-pill-alarm">New</span>),
+    },
+    { id: "machine", header: "Machine", sortValue: (a) => a.machineName, cell: (a) => a.machineName },
+    { id: "type", header: "Type", sortValue: (a) => a.type, cell: (a) => alertTypeLabel(a.type) },
+    { id: "message", header: "Message", cell: (a) => <span title={a.message}>{a.message}</span> },
+    { id: "raised", header: "Raised", sortValue: (a) => a.raisedAt, cell: (a) => formatDateTime(a.raisedAt) },
+    { id: "open", header: "Open for", align: "right", sortValue: (a) => -new Date(a.raisedAt).getTime(), cell: (a) => formatDuration((now - new Date(a.raisedAt).getTime()) / 1000) },
+  ];
 
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Alerts</h2>
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Active alerts</h2>
+        <span className="ui-panel-count num">{open.length}</span>
+      </div>
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {notice && <p style={{ color: "#0ca30c", fontSize: 13 }}>{notice}</p>}
-      {openAlerts.length === 0 && <p style={{ color: "#898781" }}>No active alerts.</p>}
+      {visibleSelected.size > 0 && (
+        <div className="ui-bulkbar">
+          <span className="ui-bulkbar-count num">{visibleSelected.size} selected</span>
+          <button type="button" className="ui-btn ui-btn-primary" disabled={busy} onClick={() => void acknowledge([...visibleSelected])}>
+            Acknowledge
+          </button>
+          <span className="ui-toolbar-spacer" />
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={() => setSelected(new Set())}>
+            Clear selection
+          </button>
+        </div>
+      )}
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
 
-      {openAlerts.map((a) => (
-        <div
-          key={a.id}
-          style={{ border: "1px solid #d03b3b", background: "#fdf0f0", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", alignItems: "center", gap: 16 }}
-        >
-          <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600 }}>{a.machineName}</div>
-            <div style={{ fontSize: 13 }}>{a.message}</div>
-            <div style={{ fontSize: 11, color: "#898781" }}>{new Date(a.raisedAt).toLocaleString()}</div>
-          </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {/* Munkarendelés csak gépriasztásból — rendszerriasztásnak (machineId null) nincs gépe. */}
-            {canCreateTicket && a.type === "machine_down" && a.machineId !== null &&
-              (ticketCreatedFor.has(a.id) ? (
-                <span style={{ fontSize: 12, color: "#0ca30c" }}>Ticket created</span>
-              ) : (
-                <button
-                  style={secondaryButtonStyle}
-                  disabled={creatingTicketFor !== null}
-                  onClick={() => void createMaintenanceTicket(a)}
-                >
-                  {creatingTicketFor === a.id ? "Creating…" : "Create ticket"}
-                </button>
-              ))}
-            {a.acknowledgedAt ? (
-              <span style={{ fontSize: 12, color: "#898781" }}>Acknowledged</span>
-            ) : (
-              <button style={secondaryButtonStyle} onClick={() => void acknowledge(a.id)}>
+      <DataTable
+        ariaLabel="Active alerts"
+        rows={open}
+        columns={columns}
+        getRowId={(a) => a.id}
+        selected={visibleSelected}
+        onSelectedChange={setSelected}
+        isDimmed={(a) => !!a.acknowledgedAt}
+        initialSort={{ columnId: "state", dir: "asc" }}
+        rowActions={(a) => (
+          <>
+            {canCreateTicket && a.machineId && a.type === "machine_down" && !ticketCreatedFor.has(a.id) && (
+              <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" disabled={busy} onClick={() => void createTicket(a)}>
+                Create ticket
+              </button>
+            )}
+            {!a.acknowledgedAt && (
+              <button type="button" className="ui-btn ui-btn-small" disabled={busy} onClick={() => void acknowledge([a.id])}>
                 Acknowledge
               </button>
             )}
-          </div>
-        </div>
-      ))}
-
-      {isAdmin && (
-        <>
-          <h3 style={{ fontSize: 14, marginTop: 24 }}>Alert rules</h3>
-          <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-            <label style={{ fontSize: 12 }}>
-              Type<br />
-              <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as "machine_down" | "scrap_rate" }))} style={inputStyle}>
-                <option value="machine_down">Machine down (minutes)</option>
-                <option value="scrap_rate">Scrap rate (%)</option>
-              </select>
-            </label>
-            <label style={{ fontSize: 12 }}>
-              Machine<br />
-              <select value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
-                <option value="">All machines</option>
-                {machines.filter((m) => m.isActive).map((m) => (
-                  <option key={m.id} value={m.id}>{m.name}</option>
-                ))}
-              </select>
-            </label>
-            <label style={{ fontSize: 12 }}>
-              Threshold<br />
-              <input required type="number" value={form.threshold} onChange={(e) => setForm((f) => ({ ...f, threshold: e.target.value }))} style={{ ...inputStyle, width: 80 }} />
-            </label>
-            <div style={{ fontSize: 12 }}>
-              Notify<br />
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                {ROLES.map((role) => (
-                  <label key={role} style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                    <input type="checkbox" checked={form.notifyRoles.includes(role)} onChange={() => toggleRole(role)} />
-                    {role}
-                  </label>
-                ))}
-              </div>
-            </div>
-            <button type="submit" disabled={submitting} style={buttonStyle}>
-              {submitting ? "Adding…" : "Add rule"}
-            </button>
-          </form>
-
-          {rules.map((r) => (
-            <div key={r.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center", opacity: r.isActive ? 1 : 0.5 }}>
-              <div><div style={{ fontSize: 12, color: "#898781" }}>Type</div><div>{r.type}</div></div>
-              <div><div style={{ fontSize: 12, color: "#898781" }}>Machine</div><div>{r.machineId ? machineName(r.machineId) : "All"}</div></div>
-              <div><div style={{ fontSize: 12, color: "#898781" }}>Threshold</div><div>{r.threshold}</div></div>
-              <div><div style={{ fontSize: 12, color: "#898781" }}>Notify</div><div>{r.notifyRoles.join(", ")}</div></div>
-              <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-                <button type="button" onClick={() => void toggleRuleActive(r)} style={secondaryButtonStyle}>
-                  {r.isActive ? "Disable" : "Enable"}
-                </button>
-                <button type="button" onClick={() => void removeRule(r.id)} style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }}>
-                  Remove
-                </button>
-              </div>
-            </div>
-          ))}
-        </>
-      )}
+          </>
+        )}
+        emptyText="No active alerts."
+      />
+      <p className="ui-field-hint">Resolved alerts are under Alerts → History.</p>
     </section>
   );
 }

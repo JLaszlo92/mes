@@ -1057,3 +1057,26 @@ body {
 .tile[data-state="inactive"] .tile-name {
   color: var(--c-text-muted);
 }
+
+.ui-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--c-text-muted);
+  font-size: var(--text-s);
+}
+.ui-pager .ui-select {
+  height: 26px;
+}
+.ui-code {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-m);
+  background: var(--c-surface-sunken);
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -7,7 +7,8 @@ import { getShiftSummary } from "./shift-summary-repository.js";
 import { getMachine } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
 import { deleteSession } from "./sessions-repository.js";
-import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
+import { recordAuditEvent, listAuditLog, listAuditActions } from "./audit-repository.js";
+import { parseIdList, parseInstant, parsePaging } from "./paging.js";
 import {
   listAssignments,
   createAssignment,
@@ -34,7 +35,7 @@ import {
   getMfaSecret,
 } from "./mfa-repository.js";
 import { listAlertRules, createAlertRule, updateAlertRule, deleteAlertRule } from "./alert-rules-repository.js";
-import { listAlerts, acknowledgeAlert } from "./alerts-repository.js";
+import { listAlerts, listAlertHistory, acknowledgeAlert } from "./alerts-repository.js";
 import {
   listFaultCodes,
   createFaultCode,
@@ -45,6 +46,8 @@ import {
 } from "./machine-fault-codes-repository.js";
 import {
   listFaultReports,
+  listFaultReportsPage,
+  type FaultReportFilter,
   createFaultReport,
   reviewFaultReport,
   isForeignKeyViolation as isFaultReportForeignKeyViolation,
@@ -185,19 +188,34 @@ export async function buildServer(): Promise<FastifyInstance> {
     return null;
   });
 
-  app.get<{ Querystring: { from?: string; to?: string; limit?: string; offset?: string } }>(
-    "/api/audit-log",
-    { preHandler: requireRole("admin") },
-    async (request) => {
-      const { from, to, limit, offset } = request.query;
-      return listAuditLog({
-        from,
-        to,
-        limit: limit ? parseInt(limit, 10) : undefined,
-        offset: offset ? parseInt(offset, 10) : undefined,
-      });
-    },
-  );
+  /**
+   * Audit log, szerveroldalon lapozva és szűrve: from, to, action (pontos vagy
+   * "előtag*"), actor (e-mail részlet), target (pontos), q (szabad szöveg),
+   * limit (1–200, alap 50), offset.
+   */
+  app.get<{ Querystring: Record<string, string | undefined> }>("/api/audit-log", { preHandler: requireRole("admin") }, async (request, reply) => {
+    const q = request.query;
+    const paging = parsePaging(q);
+    const from = parseInstant("from", q.from);
+    const to = parseInstant("to", q.to);
+    for (const r of [paging, from, to]) {
+      if (!r.ok) {
+        reply.code(400);
+        return { error: r.error, field: r.field };
+      }
+    }
+    return listAuditLog({
+      ...(paging.ok ? paging.value : {}),
+      from: from.ok ? from.value : undefined,
+      to: to.ok ? to.value : undefined,
+      action: q.action?.trim() || undefined,
+      actor: q.actor?.trim() || undefined,
+      target: q.target?.trim() || undefined,
+      q: q.q?.trim() || undefined,
+    });
+  });
+
+  app.get("/api/audit-log/actions", { preHandler: requireRole("admin") }, async () => listAuditActions());
 
   app.get<{ Querystring: { from: string; to: string } }>("/api/shifts/summary", async (request, reply) => {
     const { from, to } = request.query;
@@ -508,6 +526,33 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get("/api/alerts", async () => listAlerts());
 
+  /** Lapozott riasztás-előzmény: status=open|resolved|all, machineIds (vesszővel), from, to, limit, offset. */
+  app.get<{ Querystring: Record<string, string | undefined> }>("/api/alerts/history", async (request, reply) => {
+    const q = request.query;
+    const status = (q.status ?? "all") as "open" | "resolved" | "all";
+    if (!["open", "resolved", "all"].includes(status)) {
+      reply.code(400);
+      return { error: "status must be open, resolved or all", field: "status" };
+    }
+    const paging = parsePaging(q);
+    const ids = parseIdList("machineIds", q.machineIds);
+    const from = parseInstant("from", q.from);
+    const to = parseInstant("to", q.to);
+    for (const r of [paging, ids, from, to]) {
+      if (!r.ok) {
+        reply.code(400);
+        return { error: r.error, field: r.field };
+      }
+    }
+    return listAlertHistory({
+      status,
+      machineIds: ids.ok ? ids.value : undefined,
+      from: from.ok ? from.value : undefined,
+      to: to.ok ? to.value : undefined,
+      ...(paging.ok ? paging.value : { limit: 50, offset: 0 }),
+    });
+  });
+
   app.post<{ Params: { id: string } }>("/api/alerts/:id/acknowledge", async (request, reply) => {
     if (!request.user) {
       reply.code(401);
@@ -588,6 +633,30 @@ export async function buildServer(): Promise<FastifyInstance> {
       return null;
     },
   );
+
+  /** Lapozott hibajelentések: status=pending|confirmed|modified|rejected|reviewed, machineIds, q, limit, offset. */
+  app.get<{ Querystring: Record<string, string | undefined> }>("/api/fault-reports/page", async (request, reply) => {
+    const q = request.query;
+    const allowed = ["pending", "confirmed", "modified", "rejected", "reviewed"];
+    if (q.status && !allowed.includes(q.status)) {
+      reply.code(400);
+      return { error: `status must be one of: ${allowed.join(", ")}`, field: "status" };
+    }
+    const paging = parsePaging(q);
+    const ids = parseIdList("machineIds", q.machineIds);
+    for (const r of [paging, ids]) {
+      if (!r.ok) {
+        reply.code(400);
+        return { error: r.error, field: r.field };
+      }
+    }
+    return listFaultReportsPage({
+      status: (q.status || undefined) as FaultReportFilter["status"],
+      machineIds: ids.ok ? ids.value : undefined,
+      q: q.q?.trim() || undefined,
+      ...(paging.ok ? paging.value : { limit: 50, offset: 0 }),
+    });
+  });
 
   app.get("/api/fault-reports", async (request, reply) => {
     if (!request.user) {
@@ -750,13 +819,9 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
     },
   );
-  app.get("/api/corrective-actions", async (request, reply) => {
-  if (!request.user) {
-    reply.code(401);
-    return { error: "authentication required" };
-  }
-    return listCorrectiveActions();
-  });
+  app.get<{ Querystring: { faultReportId?: string } }>("/api/corrective-actions", async (request) =>
+    listCorrectiveActions(request.query.faultReportId || undefined),
+  );
 
   app.post<{ Body: { faultReportId: string; description: string } }>(
     "/api/corrective-actions",
@@ -1208,13 +1273,19 @@ app.delete<{ Params: { id: string } }>(
   });
 
   /** Leállási idő okonként (Pareto). hours: 1–744 (alapértelmezés 168 = 7 nap), machineId opcionális. */
-  app.get<{ Querystring: { hours?: string; machineId?: string } }>("/api/downtime-periods/pareto", async (request, reply) => {
+  app.get<{ Querystring: { hours?: string; machineId?: string; machineIds?: string } }>("/api/downtime-periods/pareto", async (request, reply) => {
     const hours = request.query.hours === undefined ? 168 : Number(request.query.hours);
     if (!Number.isInteger(hours) || hours < 1 || hours > 24 * 31) {
       reply.code(400);
       return { error: "hours must be an integer between 1 and 744" };
     }
-    return getDowntimePareto(hours, request.query.machineId || null);
+    // machineIds: a globális hatókör gépei (vesszővel elválasztva) — a machineId-vel együtt is szűkít.
+    const ids = parseIdList("machineIds", request.query.machineIds);
+    if (!ids.ok) {
+      reply.code(400);
+      return { error: ids.error, field: ids.field };
+    }
+    return getDowntimePareto(hours, request.query.machineId || null, ids.value);
   });
  
   /** A gép mikroleállási küszöbe másodpercben (0–3600); 0 = minden leállást magyarázni kell. */

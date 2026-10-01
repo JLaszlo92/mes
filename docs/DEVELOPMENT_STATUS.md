@@ -541,6 +541,41 @@ is in `ops/backup/README.md`.
   now reports success/failure and doesn't create duplicates.
 - Server-side copies to weekly/ / monthly/ use --copy-props none: by default aws s3 cp copies tags too, which needs s3:GetObjectTagging — deliberately not granted to the node-dc IAM user. Found on the first monthly run (Oct 1).
 
+## Server-paged lists: audit log, alerts, fault reports — Oct 1
+
+- **Shared pattern**: `GET` endpoints return `{ rows, total }` (the audit
+  log keeps `{ entries, total }`), take `limit` (1–200, default 50) and
+  `offset`, and validate them (`paging.ts`, unit-tested; 400 with `field`).
+  `machineIds=a,b,c` narrows to the global scope's machines (`-` = an empty
+  scope, matches nothing). Frontend: `ui/useServerList.ts` (debounced,
+  resets to page 1 when a filter changes, ignores stale responses) and
+  `ui/Pager.tsx`. Server-paged tables don't sort client-side — the order is
+  the server's (newest first).
+- **Audit log** (`AuditLogPanel.tsx`): time range, action (exact or a
+  group like `work_order_*`, from `GET /api/audit-log/actions`), actor email,
+  target id, free text (also searches `details`). Row → drawer with a
+  before/after table for `changes` and the raw details; "Show all for this
+  target" filters by the entry's target. Security-relevant actions
+  (`login_failed`, `login_locked`, `mfa_*`, `raw_events_dropped`) are the
+  only coloured ones. Export page to CSV. `limit` used to be unbounded.
+- **Alerts** is now three views: **Active** (`AlertsPanel.tsx`: table, new
+  ones first, bulk acknowledge, create ticket), **History**
+  (`AlertHistoryPanel.tsx`, `GET /api/alerts/history?status&from&to&machineIds`
+  — system alerts always included), **Rules** (`AlertRulesPanel.tsx`, admin
+  and manager, new rule in a drawer). `/api/alerts` itself is unchanged
+  (open + last 24 h) — the sidebar badge and the Overview use it.
+- **Fault reports** (`FaultReportsPanel.tsx`): `GET /api/fault-reports/page`
+  (`status` incl. `reviewed`, `q`, `machineIds`), default view "Pending
+  review"; row → drawer with review (confirm, confirm with a corrected
+  count, reject, note), corrective actions (log, sign off) and "Create
+  maintenance work order"; "Report a fault" drawer.
+  `GET /api/corrective-actions?faultReportId=…` loads only that report's
+  actions (it used to return all of them). `/api/fault-reports` (full list)
+  is kept for compatibility.
+- **Scope now also applies to** Downtime (periods and summary client-side;
+  the Pareto via `machineIds`, since it aggregates on the server), Machine
+  history's machine picker, alert history and fault reports.
+
 ## Global scope selector and Overview redesign — Oct 1
 
 - **Scope** (`scope.tsx`, `ScopeSelector.tsx`): a site → area → line picker
