@@ -19,7 +19,7 @@
  * kiléptetést.
  */
 
-export const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? "ws://localhost:3001/ws";
+export const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 export const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
 let currentToken: string | null = null;
