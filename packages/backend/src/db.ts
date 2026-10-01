@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, types } from "pg";
 import type { FastifyBaseLogger } from "fastify";
 import { config } from "./config.js";
 
@@ -11,6 +11,12 @@ import { config } from "./config.js";
 // (config.timezone), így a műszak-függvények (resolve_shift, off-shift
 // szegmensek), a ::date / ::time konverziók és a naptári napok helyi időben
 // értendők — függetlenül attól, mi az adatbázis alapértelmezése.
+// DATE (OID 1082) → "YYYY-MM-DD" string, nem JS Date. Alapból a pg helyi
+// éjfélként parse-olja, ami JSON-ban UTC-re fordítva az ELŐZŐ napot adta
+// (pl. határidő 2026-10-05 → "2026-10-04T22:00:00.000Z"). Egy naptári nap
+// nem időpont — stringként utazik végig.
+types.setTypeParser(1082, (value: string) => value);
+
 export const pool = new Pool({
   connectionString: config.databaseUrl,
   max: 20,

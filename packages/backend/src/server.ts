@@ -9,13 +9,6 @@ import authPlugin, { requireRole } from "./auth-plugin.js";
 import { deleteSession } from "./sessions-repository.js";
 import { recordAuditEvent, listAuditLog } from "./audit-repository.js";
 import {
-  listWorkOrders,
-  getWorkOrder,
-  createWorkOrder,
-  updateWorkOrder,
-  isUniqueViolation as isWorkOrderUniqueViolation,
-} from "./work-orders-repository.js";
-import {
   listAssignments,
   createAssignment,
   deleteAssignment,
@@ -80,21 +73,9 @@ import {
   listViews,
 } from "./work-instructions-repository.js";
 import {
-  listMaintenanceWorkOrders,
-  getMaintenanceWorkOrder,
-  createMaintenanceWorkOrder,
-  updateMaintenanceWorkOrder,
-  listParts,
-  addPart,
-  listLabor,
-  addLabor,
-  isForeignKeyViolation as isMwoForeignKeyViolation,
-} from "./maintenance-work-orders-repository.js";
-import {
   listSchedules,
   createSchedule,
   deactivateSchedule,
-  resetSchedule,
   isForeignKeyViolation as isScheduleForeignKeyViolation,
 } from "./preventive-maintenance-repository.js";
 import {
@@ -164,6 +145,8 @@ import {
 import authRoutes from "./auth-routes.js";
 import machineRegistryRoutes from "./machine-registry-routes.js";
 import plantHierarchyRoutes from "./plant-hierarchy-routes.js";
+import workOrderRoutes from "./work-order-routes.js";
+import maintenanceRoutes from "./maintenance-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -176,6 +159,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(authRoutes);
   await app.register(machineRegistryRoutes);
   await app.register(plantHierarchyRoutes);
+  await app.register(workOrderRoutes);
+  await app.register(maintenanceRoutes);
 
   app.get("/health", async () => ({ status: "ok" }));
 
@@ -283,81 +268,6 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
   });
 
-
-  app.get("/api/work-orders", async () => listWorkOrders());
-
-  app.get<{ Params: { id: string } }>("/api/work-orders/:id", async (request, reply) => {
-    const workOrder = await getWorkOrder(request.params.id);
-    if (!workOrder) {
-      reply.code(404);
-      return { error: "unknown work order" };
-    }
-    return workOrder;
-  });
-
-  app.post<{
-    Body: {
-      orderNumber: string;
-      partName: string;
-      quantity: number;
-      expectedCycleTimeSeconds?: number;
-      dueDate?: string;
-      notes?: string;
-    };
-  }>("/api/work-orders", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
-    const { orderNumber, partName, quantity } = request.body;
-    if (!orderNumber || !partName || !quantity) {
-      reply.code(400);
-      return { error: "orderNumber, partName and quantity are required" };
-    }
-    try {
-      const workOrder = await createWorkOrder(request.body);
-      await recordAuditEvent({
-        actorId: request.user!.id,
-        action: "work_order_created",
-        target: workOrder.id,
-        details: { orderNumber, partName, quantity },
-        ipAddress: request.ip,
-      });
-      reply.code(201);
-      return workOrder;
-    } catch (err) {
-      if (isWorkOrderUniqueViolation(err)) {
-        reply.code(409);
-        return { error: `work order with order number "${orderNumber}" already exists` };
-      }
-      throw err;
-    }
-  });
-
-  app.put<{
-    Params: { id: string };
-    Body: {
-      partName?: string;
-      quantity?: number;
-      expectedCycleTimeSeconds?: number;
-      dueDate?: string;
-      status?: "planned" | "released" | "in_progress" | "completed" | "cancelled";
-      notes?: string;
-    };
-  }>("/api/work-orders/:id", { preHandler: requireRole("admin", "manager", "operator") }, async (request, reply) => {
-    const workOrder = await updateWorkOrder(request.params.id, request.body);
-    if (!workOrder) {
-      reply.code(404);
-      return { error: "unknown work order" };
-    }
-    await recordAuditEvent({
-      actorId: request.user!.id,
-      action: "work_order_updated",
-      target: workOrder.id,
-      details: request.body,
-      ipAddress: request.ip,
-    });
-    if (request.body.status === "completed") {
-      await generateLotForWorkOrder(workOrder.id);
-    }
-    return workOrder;
-  });
 
   app.get<{ Querystring: { machineId?: string } }>("/api/work-order-assignments", async (request) => {
     if (request.query.machineId) return listAssignmentsForMachine(request.query.machineId);
@@ -973,109 +883,6 @@ export async function buildServer(): Promise<FastifyInstance> {
     "/api/work-instructions/views/log",
     { preHandler: requireRole("admin", "manager", "supervisor") },
     async () => listViews(),
-  );
-  app.get("/api/maintenance-work-orders", async (request, reply) => {
-  if (!request.user) {
-    reply.code(401);
-    return { error: "authentication required" };
-  }
-  return listMaintenanceWorkOrders();
-  });
-
-  app.post<{
-    Body: { machineId: string; title: string; description?: string; sourceType?: string; sourceId?: string };
-  }>("/api/maintenance-work-orders", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
-    const { machineId, title } = request.body;
-    if (!machineId || !title) {
-      reply.code(400);
-      return { error: "machineId and title are required" };
-    }
-    try {
-      const mwo = await createMaintenanceWorkOrder({ ...request.body, createdBy: request.user!.id });
-      await recordAuditEvent({
-        actorId: request.user!.id,
-        action: "maintenance_work_order_created",
-        target: mwo.id,
-        details: request.body,
-        ipAddress: request.ip,
-      });
-      reply.code(201);
-      return mwo;
-    } catch (err) {
-      if (isMwoForeignKeyViolation(err)) {
-        reply.code(404);
-        return { error: "unknown machine" };
-      }
-      throw err;
-    }
-  });
-
-  app.put<{
-    Params: { id: string };
-    Body: { status?: "open" | "assigned" | "in_progress" | "closed"; assignedTo?: string };
-  }>("/api/maintenance-work-orders/:id", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
-    const mwo = await updateMaintenanceWorkOrder(request.params.id, request.body);
-    if (!mwo) {
-      reply.code(404);
-      return { error: "unknown maintenance work order" };
-    }
-    await recordAuditEvent({
-      actorId: request.user!.id,
-      action: "maintenance_work_order_updated",
-      target: mwo.id,
-      details: request.body,
-      ipAddress: request.ip,
-    });
-    if (request.body.status === "closed" && mwo.sourceType === "preventive_schedule" && mwo.sourceId) {
-      await resetSchedule(mwo.sourceId);
-    }
-    return mwo;
-  });
-
-  app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/parts", async (request, reply) => {
-    if (!request.user) {
-      reply.code(401);
-      return { error: "authentication required" };
-    }
-    return listParts(request.params.id);
-  });
-
-  app.post<{ Params: { id: string }; Body: { partName: string; quantity?: number } }>(
-    "/api/maintenance-work-orders/:id/parts",
-    { preHandler: requireRole("supervisor", "maintenance", "manager", "admin") },
-    async (request, reply) => {
-      const { partName, quantity } = request.body;
-      if (!partName) {
-        reply.code(400);
-        return { error: "partName is required" };
-      }
-      await addPart(request.params.id, partName, quantity ?? 1);
-      reply.code(201);
-      return { success: true };
-    },
-  );
-
-  app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/labor", async (request, reply) => {
-    if (!request.user) {
-      reply.code(401);
-      return { error: "authentication required" };
-    }
-    return listLabor(request.params.id);
-  });
-
-  app.post<{ Params: { id: string }; Body: { hours: number; notes?: string } }>(
-    "/api/maintenance-work-orders/:id/labor",
-    { preHandler: requireRole("maintenance", "manager", "admin") },
-    async (request, reply) => {
-      const { hours } = request.body;
-      if (!hours || hours <= 0) {
-        reply.code(400);
-        return { error: "hours must be a positive number" };
-      }
-      await addLabor(request.params.id, request.user!.id, hours, request.body.notes);
-      reply.code(201);
-      return { success: true };
-    },
   );
   app.get(
   "/api/preventive-schedules",

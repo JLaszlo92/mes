@@ -493,3 +493,76 @@ body {
 .ui-column-foot .ui-input {
   flex: 1;
 }
+
+/* ---- Állapot-pillek: a szín csak a rendellenességé ---- */
+
+.ui-pill-warning {
+  background: var(--c-warning-soft);
+  border-color: transparent;
+  color: var(--c-warning);
+}
+.ui-pill-alarm {
+  background: var(--c-alarm-soft);
+  border-color: transparent;
+  color: var(--c-alarm);
+}
+.ui-pill-accent {
+  background: var(--c-accent-soft);
+  border-color: transparent;
+  color: var(--c-accent);
+}
+
+.ui-textarea {
+  min-height: 72px;
+  padding: var(--space-2);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-m);
+  font: inherit;
+  font-size: var(--text-s);
+  resize: vertical;
+}
+
+/* Kulcs–érték összefoglaló a drawerben (pl. a jelenlegi ütemezés). */
+.ui-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: var(--space-1) var(--space-4);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-s);
+}
+.ui-facts dt {
+  color: var(--c-text-muted);
+}
+.ui-facts dd {
+  margin: 0;
+}
+
+.ui-radio-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin: var(--space-2) 0;
+}
+
+/* Kis, sűrű lista a drawerben (alkatrészek, munkaórák). */
+.ui-mini-list {
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-s);
+}
+.ui-mini-list li {
+  display: flex;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--c-border);
+}
+.ui-mini-list li:last-child {
+  border-bottom: none;
+}
+.ui-inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: flex-end;
+}

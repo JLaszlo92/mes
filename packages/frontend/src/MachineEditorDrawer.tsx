@@ -1,5 +1,6 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import Drawer from "./ui/Drawer.js";
+import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine, type PlantHierarchy } from "./master-data.js";
 
@@ -102,26 +103,6 @@ function localErrors(d: Draft, creating: boolean): Record<string, string> {
   const micro = Number(d.microStopThresholdSeconds);
   if (!Number.isInteger(micro) || micro < 0 || micro > 3600) e.microStopThresholdSeconds = "Whole seconds between 0 and 3600.";
   return e;
-}
-
-function Field({
-  label,
-  hint,
-  error,
-  children,
-}: {
-  label: string;
-  hint?: ReactNode;
-  error?: string;
-  children: ReactNode;
-}) {
-  return (
-    <label className="ui-field">
-      <span className="ui-field-label">{label}</span>
-      {children}
-      {error ? <span className="ui-field-error">{error}</span> : hint ? <span className="ui-field-hint">{hint}</span> : null}
-    </label>
-  );
 }
 
 export default function MachineEditorDrawer({

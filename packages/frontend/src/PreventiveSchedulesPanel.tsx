@@ -1,179 +1,201 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import Drawer from "./ui/Drawer.js";
+import Field from "./ui/Field.js";
+import { formatDateTime } from "./ui/format.js";
+import { readJsonOrThrow, useMasterDataVersion, type Machine } from "./master-data.js";
 
-interface Machine {
-  id: string;
-  name: string;
-}
+type TriggerType = "calendar" | "usage_hours" | "part_count";
 
 interface PreventiveSchedule {
   id: string;
   machineId: string;
   machineName: string;
-  triggerType: "calendar" | "usage_hours" | "part_count";
+  triggerType: TriggerType;
   intervalValue: number;
   description: string;
   lastTriggeredAt: string | null;
   isActive: boolean;
 }
 
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
+const TRIGGER_UNIT: Record<TriggerType, string> = { calendar: "days", usage_hours: "running hours", part_count: "parts produced" };
+const TRIGGER_LABEL: Record<TriggerType, string> = { calendar: "Calendar", usage_hours: "Running hours", part_count: "Parts produced" };
 
-const TRIGGER_UNIT: Record<string, string> = {
-  calendar: "days",
-  usage_hours: "running hours",
-  part_count: "parts produced",
-};
-
+/**
+ * Megelőző karbantartási ütemezések táblázatban. Ha egy ütemezés esedékes,
+ * a háttérfolyamat karbantartási munkarendelést nyit (a fenti táblában
+ * "Preventive schedule" forrással); annak lezárása indítja újra a számlálót.
+ */
 export default function PreventiveSchedulesPanel() {
-  const { auth, logout } = useAuth();
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [schedules, setSchedules] = useState<PreventiveSchedule[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    machineId: "",
-    triggerType: "calendar" as "calendar" | "usage_hours" | "part_count",
-    intervalValue: "",
-    description: "",
-  });
-  const [submitting, setSubmitting] = useState(false);
-
+  const { auth } = useAuth();
   const canManage = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const version = useMasterDataVersion();
+  const [schedules, setSchedules] = useState<PreventiveSchedule[]>([]);
+  const [machines, setMachines] = useState<Machine[]>([]);
+  const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
 
   function load() {
     Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/preventive-schedules`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
-        (res) => {
-          if (res.status === 401) {
-            logout();
-            throw new Error("session expired — please sign in again");
-          }
-          return res.json();
-        },
-      ),
+      apiFetch(`${API_BASE}/api/preventive-schedules`).then((r) => readJsonOrThrow<PreventiveSchedule[]>(r)).then(setSchedules),
+      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => readJsonOrThrow<Machine[]>(r)).then(setMachines),
     ])
-      .then(([m, s]) => {
-        setMachines(m);
-        setSchedules(s);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)));
+      .then(() => setError(null))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
+  useEffect(() => {
+    if (canManage) load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version, canManage]);
 
-  useEffect(load, []);
+  const rows = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return schedules.filter((s) => s.isActive && words.every((w) => `${s.description} ${s.machineName}`.toLowerCase().includes(w)));
+  }, [schedules, query]);
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
+  async function remove(s: PreventiveSchedule) {
+    if (!window.confirm(`Stop the schedule "${s.description}" on ${s.machineName}? No new work orders will be created from it.`)) return;
     try {
-      const res = await apiFetch(`${API_BASE}/api/preventive-schedules`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          machineId: form.machineId,
-          triggerType: form.triggerType,
-          intervalValue: Number(form.intervalValue),
-          description: form.description.trim(),
-        }),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({ machineId: "", triggerType: "calendar", intervalValue: "", description: "" });
+      await readJsonOrThrow<unknown>(await apiFetch(`${API_BASE}/api/preventive-schedules/${encodeURIComponent(s.id)}`, { method: "DELETE" }));
       load();
     } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
+      setError(err instanceof Error ? err.message : String(err));
     }
-  }
-
-  async function remove(id: string) {
-    const res = await apiFetch(`${API_BASE}/api/preventive-schedules/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    load();
   }
 
   if (!canManage) return null;
 
+  const columns: Column<PreventiveSchedule>[] = [
+    { id: "task", header: "Task", sortValue: (s) => s.description, cell: (s) => s.description },
+    { id: "machine", header: "Machine", sortValue: (s) => s.machineName, cell: (s) => s.machineName },
+    { id: "trigger", header: "Trigger", sortValue: (s) => TRIGGER_LABEL[s.triggerType], cell: (s) => TRIGGER_LABEL[s.triggerType] },
+    {
+      id: "every",
+      header: "Every",
+      align: "right",
+      sortValue: (s) => s.intervalValue,
+      cell: (s) => `${s.intervalValue.toLocaleString()} ${TRIGGER_UNIT[s.triggerType]}`,
+    },
+    { id: "last", header: "Last triggered", sortValue: (s) => s.lastTriggeredAt, cell: (s) => (s.lastTriggeredAt ? formatDateTime(s.lastTriggeredAt) : "Never") },
+  ];
+
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Preventive maintenance schedules</h2>
-
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Machine<br />
-          <select required value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
-            <option value="" disabled>select…</option>
-            {machines.map((m) => (
-              <option key={m.id} value={m.id}>{m.name}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Trigger<br />
-          <select
-            value={form.triggerType}
-            onChange={(e) => setForm((f) => ({ ...f, triggerType: e.target.value as "calendar" | "usage_hours" | "part_count" }))}
-            style={inputStyle}
-          >
-            <option value="calendar">Calendar (days)</option>
-            <option value="usage_hours">Usage (running hours)</option>
-            <option value="part_count">Parts produced</option>
-          </select>
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Every<br />
-          <input required type="number" min="1" value={form.intervalValue} onChange={(e) => setForm((f) => ({ ...f, intervalValue: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
-          <span style={{ fontSize: 11, color: "#898781", marginLeft: 4 }}>{TRIGGER_UNIT[form.triggerType]}</span>
-        </label>
-        <label style={{ fontSize: 12, flex: "1 1 200px" }}>
-          Task<br />
-          <input required value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} placeholder="Change oil" style={{ ...inputStyle, width: "100%" }} />
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Adding…" : "Add schedule"}
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Preventive schedules</h2>
+        <span className="ui-panel-count num">{rows.length}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setAdding(true)} disabled={machines.length === 0}>
+          New schedule
         </button>
-      </form>
-
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {schedules.filter((s) => s.isActive).length === 0 && <p style={{ color: "#898781" }}>No active schedules.</p>}
-
-      {schedules.filter((s) => s.isActive).map((s) => (
-        <div key={s.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center" }}>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Machine</div><div style={{ fontWeight: 600 }}>{s.machineName}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Task</div><div>{s.description}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Every</div><div>{s.intervalValue} {TRIGGER_UNIT[s.triggerType]}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Last done</div><div>{s.lastTriggeredAt ? new Date(s.lastTriggeredAt).toLocaleString() : "never"}</div></div>
-          <button style={{ ...secondaryButtonStyle, marginLeft: "auto", color: "#d03b3b", borderColor: "#d03b3b" }} onClick={() => remove(s.id)}>
-            Remove
+      </div>
+      <div className="ui-toolbar" role="search">
+        <input className="ui-input ui-search" type="search" placeholder="Search task or machine…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Search schedules" />
+      </div>
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      <DataTable
+        ariaLabel="Preventive schedules"
+        rows={rows}
+        columns={columns}
+        getRowId={(s) => s.id}
+        initialSort={{ columnId: "machine", dir: "asc" }}
+        rowActions={(s) => (
+          <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => void remove(s)}>
+            Stop
           </button>
-        </div>
-      ))}
+        )}
+        emptyText="No preventive schedules. Add one to open maintenance work orders automatically by time, running hours or part count."
+      />
+      {adding && (
+        <NewScheduleDrawer
+          machines={machines}
+          onClose={() => setAdding(false)}
+          onCreated={() => {
+            setAdding(false);
+            load();
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+function NewScheduleDrawer({ machines, onClose, onCreated }: { machines: Machine[]; onClose: () => void; onCreated: () => void }) {
+  const [form, setForm] = useState({ machineId: machines[0]?.id ?? "", triggerType: "calendar" as TriggerType, intervalValue: "", description: "" });
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const valid = form.machineId && form.description.trim() !== "" && Number(form.intervalValue) > 0;
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    if (!valid) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/api/preventive-schedules`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...form, intervalValue: Number(form.intervalValue), description: form.description.trim() }),
+      });
+      await readJsonOrThrow<unknown>(res);
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Drawer
+      title="New preventive schedule"
+      onRequestClose={onClose}
+      footer={
+        <>
+          <span style={{ flex: 1 }} />
+          <button type="button" className="ui-btn" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" form="pm-form" className="ui-btn ui-btn-primary" disabled={saving || !valid}>
+            {saving ? "Saving…" : "Create schedule"}
+          </button>
+        </>
+      }
+    >
+      <form id="pm-form" onSubmit={submit}>
+        <section className="ui-section">
+          {error && <p className="ui-message ui-message-error">{error}</p>}
+          <div style={{ display: "grid", gap: 12 }}>
+            <Field label="Task" hint="Becomes the title of each work order it opens.">
+              <input className="ui-input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Change hydraulic oil" />
+            </Field>
+            <div className="ui-grid-2">
+              <Field label="Machine">
+                <select className="ui-select" value={form.machineId} onChange={(e) => setForm({ ...form, machineId: e.target.value })}>
+                  {machines.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label="Trigger">
+                <select className="ui-select" value={form.triggerType} onChange={(e) => setForm({ ...form, triggerType: e.target.value as TriggerType })}>
+                  <option value="calendar">Calendar time</option>
+                  <option value="usage_hours">Running hours</option>
+                  <option value="part_count">Parts produced</option>
+                </select>
+              </Field>
+              <Field label={`Every (${TRIGGER_UNIT[form.triggerType]})`}>
+                <input className="ui-input num" inputMode="numeric" value={form.intervalValue} onChange={(e) => setForm({ ...form, intervalValue: e.target.value })} />
+              </Field>
+            </div>
+          </div>
+        </section>
+      </form>
+    </Drawer>
   );
 }

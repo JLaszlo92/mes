@@ -539,6 +539,65 @@ is in `ops/backup/README.md`.
   since yesterday) silently vanished from the list. Now: all open alerts
   plus the last 24 h of resolved ones. `AlertsPanel`'s "Create ticket"
   now reports success/failure and doesn't create duplicates.
+- Server-side copies to weekly/ / monthly/ use --copy-props none: by default aws s3 cp copies tags too, which needs s3:GetObjectTagging — deliberately not granted to the node-dc IAM user. Found on the first monthly run (Oct 1).
+
+## Work orders, maintenance and tables — Oct 1
+
+- **Work orders as a table** (`WorkOrdersPanel.tsx`, `WorkOrderDrawer.tsx`):
+  search, status (default "Open" = planned/released/in progress), machine
+  (incl. "Not scheduled"), "Late only"; columns for machine, planned
+  start/end and working time; bulk **Release** / **Cancel** (only planned →
+  released, planned/released → cancelled; others are skipped and reported);
+  CSV export; Copy. **The separate Scheduling panel is gone**: scheduling
+  happens in the order's drawer through the same atomic
+  `PUT/DELETE /api/work-orders/:id/schedule` the Gantt uses (machine, start,
+  and either "working time from cycle time × quantity" — falling back to the
+  machine's ideal cycle time — or a fixed end). Details and schedule are two
+  separate actions on purpose: one button for both would be two
+  transactions. `SchedulePanel.tsx` used the legacy per-segment endpoints
+  that bypass the scheduling rules; it was deleted.
+- **Work order API** (`work-order-routes.ts`, `work-order-input.ts`,
+  unit-tested): `GET /api/work-orders` now includes `schedule` (machine of
+  the first segment, min start, max end, working seconds, segment count).
+  `PATCH` (and `PUT`, which the terminal calls) validates every field,
+  clears nullable ones with `null`, runs in one transaction; **operators may
+  only change `status`** (403 otherwise — previously an operator could edit
+  any field). `POST /api/work-orders/bulk` (`release` | `cancel`).
+  Completing via PATCH still generates the lot.
+- **Watch out:** `computeWorkOrderProgress` finds the production start in
+  `audit_log` (`work_order_updated` with `details.status = 'in_progress'`).
+  The new audit details therefore keep the patch fields at the top level
+  and put the diff under `changes`. A real `started_at` column would remove
+  this coupling — worth doing before anything else touches that audit row.
+- **DATE columns were shifted by a day in the API**: `pg` parsed `DATE` as
+  local midnight, so `due_date = 2026-10-05` came out as
+  `2026-10-04T22:00:00.000Z`. `db.ts` now returns DATE as a plain
+  `YYYY-MM-DD` string (also fixes `material_lots.received_at`).
+- **Maintenance planning prep** (`sql/037_maintenance_planning.sql`):
+  `planned_start` / `planned_end` (both or neither, end > start, ≤ 14 days)
+  and `priority` (low/normal/high/urgent). One window, not split around
+  shifts — maintenance is often planned for nights/weekends. Planning on a
+  deactivated machine → 409. Index `(machine_id, planned_start)` for the
+  coming Gantt query.
+- **Maintenance API** (`maintenance-routes.ts`, `maintenance-input.ts`,
+  unit-tested): list includes planned window, priority, assignee id, labor
+  hours and parts count. `PATCH`/`PUT` validated, one transaction, diff in
+  the audit; assigning someone to an `open` job moves it to `assigned`;
+  `closed_at` follows the status (reopening clears it — before, a reopened
+  job kept its old close time); a closed job can't change machine.
+  **Parts and labor logging are audited now** (`maintenance_part_logged`,
+  `maintenance_labor_logged`) — the last known audit gap from PRD 8.8.
+  `GET /api/users/assignable` (maintenance/supervisor/manager/admin).
+- **Maintenance UI**: `MaintenanceWorkOrdersPanel` (table: priority —
+  only high/urgent are coloured, status, assignee, planned window, labor;
+  filters for status, machine, planned/not planned) with
+  `MaintenanceDrawer` (job, responsibility, planned window, work log for
+  hours and parts). `PreventiveSchedulesPanel` is a table with a "New
+  schedule" drawer.
+- **Next for the Gantt**: draw `maintenance_work_orders` with a planned
+  window as a second bar type on the machine row (read-only first, then
+  drag/resize via `PATCH plannedStart/plannedEnd`), and decide the overlap
+  rule with production segments (warn vs. block).
 
 ## Plant hierarchy and machine registry UI — Sep 30 (evening)
 
@@ -670,6 +729,11 @@ is in `ops/backup/README.md`.
   `ops/maintenance/` (dry run by default; not run yet).
 - Next security items per `docs/SECURITY_REVIEW.md`: TLS (Mosquitto, API, Postgres) with CORS pinning and
   `trustProxy`.
+- The legacy per-segment endpoints (`/api/work-order-assignments` POST/PUT/
+  DELETE) have no UI caller left (SchedulePanel removed) — retire them
+  unless an integration needs them.
+- Work order `started_at` lives only in the audit log (see "Work orders,
+  maintenance and tables").
 - Several config mutations still write **no audit event**: shift pattern
   / shift / calendar create-update-delete and `PUT
   /api/machine-registry/:id/scheduling`. PRD 8.8 expects configuration

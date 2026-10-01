@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
 import { pool } from "./db.js";
+import { BULK_ELIGIBLE, type WorkOrderBulk, type WorkOrderPatch } from "./work-order-input.js";
 
 export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
 export type CompletionMode = "manual" | "auto";
@@ -17,6 +19,18 @@ export interface WorkOrder {
   countOverproduction: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Az ütemezés összefoglalója (work_order_assignments), vagy null, ha nincs ütemezve. */
+  schedule: WorkOrderScheduleSummary | null;
+}
+
+export interface WorkOrderScheduleSummary {
+  machineId: string;
+  machineName: string;
+  plannedStart: string;
+  plannedEnd: string;
+  /** A szegmensek összhossza — munkaidő, a műszakon kívüli rések nélkül. */
+  plannedSeconds: number;
+  segments: number;
 }
 
 type WorkOrderRow = {
@@ -32,6 +46,12 @@ type WorkOrderRow = {
   count_overproduction: boolean;
   created_at: string;
   updated_at: string;
+  sched_machine_id?: string | null;
+  sched_machine_name?: string | null;
+  sched_start?: string | null;
+  sched_end?: string | null;
+  sched_seconds?: string | null;
+  sched_segments?: string | null;
 };
 
 function toWorkOrder(row: WorkOrderRow): WorkOrder {
@@ -48,16 +68,47 @@ function toWorkOrder(row: WorkOrderRow): WorkOrder {
     countOverproduction: row.count_overproduction,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    schedule:
+      row.sched_machine_id && row.sched_start && row.sched_end
+        ? {
+            machineId: row.sched_machine_id,
+            machineName: row.sched_machine_name ?? row.sched_machine_id,
+            plannedStart: row.sched_start,
+            plannedEnd: row.sched_end,
+            plannedSeconds: Number(row.sched_seconds ?? 0),
+            segments: Number(row.sched_segments ?? 0),
+          }
+        : null,
   };
 }
 
+// Egy rendelés ütemezése a work_order_assignments szegmenseiből: a gép az
+// első szegmensé (ugyanaz a szabály, mint a computeWorkOrderProgress-ben).
+const SELECT_WITH_SCHEDULE = `
+  SELECT wo.*,
+         s.machine_id AS sched_machine_id, s.machine_name AS sched_machine_name,
+         s.planned_start AS sched_start, s.planned_end AS sched_end,
+         s.planned_seconds AS sched_seconds, s.segments AS sched_segments
+  FROM work_orders wo
+  LEFT JOIN LATERAL (
+    SELECT (array_agg(woa.machine_id ORDER BY woa.planned_start))[1] AS machine_id,
+           (array_agg(m.name ORDER BY woa.planned_start))[1] AS machine_name,
+           min(woa.planned_start) AS planned_start,
+           max(woa.planned_end) AS planned_end,
+           sum(EXTRACT(EPOCH FROM woa.planned_end - woa.planned_start)) AS planned_seconds,
+           count(*) AS segments
+    FROM work_order_assignments woa
+    JOIN machines m ON m.id = woa.machine_id
+    WHERE woa.work_order_id = wo.id
+  ) s ON s.segments > 0`;
+
 export async function listWorkOrders(): Promise<WorkOrder[]> {
-  const result = await pool.query<WorkOrderRow>(`SELECT * FROM work_orders ORDER BY created_at DESC`);
+  const result = await pool.query<WorkOrderRow>(`${SELECT_WITH_SCHEDULE} ORDER BY wo.created_at DESC`);
   return result.rows.map(toWorkOrder);
 }
 
-export async function getWorkOrder(id: string): Promise<WorkOrder | undefined> {
-  const result = await pool.query<WorkOrderRow>(`SELECT * FROM work_orders WHERE id = $1`, [id]);
+export async function getWorkOrder(id: string, db: Pick<PoolClient, "query"> = pool): Promise<WorkOrder | undefined> {
+  const result = await db.query<WorkOrderRow>(`${SELECT_WITH_SCHEDULE} WHERE wo.id = $1`, [id]);
   return result.rows[0] ? toWorkOrder(result.rows[0]) : undefined;
 }
 
@@ -65,20 +116,21 @@ export interface CreateWorkOrderInput {
   orderNumber: string;
   partName: string;
   quantity: number;
-  expectedCycleTimeSeconds?: number;
-  dueDate?: string;
-  notes?: string;
+  expectedCycleTimeSeconds?: number | null;
+  dueDate?: string | null;
+  notes?: string | null;
+  status?: WorkOrderStatus;
   completionMode?: CompletionMode;
   countOverproduction?: boolean;
 }
 
 export async function createWorkOrder(input: CreateWorkOrderInput): Promise<WorkOrder> {
-  const result = await pool.query<WorkOrderRow>(
-    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes, completion_mode, count_overproduction)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'manual'), COALESCE($9, true))
-     RETURNING *`,
+  const id = randomUUID();
+  await pool.query(
+    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes, completion_mode, count_overproduction, status)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'manual'), COALESCE($9, true), COALESCE($10, 'planned'))`,
     [
-      randomUUID(),
+      id,
       input.orderNumber,
       input.partName,
       input.quantity,
@@ -87,11 +139,12 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Work
       input.notes ?? null,
       input.completionMode ?? null,
       input.countOverproduction ?? null,
+      input.status ?? null,
     ],
   );
-  const row = result.rows[0];
-  if (!row) throw new Error("INSERT ... RETURNING unexpectedly returned no row");
-  return toWorkOrder(row);
+  const created = await getWorkOrder(id);
+  if (!created) throw new Error("INSERT succeeded but the work order could not be read back");
+  return created;
 }
 
 export interface UpdateWorkOrderInput {
@@ -132,6 +185,90 @@ export async function updateWorkOrder(id: string, input: UpdateWorkOrderInput): 
     ],
   );
   return result.rows[0] ? toWorkOrder(result.rows[0]) : undefined;
+}
+
+const COLUMN_BY_FIELD: Record<keyof WorkOrderPatch, string> = {
+  partName: "part_name",
+  quantity: "quantity",
+  expectedCycleTimeSeconds: "expected_cycle_time_seconds",
+  dueDate: "due_date",
+  status: "status",
+  notes: "notes",
+  completionMode: "completion_mode",
+  countOverproduction: "count_overproduction",
+};
+
+export interface WorkOrderChange {
+  previous: WorkOrder;
+  current: WorkOrder;
+  changes: Record<string, { from: unknown; to: unknown }>;
+}
+
+async function patchInTransaction(client: PoolClient, id: string, patch: WorkOrderPatch): Promise<WorkOrderChange | undefined> {
+  const locked = await client.query(`SELECT 1 FROM work_orders WHERE id = $1 FOR UPDATE`, [id]);
+  if (locked.rowCount === 0) return undefined;
+  const previous = (await getWorkOrder(id, client))!;
+  const sets: string[] = [];
+  const values: unknown[] = [id];
+  for (const [field, value] of Object.entries(patch) as [keyof WorkOrderPatch, unknown][]) {
+    values.push(value);
+    sets.push(`${COLUMN_BY_FIELD[field]} = $${values.length}`);
+  }
+  if (sets.length > 0) await client.query(`UPDATE work_orders SET ${sets.join(", ")}, updated_at = now() WHERE id = $1`, values);
+  const current = (await getWorkOrder(id, client))!;
+  const changes: WorkOrderChange["changes"] = {};
+  for (const field of Object.keys(COLUMN_BY_FIELD) as (keyof WorkOrderPatch)[]) {
+    if (previous[field] !== current[field]) changes[field] = { from: previous[field], to: current[field] };
+  }
+  return { previous, current, changes };
+}
+
+async function inTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Részleges módosítás egy tranzakcióban (sor zárolva); null törli a nullázható mezőket. */
+export function patchWorkOrder(id: string, patch: WorkOrderPatch): Promise<WorkOrderChange | undefined> {
+  return inTransaction((client) => patchInTransaction(client, id, patch));
+}
+
+/**
+ * Tömeges kiadás / törlés. Csak a jogosult státuszú rendelések változnak
+ * (BULK_ELIGIBLE); a többit kihagyja és visszaadja, hogy a felület meg
+ * tudja mondani, miért nem változtak. Egy tranzakció.
+ */
+export function bulkWorkOrderStatus(bulk: WorkOrderBulk): Promise<{ changed: WorkOrderChange[]; skipped: { id: string; status: string }[]; unknown: string[] }> {
+  const rule = BULK_ELIGIBLE[bulk.action];
+  return inTransaction(async (client) => {
+    const rows = await client.query<{ id: string; status: string }>(
+      `SELECT id, status FROM work_orders WHERE id = ANY($1::text[]) ORDER BY id FOR UPDATE`,
+      [bulk.ids],
+    );
+    const found = new Map(rows.rows.map((r) => [r.id, r.status]));
+    const unknown = bulk.ids.filter((id) => !found.has(id));
+    const changed: WorkOrderChange[] = [];
+    const skipped: { id: string; status: string }[] = [];
+    for (const r of rows.rows) {
+      if (!(rule.from as string[]).includes(r.status)) {
+        skipped.push({ id: r.id, status: r.status });
+        continue;
+      }
+      const change = await patchInTransaction(client, r.id, { status: rule.to });
+      if (change) changed.push(change);
+    }
+    return { changed, skipped, unknown };
+  });
 }
 
 export function isUniqueViolation(err: unknown): boolean {

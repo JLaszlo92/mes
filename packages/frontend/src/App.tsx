@@ -8,7 +8,6 @@ import { apiFetch, API_BASE, WS_URL } from "./api.js";
 import LoginForm from "./LoginForm.js";
 import AuditLogPanel from "./AuditLogPanel";
 import WorkOrdersPanel from "./WorkOrdersPanel";
-import SchedulePanel from "./SchedulePanel";
 import TerminalUisPanel from "./TerminalUisPanel";
 import MfaSetup from "./MfaSetup.js";
 import AlertsPanel from "./AlertsPanel.js";
@@ -216,9 +215,6 @@ export default function App() {
         <div>
           <CollapsibleSection title="Work orders" defaultOpen>
             <WorkOrdersPanel />
-          </CollapsibleSection>
-          <CollapsibleSection title="Scheduling">
-            <SchedulePanel />
           </CollapsibleSection>
           <CollapsibleSection title="Gantt schedule" defaultOpen>
             <GanttSchedulePanel />

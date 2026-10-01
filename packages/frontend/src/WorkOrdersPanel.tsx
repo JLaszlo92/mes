@@ -1,247 +1,319 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { downloadCsv } from "./ui/csv.js";
+import { formatDate, formatDateTime, formatDuration } from "./ui/format.js";
+import { readJsonOrThrow, useMasterDataVersion, type Machine } from "./master-data.js";
+import WorkOrderDrawer, { isLate, STATUS_LABEL, type WorkOrder, type WorkOrderStatus, type WorkOrderTarget } from "./WorkOrderDrawer.js";
 
-interface WorkOrder {
-  id: string;
-  orderNumber: string;
-  partName: string;
-  quantity: number;
-  expectedCycleTimeSeconds: number | null;
-  dueDate: string | null;
-  status: string;
-  notes: string | null;
-  completionMode: "manual" | "auto";
-  countOverproduction: boolean;
-}
+type StatusFilter = "open" | "all" | WorkOrderStatus;
+const OPEN: WorkOrderStatus[] = ["planned", "released", "in_progress"];
 
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
-const STATUS_COLOR: Record<string, string> = {
-  planned: "#898781",
-  released: "#eda100",
-  in_progress: "#0ca30c",
-  completed: "#185fa5",
-  cancelled: "#d03b3b",
-};
-
+/**
+ * Gyártási rendelések: kereshető, szűrhető táblázat ütemezési oszlopokkal
+ * (gép, tervezett kezdés/befejezés), tömeges kiadás/törlés, CSV export.
+ * Az ütemezés a rendelés oldalpanelén történik (a régi külön "Scheduling"
+ * panel helyett) — ugyanazzal a végponttal és szabályokkal, mint a Gantt.
+ */
 export default function WorkOrdersPanel() {
-  const { auth, logout } = useAuth();
+  const { auth } = useAuth();
+  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const masterDataVersion = useMasterDataVersion();
+
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
+  const [machines, setMachines] = useState<Machine[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    orderNumber: "",
-    partName: "",
-    quantity: "",
-    expectedCycleTimeSeconds: "",
-    dueDate: "",
-    completionMode: "manual" as "manual" | "auto",
-    countOverproduction: true,
-  });
-  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  function load() {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("open");
+  const [machineFilter, setMachineFilter] = useState("");
+  const [lateOnly, setLateOnly] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [editor, setEditor] = useState<WorkOrderTarget | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  function loadWorkOrders() {
+    return apiFetch(`${API_BASE}/api/work-orders`)
+      .then((r) => readJsonOrThrow<WorkOrder[]>(r))
+      .then(setWorkOrders);
+  }
+
+  useEffect(() => {
     setLoading(true);
-    apiFetch(`${API_BASE}/api/work-orders`)
-      .then((res) => res.json())
-      .then((data: WorkOrder[]) => {
-        setWorkOrders(data);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)))
+    Promise.all([loadWorkOrders(), apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => readJsonOrThrow<Machine[]>(r)).then(setMachines)])
+      .then(() => setError(null))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
+  }, [masterDataVersion]);
+
+  const filtered = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return workOrders.filter((wo) => {
+      if (status === "open" && !OPEN.includes(wo.status)) return false;
+      if (status !== "open" && status !== "all" && wo.status !== status) return false;
+      if (machineFilter === "none" && wo.schedule) return false;
+      if (machineFilter && machineFilter !== "none" && wo.schedule?.machineId !== machineFilter) return false;
+      if (lateOnly && !isLate(wo)) return false;
+      if (words.length === 0) return true;
+      const haystack = [wo.orderNumber, wo.partName, wo.notes, wo.schedule?.machineName].filter(Boolean).join(" ").toLowerCase();
+      return words.every((w) => haystack.includes(w));
+    });
+  }, [workOrders, query, status, machineFilter, lateOnly]);
+
+  const visibleSelected = useMemo(() => {
+    const visible = new Set(filtered.map((w) => w.id));
+    return new Set([...selected].filter((id) => visible.has(id)));
+  }, [filtered, selected]);
+
+  const lateCount = useMemo(() => workOrders.filter(isLate).length, [workOrders]);
+  const filtersActive = query !== "" || status !== "open" || machineFilter !== "" || lateOnly;
+
+  function clearFilters() {
+    setQuery("");
+    setStatus("open");
+    setMachineFilter("");
+    setLateOnly(false);
   }
 
-  useEffect(load, []);
+  function replace(updated: WorkOrder[]) {
+    const byId = new Map(updated.map((w) => [w.id, w]));
+    setWorkOrders((prev) => {
+      const next = prev.map((w) => byId.get(w.id) ?? w);
+      for (const w of updated) if (!prev.some((p) => p.id === w.id)) next.unshift(w);
+      return next;
+    });
+  }
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
+  async function runBulk(action: "release" | "cancel") {
+    const ids = [...visibleSelected];
+    if (ids.length === 0) return;
+    if (action === "cancel" && !window.confirm(`Cancel ${ids.length} work order(s)? Only planned and released orders are cancelled.`)) return;
+    setBulkBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      const res = await apiFetch(`${API_BASE}/api/work-orders`, {
+      const res = await apiFetch(`${API_BASE}/api/work-orders/bulk`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          orderNumber: form.orderNumber.trim(),
-          partName: form.partName.trim(),
-          quantity: Number(form.quantity),
-          expectedCycleTimeSeconds: form.expectedCycleTimeSeconds ? Number(form.expectedCycleTimeSeconds) : undefined,
-          dueDate: form.dueDate || undefined,
-          completionMode: form.completionMode,
-          countOverproduction: form.countOverproduction,
-        }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ids }),
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({
-        orderNumber: "",
-        partName: "",
-        quantity: "",
-        expectedCycleTimeSeconds: "",
-        dueDate: "",
-        completionMode: "manual",
-        countOverproduction: true,
-      });
-      load();
+      const result = await readJsonOrThrow<{ updated: number; skipped: { id: string; status: string }[]; workOrders: WorkOrder[] }>(res);
+      replace(result.workOrders);
+      setSelected(new Set());
+      const verb = action === "release" ? "Released" : "Cancelled";
+      const skipped = result.skipped.length;
+      const rule = action === "release" ? "only planned orders can be released" : "only planned and released orders can be cancelled";
+      setNotice(`${verb} ${result.updated} work order${result.updated === 1 ? "" : "s"}.${skipped > 0 ? ` ${skipped} skipped: ${rule}.` : ""}`);
     } catch (err) {
-      setError(String(err));
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setSubmitting(false);
+      setBulkBusy(false);
     }
   }
 
-  async function changeStatus(id: string, status: string) {
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({ status }),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      load();
-    } catch (err) {
-      setError(String(err));
-    }
+  function exportCsv(rows: WorkOrder[]) {
+    downloadCsv(
+      `work-orders-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["Order", "Part", "Quantity", "Cycle time (s)", "Due date", "Status", "Machine", "Planned start", "Planned end", "Planned working time (h)", "Completion", "Notes"],
+      rows.map((w) => [
+        w.orderNumber,
+        w.partName,
+        w.quantity,
+        w.expectedCycleTimeSeconds,
+        w.dueDate,
+        STATUS_LABEL[w.status],
+        w.schedule?.machineName,
+        w.schedule?.plannedStart,
+        w.schedule?.plannedEnd,
+        w.schedule ? (w.schedule.plannedSeconds / 3600).toFixed(2) : "",
+        w.completionMode,
+        w.notes,
+      ]),
+    );
   }
 
-  async function updateSettings(id: string, changes: { completionMode?: "manual" | "auto"; countOverproduction?: boolean }) {
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(id)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify(changes),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      load();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+  const columns: Column<WorkOrder>[] = [
+    {
+      id: "order",
+      header: "Order",
+      sortValue: (w) => w.orderNumber,
+      cell: (w) => (
+        <span>
+          {w.orderNumber}
+          <span className="ui-sub">{w.partName}</span>
+        </span>
+      ),
+    },
+    { id: "qty", header: "Quantity", align: "right", sortValue: (w) => w.quantity, cell: (w) => w.quantity.toLocaleString() },
+    {
+      id: "machine",
+      header: "Machine",
+      sortValue: (w) => w.schedule?.machineName ?? null,
+      cell: (w) => w.schedule?.machineName ?? <span className="ui-sub">Not scheduled</span>,
+    },
+    { id: "start", header: "Planned start", sortValue: (w) => w.schedule?.plannedStart ?? null, cell: (w) => formatDateTime(w.schedule?.plannedStart) },
+    { id: "end", header: "Planned end", sortValue: (w) => w.schedule?.plannedEnd ?? null, cell: (w) => formatDateTime(w.schedule?.plannedEnd) },
+    {
+      id: "work",
+      header: "Working time",
+      align: "right",
+      sortValue: (w) => w.schedule?.plannedSeconds ?? null,
+      cell: (w) => (w.schedule ? formatDuration(w.schedule.plannedSeconds) : "—"),
+    },
+    {
+      id: "due",
+      header: "Due",
+      sortValue: (w) => w.dueDate,
+      cell: (w) =>
+        isLate(w) ? <span className="ui-pill ui-pill-warning">{formatDate(w.dueDate)}</span> : formatDate(w.dueDate),
+    },
+    {
+      id: "status",
+      header: "Status",
+      sortValue: (w) => ["in_progress", "released", "planned", "completed", "cancelled"].indexOf(w.status),
+      cell: (w) => (w.status === "in_progress" ? <span className="ui-pill ui-pill-accent">{STATUS_LABEL[w.status]}</span> : STATUS_LABEL[w.status]),
+    },
+  ];
 
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Work orders</h2>
-
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Order #<br />
-          <input required value={form.orderNumber} onChange={(e) => setForm((f) => ({ ...f, orderNumber: e.target.value }))} placeholder="WO-2026-0341" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Part<br />
-          <input required value={form.partName} onChange={(e) => setForm((f) => ({ ...f, partName: e.target.value }))} placeholder="Bracket A-12" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Quantity<br />
-          <input required type="number" min="1" value={form.quantity} onChange={(e) => setForm((f) => ({ ...f, quantity: e.target.value }))} style={{ ...inputStyle, width: 90 }} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Cycle time (s)<br />
-          <input type="number" step="0.1" value={form.expectedCycleTimeSeconds} onChange={(e) => setForm((f) => ({ ...f, expectedCycleTimeSeconds: e.target.value }))} style={{ ...inputStyle, width: 100 }} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Due date<br />
-          <input type="date" value={form.dueDate} onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))} style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Completion<br />
-          <select
-            value={form.completionMode}
-            onChange={(e) => setForm((f) => ({ ...f, completionMode: e.target.value as "manual" | "auto" }))}
-            style={inputStyle}
-          >
-            <option value="manual">Manual (operator confirms)</option>
-            <option value="auto">Auto (closes at target)</option>
-          </select>
-        </label>
-        <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, height: 30 }}>
-          <input
-            type="checkbox"
-            checked={form.countOverproduction}
-            onChange={(e) => setForm((f) => ({ ...f, countOverproduction: e.target.checked }))}
-          />
-          Count overproduction
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Adding…" : "Add order"}
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Work orders</h2>
+        <span className="ui-panel-count num">{filtered.length === workOrders.length ? workOrders.length : `${filtered.length} of ${workOrders.length}`}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn" onClick={() => exportCsv(filtered)} disabled={filtered.length === 0}>
+          Export CSV
         </button>
-      </form>
+        {canEdit && (
+          <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })}>
+            New work order
+          </button>
+        )}
+      </div>
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {loading && <p style={{ color: "#898781" }}>Loading…</p>}
-      {!loading && workOrders.length === 0 && <p style={{ color: "#898781" }}>No work orders yet.</p>}
+      <div className="ui-toolbar" role="search">
+        <input
+          className="ui-input ui-search"
+          type="search"
+          placeholder="Search order, part, machine, notes…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search work orders"
+        />
+        <select className="ui-select" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} aria-label="Status">
+          <option value="open">Open</option>
+          {(Object.keys(STATUS_LABEL) as WorkOrderStatus[]).map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABEL[s]}
+            </option>
+          ))}
+          <option value="all">All statuses</option>
+        </select>
+        <select className="ui-select" value={machineFilter} onChange={(e) => setMachineFilter(e.target.value)} aria-label="Machine">
+          <option value="">All machines</option>
+          <option value="none">Not scheduled</option>
+          {machines.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+        <label className="ui-check">
+          <input type="checkbox" checked={lateOnly} onChange={(e) => setLateOnly(e.target.checked)} />
+          Late only{lateCount > 0 ? ` (${lateCount})` : ""}
+        </label>
+        {filtersActive && (
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
 
-      {workOrders.map((wo) => (
-        <div key={wo.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center", flexWrap: "wrap" }}>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Order #</div><div style={{ fontWeight: 600 }}>{wo.orderNumber}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Part</div><div>{wo.partName}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Qty</div><div style={{ fontVariantNumeric: "tabular-nums" }}>{wo.quantity}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Cycle</div><div>{wo.expectedCycleTimeSeconds ?? "—"}s</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Due</div><div>{wo.dueDate ?? "—"}</div></div>
-          <div>
-            <div style={{ fontSize: 12, color: "#898781" }}>Status</div>
-            <select value={wo.status} onChange={(e) => changeStatus(wo.id, e.target.value)} style={{ ...inputStyle, color: STATUS_COLOR[wo.status], fontWeight: 600 }}>
-              <option value="planned">planned</option>
-              <option value="released">released</option>
-              <option value="in_progress">in_progress</option>
-              <option value="completed">completed</option>
-              <option value="cancelled">cancelled</option>
-            </select>
-          </div>
-          <div>
-            <div style={{ fontSize: 12, color: "#898781" }}>Completion</div>
-            <select
-              value={wo.completionMode}
-              onChange={(e) => updateSettings(wo.id, { completionMode: e.target.value as "manual" | "auto" })}
-              style={inputStyle}
-            >
-              <option value="manual">Manual</option>
-              <option value="auto">Auto</option>
-            </select>
-          </div>
-          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-            <input
-              type="checkbox"
-              checked={wo.countOverproduction}
-              onChange={(e) => updateSettings(wo.id, { countOverproduction: e.target.checked })}
-            />
-            Overproduction
-          </label>
+      {canEdit && visibleSelected.size > 0 && (
+        <div className="ui-bulkbar" aria-live="polite">
+          <span className="ui-bulkbar-count num">{visibleSelected.size} selected</span>
+          <button type="button" className="ui-btn" disabled={bulkBusy} onClick={() => void runBulk("release")}>
+            Release
+          </button>
+          <button type="button" className="ui-btn ui-btn-danger" disabled={bulkBusy} onClick={() => void runBulk("cancel")}>
+            Cancel orders
+          </button>
+          <button type="button" className="ui-btn" onClick={() => exportCsv(filtered.filter((w) => visibleSelected.has(w.id)))}>
+            Export selected
+          </button>
+          <span className="ui-toolbar-spacer" />
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={() => setSelected(new Set())}>
+            Clear selection
+          </button>
         </div>
-      ))}
+      )}
+
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
+
+      {loading && workOrders.length === 0 ? (
+        <p className="ui-message ui-message-info">Loading work orders…</p>
+      ) : (
+        <DataTable
+          ariaLabel="Work orders"
+          rows={filtered}
+          columns={columns}
+          getRowId={(w) => w.id}
+          selected={canEdit ? visibleSelected : undefined}
+          onSelectedChange={canEdit ? setSelected : undefined}
+          onRowClick={(w) => setEditor({ mode: "edit", workOrder: w })}
+          isDimmed={(w) => w.status === "completed" || w.status === "cancelled"}
+          initialSort={{ columnId: "start", dir: "asc" }}
+          rowActions={
+            canEdit
+              ? (w) => (
+                  <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => setEditor({ mode: "create", copyOf: w })}>
+                    Copy
+                  </button>
+                )
+              : undefined
+          }
+          emptyText={
+            workOrders.length === 0 ? (
+              canEdit ? "No work orders yet. Create one, then schedule it on a machine." : "No work orders yet."
+            ) : (
+              <>
+                No work orders match these filters.{" "}
+                <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            )
+          }
+        />
+      )}
+
+      {editor && (
+        <WorkOrderDrawer
+          key={editor.mode === "edit" ? editor.workOrder.id : `new-${editor.copyOf?.id ?? ""}`}
+          target={editor}
+          machines={machines}
+          canEdit={canEdit}
+          onClose={() => setEditor(null)}
+          onSaved={(wo, kind) => {
+            replace([wo]);
+            if (kind === "created") {
+              // Rögtön ütemezhető: a drawer szerkesztő módban nyílik újra.
+              setEditor({ mode: "edit", workOrder: wo });
+              setNotice(`${wo.orderNumber} created. You can schedule it now.`);
+            } else if (kind === "scheduled") {
+              setEditor({ mode: "edit", workOrder: wo });
+              setNotice(wo.schedule ? `${wo.orderNumber} scheduled on ${wo.schedule.machineName}.` : `${wo.orderNumber} unscheduled.`);
+            } else {
+              setEditor(null);
+              setNotice(`${wo.orderNumber} saved.`);
+            }
+          }}
+        />
+      )}
     </section>
   );
 }

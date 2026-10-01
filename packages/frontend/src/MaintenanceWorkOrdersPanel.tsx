@@ -1,304 +1,269 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { downloadCsv } from "./ui/csv.js";
+import { formatDateTime } from "./ui/format.js";
+import { readJsonOrThrow, useMasterDataVersion, type Machine } from "./master-data.js";
+import MaintenanceDrawer, {
+  MAINTENANCE_STATUS_LABEL,
+  PRIORITY_LABEL,
+  SOURCE_LABEL,
+  type AssignableUser,
+  type MaintenanceStatus,
+  type MaintenanceTarget,
+  type MaintenanceWorkOrder,
+} from "./MaintenanceDrawer.js";
 
-interface Machine {
-  id: string;
-  name: string;
-}
+type StatusFilter = "open" | "all" | MaintenanceStatus;
+type PlanFilter = "" | "planned" | "unplanned";
 
-interface MaintenanceWorkOrder {
-  id: string;
-  machineId: string;
-  machineName: string;
-  title: string;
-  description: string | null;
-  status: "open" | "assigned" | "in_progress" | "closed";
-  assignedToEmail: string | null;
-  createdByEmail: string | null;
-  sourceType: string | null;
-  createdAt: string;
-  closedAt: string | null;
-}
+const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 } as const;
 
-interface MaintenancePart {
-  id: string;
-  partName: string;
-  quantity: number;
-}
-
-interface MaintenanceLabor {
-  id: string;
-  performedByEmail: string | null;
-  hours: number;
-  notes: string | null;
-}
-
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
-
-const STATUS_COLOR: Record<string, string> = {
-  open: "#898781",
-  assigned: "#eda100",
-  in_progress: "#185fa5",
-  closed: "#0ca30c",
-};
-
+/**
+ * Karbantartási munkarendelések táblázatban, ugyanazzal a mintával, mint a
+ * gépek és a gyártási rendelések: keresés, szűrők, rendezés, CSV export,
+ * részletek oldalpanelben. A tervezett ablak oszlopa a Gantt-integráció
+ * előkészítése.
+ */
 export default function MaintenanceWorkOrdersPanel() {
-  const { auth, logout } = useAuth();
-  const [machines, setMachines] = useState<Machine[]>([]);
+  const { auth } = useAuth();
+  const canEdit = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const canLogParts = canEdit || auth?.role === "supervisor";
+  const masterDataVersion = useMasterDataVersion();
+
   const [orders, setOrders] = useState<MaintenanceWorkOrder[]>([]);
-  const [partsByOrder, setPartsByOrder] = useState<Record<string, MaintenancePart[]>>({});
-  const [laborByOrder, setLaborByOrder] = useState<Record<string, MaintenanceLabor[]>>({});
+  const [machines, setMachines] = useState<Machine[]>([]);
+  const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ machineId: "", title: "", description: "" });
-  const [submitting, setSubmitting] = useState(false);
-  const [partDrafts, setPartDrafts] = useState<Record<string, string>>({});
-  const [laborDrafts, setLaborDrafts] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const canManage = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState<StatusFilter>("open");
+  const [machineFilter, setMachineFilter] = useState("");
+  const [planFilter, setPlanFilter] = useState<PlanFilter>("");
+  const [editor, setEditor] = useState<MaintenanceTarget | null>(null);
 
-  function load() {
-    Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/maintenance-work-orders`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then(
-        (res) => {
-          if (res.status === 401) {
-            logout();
-            throw new Error("session expired — please sign in again");
-          }
-          return res.json();
-        },
-      ),
-    ])
-      .then(([m, mwo]) => {
-        setMachines(m);
-        setOrders(mwo);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)));
-  }
-
-  useEffect(load, []);
-
-  async function loadDetails(orderId: string) {
-    const [parts, labor] = await Promise.all([
-      apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
-        headers: { Authorization: `Bearer ${auth?.token}` },
-      }).then((r) => (r.ok ? r.json() : [])),
-      apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
-        headers: { Authorization: `Bearer ${auth?.token}` },
-      }).then((r) => (r.ok ? r.json() : [])),
-    ]);
-    setPartsByOrder((prev) => ({ ...prev, [orderId]: parts }));
-    setLaborByOrder((prev) => ({ ...prev, [orderId]: labor }));
-  }
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          machineId: form.machineId,
-          title: form.title.trim(),
-          description: form.description.trim() || undefined,
-        }),
+  function loadOrders() {
+    return apiFetch(`${API_BASE}/api/maintenance-work-orders`)
+      .then((r) => readJsonOrThrow<MaintenanceWorkOrder[]>(r))
+      .then((list) => {
+        setOrders(list);
+        // A nyitott drawer a friss adatot mutassa (pl. munkaóra rögzítése után).
+        setEditor((prev) => (prev?.mode === "edit" ? { mode: "edit", order: list.find((o) => o.id === prev.order.id) ?? prev.order } : prev));
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({ machineId: "", title: "", description: "" });
-      load();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
-    }
   }
 
-  async function changeStatus(id: string, status: string) {
-    const res = await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(id)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ status }),
+  useEffect(() => {
+    setLoading(true);
+    const calls = [loadOrders(), apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => readJsonOrThrow<Machine[]>(r)).then(setMachines)];
+    if (canLogParts) calls.push(apiFetch(`${API_BASE}/api/users/assignable`).then((r) => readJsonOrThrow<AssignableUser[]>(r)).then(setUsers));
+    Promise.all(calls)
+      .then(() => setError(null))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [masterDataVersion]);
+
+  const filtered = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return orders.filter((o) => {
+      if (status === "open" && o.status === "closed") return false;
+      if (status !== "open" && status !== "all" && o.status !== status) return false;
+      if (machineFilter && o.machineId !== machineFilter) return false;
+      if (planFilter === "planned" && !o.plannedStart) return false;
+      if (planFilter === "unplanned" && o.plannedStart) return false;
+      if (words.length === 0) return true;
+      const haystack = [o.title, o.description, o.machineName, o.assignedToEmail, o.sourceType ? SOURCE_LABEL[o.sourceType] : null]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return words.every((w) => haystack.includes(w));
     });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    load();
+  }, [orders, query, status, machineFilter, planFilter]);
+
+  const filtersActive = query !== "" || status !== "open" || machineFilter !== "" || planFilter !== "";
+  function clearFilters() {
+    setQuery("");
+    setStatus("open");
+    setMachineFilter("");
+    setPlanFilter("");
   }
 
-  async function addPart(orderId: string) {
-    const partName = (partDrafts[orderId] ?? "").trim();
-    if (!partName) return;
-    await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/parts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ partName, quantity: 1 }),
-    });
-    setPartDrafts((prev) => ({ ...prev, [orderId]: "" }));
-    loadDetails(orderId);
-  }
+  // A gépszűrőben azok a gépek is szerepeljenek, amelyeken már van munka (deaktiváltak is).
+  const machineOptions = useMemo(() => {
+    const byId = new Map(machines.map((m) => [m.id, m.name]));
+    for (const o of orders) if (!byId.has(o.machineId)) byId.set(o.machineId, o.machineName);
+    return [...byId].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [machines, orders]);
 
-  async function addLabor(orderId: string) {
-    const hours = Number(laborDrafts[orderId]);
-    if (!hours || hours <= 0) return;
-    await apiFetch(`${API_BASE}/api/maintenance-work-orders/${encodeURIComponent(orderId)}/labor`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-      body: JSON.stringify({ hours }),
-    });
-    setLaborDrafts((prev) => ({ ...prev, [orderId]: "" }));
-    loadDetails(orderId);
-  }
-
-  const open = orders.filter((o) => o.status !== "closed");
-  const closed = orders.filter((o) => o.status === "closed");
-
-  function renderOrderDetails(o: MaintenanceWorkOrder) {
-    const parts = partsByOrder[o.id];
-    const labor = laborByOrder[o.id];
-    return (
-      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e1e0d9" }}>
-        <div style={{ display: "flex", gap: 24 }}>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#898781", marginBottom: 4 }}>Parts</div>
-            {(parts ?? []).map((p) => (
-              <div key={p.id} style={{ fontSize: 12 }}>{p.quantity}× {p.partName}</div>
-            ))}
-            {canManage && (
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                <input
-                  placeholder="Part name"
-                  value={partDrafts[o.id] ?? ""}
-                  onChange={(e) => setPartDrafts((prev) => ({ ...prev, [o.id]: e.target.value }))}
-                  style={{ ...inputStyle, fontSize: 12, flex: 1 }}
-                />
-                <button style={{ ...secondaryButtonStyle, fontSize: 11, padding: "3px 8px" }} onClick={() => addPart(o.id)}>
-                  Add
-                </button>
-              </div>
-            )}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11, color: "#898781", marginBottom: 4 }}>Labor</div>
-            {(labor ?? []).map((l) => (
-              <div key={l.id} style={{ fontSize: 12 }}>{l.hours}h — {l.performedByEmail ?? "—"}</div>
-            ))}
-            {canManage && (
-              <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-                <input
-                  type="number"
-                  step="0.5"
-                  placeholder="Hours"
-                  value={laborDrafts[o.id] ?? ""}
-                  onChange={(e) => setLaborDrafts((prev) => ({ ...prev, [o.id]: e.target.value }))}
-                  style={{ ...inputStyle, fontSize: 12, width: 70 }}
-                />
-                <button style={{ ...secondaryButtonStyle, fontSize: 11, padding: "3px 8px" }} onClick={() => addLabor(o.id)}>
-                  Log
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+  function exportCsv(rows: MaintenanceWorkOrder[]) {
+    downloadCsv(
+      `maintenance-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["Title", "Machine", "Priority", "Status", "Assigned to", "Planned start", "Planned end", "Labor (h)", "Parts", "Source", "Created", "Closed"],
+      rows.map((o) => [
+        o.title,
+        o.machineName,
+        PRIORITY_LABEL[o.priority],
+        MAINTENANCE_STATUS_LABEL[o.status],
+        o.assignedToEmail,
+        o.plannedStart,
+        o.plannedEnd,
+        o.laborHours,
+        o.partsCount,
+        o.sourceType ? SOURCE_LABEL[o.sourceType] ?? o.sourceType : "",
+        o.createdAt,
+        o.closedAt,
+      ]),
     );
   }
 
-  return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Maintenance work orders</h2>
+  const columns: Column<MaintenanceWorkOrder>[] = [
+    {
+      id: "title",
+      header: "Job",
+      sortValue: (o) => o.title,
+      cell: (o) => (
+        <span>
+          {o.title}
+          <span className="ui-sub">{o.sourceType ? SOURCE_LABEL[o.sourceType] ?? o.sourceType : "Manual"}</span>
+        </span>
+      ),
+    },
+    { id: "machine", header: "Machine", sortValue: (o) => o.machineName, cell: (o) => o.machineName },
+    {
+      id: "priority",
+      header: "Priority",
+      sortValue: (o) => PRIORITY_RANK[o.priority],
+      cell: (o) =>
+        o.priority === "urgent" ? (
+          <span className="ui-pill ui-pill-alarm">Urgent</span>
+        ) : o.priority === "high" ? (
+          <span className="ui-pill ui-pill-warning">High</span>
+        ) : (
+          PRIORITY_LABEL[o.priority]
+        ),
+    },
+    {
+      id: "status",
+      header: "Status",
+      sortValue: (o) => ["in_progress", "assigned", "open", "closed"].indexOf(o.status),
+      cell: (o) => (o.status === "in_progress" ? <span className="ui-pill ui-pill-accent">In progress</span> : MAINTENANCE_STATUS_LABEL[o.status]),
+    },
+    { id: "assignee", header: "Assigned to", sortValue: (o) => o.assignedToEmail, cell: (o) => o.assignedToEmail ?? "—" },
+    { id: "planned", header: "Planned", sortValue: (o) => o.plannedStart, cell: (o) => (o.plannedStart ? `${formatDateTime(o.plannedStart)} – ${formatDateTime(o.plannedEnd)}` : "—") },
+    { id: "labor", header: "Labor", align: "right", sortValue: (o) => o.laborHours, cell: (o) => (o.laborHours ? `${o.laborHours.toLocaleString()} h` : "—") },
+    { id: "created", header: "Created", sortValue: (o) => o.createdAt, cell: (o) => formatDateTime(o.createdAt) },
+  ];
 
-      {canManage && (
-        <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-          <label style={{ fontSize: 12 }}>
-            Machine<br />
-            <select required value={form.machineId} onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
-              <option value="" disabled>select…</option>
-              {machines.map((m) => (
-                <option key={m.id} value={m.id}>{m.name}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ fontSize: 12 }}>
-            Title<br />
-            <input required value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Replace worn belt" style={inputStyle} />
-          </label>
-          <label style={{ fontSize: 12, flex: "1 1 200px" }}>
-            Description<br />
-            <input value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ ...inputStyle, width: "100%" }} />
-          </label>
-          <button type="submit" disabled={submitting} style={buttonStyle}>
-            {submitting ? "Creating…" : "Create"}
+  return (
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Maintenance work orders</h2>
+        <span className="ui-panel-count num">{filtered.length === orders.length ? orders.length : `${filtered.length} of ${orders.length}`}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn" onClick={() => exportCsv(filtered)} disabled={filtered.length === 0}>
+          Export CSV
+        </button>
+        {canEdit && (
+          <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })} disabled={machines.length === 0}>
+            New work order
           </button>
-        </form>
+        )}
+      </div>
+
+      <div className="ui-toolbar" role="search">
+        <input
+          className="ui-input ui-search"
+          type="search"
+          placeholder="Search job, machine, person…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search maintenance work orders"
+        />
+        <select className="ui-select" value={status} onChange={(e) => setStatus(e.target.value as StatusFilter)} aria-label="Status">
+          <option value="open">Not closed</option>
+          {(Object.keys(MAINTENANCE_STATUS_LABEL) as MaintenanceStatus[]).map((s) => (
+            <option key={s} value={s}>
+              {MAINTENANCE_STATUS_LABEL[s]}
+            </option>
+          ))}
+          <option value="all">All statuses</option>
+        </select>
+        <select className="ui-select" value={machineFilter} onChange={(e) => setMachineFilter(e.target.value)} aria-label="Machine">
+          <option value="">All machines</option>
+          {machineOptions.map(([id, name]) => (
+            <option key={id} value={id}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <select className="ui-select" value={planFilter} onChange={(e) => setPlanFilter(e.target.value as PlanFilter)} aria-label="Planning">
+          <option value="">Planned or not</option>
+          <option value="planned">Planned</option>
+          <option value="unplanned">Not planned</option>
+        </select>
+        {filtersActive && (
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
+
+      {loading && orders.length === 0 ? (
+        <p className="ui-message ui-message-info">Loading maintenance work orders…</p>
+      ) : (
+        <DataTable
+          ariaLabel="Maintenance work orders"
+          rows={filtered}
+          columns={columns}
+          getRowId={(o) => o.id}
+          onRowClick={(o) => setEditor({ mode: "edit", order: o })}
+          isDimmed={(o) => o.status === "closed"}
+          initialSort={{ columnId: "priority", dir: "asc" }}
+          emptyText={
+            orders.length === 0 ? (
+              "No maintenance work orders yet. They are also created from alerts, fault reports and preventive schedules."
+            ) : (
+              <>
+                No work orders match these filters.{" "}
+                <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            )
+          }
+        />
       )}
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {open.length === 0 && <p style={{ color: "#898781" }}>No open maintenance work orders.</p>}
-
-      {open.map((o) => (
-        <div key={o.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8 }}>
-          <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{o.machineName} — {o.title}</div>
-              {o.description && <div style={{ fontSize: 13 }}>{o.description}</div>}
-              <div style={{ fontSize: 11, color: "#898781" }}>
-                created by {o.createdByEmail ?? "—"} · {new Date(o.createdAt).toLocaleString()}
-                {o.sourceType && ` · via ${o.sourceType}`}
-              </div>
-            </div>
-            {canManage ? (
-              <select value={o.status} onChange={(e) => changeStatus(o.id, e.target.value)} style={{ ...inputStyle, color: STATUS_COLOR[o.status], fontWeight: 600 }}>
-                <option value="open">open</option>
-                <option value="assigned">assigned</option>
-                <option value="in_progress">in_progress</option>
-                <option value="closed">closed</option>
-              </select>
-            ) : (
-              <span style={{ color: STATUS_COLOR[o.status], fontWeight: 600 }}>{o.status}</span>
-            )}
-          </div>
-          {partsByOrder[o.id] === undefined ? (
-            <button style={{ ...secondaryButtonStyle, marginTop: 8, fontSize: 12 }} onClick={() => loadDetails(o.id)}>
-              Show parts &amp; labor
-            </button>
-          ) : (
-            renderOrderDetails(o)
-          )}
-        </div>
-      ))}
-
-      {closed.length > 0 && (
-        <details style={{ marginTop: 16 }}>
-          <summary style={{ fontSize: 13, color: "#898781", cursor: "pointer" }}>{closed.length} closed</summary>
-          {closed.map((o) => (
-            <div key={o.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, opacity: 0.7 }}>
-              <div style={{ fontWeight: 600 }}>{o.machineName} — {o.title}</div>
-              <div style={{ fontSize: 11, color: "#898781" }}>closed {o.closedAt ? new Date(o.closedAt).toLocaleString() : ""}</div>
-            </div>
-          ))}
-        </details>
+      {editor && (
+        <MaintenanceDrawer
+          key={editor.mode === "edit" ? editor.order.id : "new"}
+          target={editor}
+          machines={machines}
+          users={users}
+          canEdit={canEdit}
+          canLogParts={canLogParts}
+          onClose={() => setEditor(null)}
+          onSaved={(order, kind) => {
+            if (kind === "logged") {
+              void loadOrders();
+              return;
+            }
+            setOrders((prev) => (prev.some((o) => o.id === order.id) ? prev.map((o) => (o.id === order.id ? order : o)) : [order, ...prev]));
+            if (kind === "created") {
+              setEditor({ mode: "edit", order });
+              setNotice(`"${order.title}" created.`);
+            } else {
+              setEditor(null);
+              setNotice(`"${order.title}" saved.`);
+            }
+          }}
+        />
       )}
     </section>
   );
