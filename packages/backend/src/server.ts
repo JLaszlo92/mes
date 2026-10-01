@@ -153,9 +153,10 @@ import maintenanceRoutes from "./maintenance-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true });
+  const app = Fastify({ logger: true, trustProxy: process.env.TRUST_PROXY || false });
 
-  await app.register(cors, { origin: true });
+  const corsOrigins = (process.env.CORS_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+  await app.register(cors, { origin: corsOrigins.length > 0 ? corsOrigins : false });
   await app.register(websocket);
   await app.register(authPlugin);
   registerAuthGuard(app, authModeFromEnv());
