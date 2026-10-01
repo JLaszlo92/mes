@@ -1,6 +1,6 @@
 # Security Self-Review — IEC 62443 SL2 Baseline
 
-**Date:** September 21, 2026 · **Revised:** September 30, 2026 (afternoon)
+**Date:** September 21, 2026 · **Revised:** October 1, 2026 (TLS on every path)
 **Scope:** PRD Section 8 (Cybersecurity & OT Security), assessed against
 the current Phase 1 implementation. This is a self-review, not a formal
 audit — per PRD 8.1, formal third-party certification is deliberately
@@ -19,6 +19,17 @@ extended to scheduling and shift/calendar configuration. Three findings
 were added in this pass: no login rate limiting, session token stored in
 `localStorage`, and a permissive CORS policy.
 
+**What changed in the October 1 revision:** every network path is now
+encrypted — MQTT (TLS listener on 8883, plain 1883 removed), the API,
+dashboard and WebSocket (nginx reverse proxy on 443; the backend itself
+listens on loopback only), the edge node's HTTP calls, and the Postgres
+connection (`hostssl` + `sslmode=verify-full`). Certificates come from an
+internal CA whose root key is kept offline. Fastify `trustProxy` and CORS
+pinning were done in the same pass, and the frontend is a static build
+served by nginx instead of the Vite dev server. **Not changed:** Mosquitto
+still accepts anonymous clients, so TLS gives encryption but no device
+authentication (8.3).
+
 ## 8.1 — Standards Alignment
 
 ➡️ **Formal SL2 certification** — deferred by design. This document is
@@ -29,20 +40,38 @@ it contractually.
 ## 8.2 — Network Architecture & Segmentation
 
 ✅ **Outbound-only edge connections** — the edge agent always initiates
-the connection to the MQTT broker (`mqtt://192.168.60.141:1883`); nothing
+the connection to the MQTT broker (`mqtts://192.168.60.141:8883`); nothing
 reaches inbound into node-gate from node-dc. This matches the "no inbound
 firewall rule needed" requirement in shape.
 
-❌ **Encrypted transport** — the connection above is plain `mqtt://`, not
-`mqtts://`. The backend's HTTP API is plain HTTP, not HTTPS. Postgres
-connections are unencrypted. **This is the single largest gap in this
-review** — PRD 8.4 requires TLS 1.2+ on every one of these paths, and
-none currently have it. Fixing this means: enabling TLS on Mosquitto
-(a certificate + config change, not a code change), terminating the
-backend behind TLS (or a reverse proxy that does), and enabling
-`sslmode=require` (at minimum) on the Postgres connection string.
-The authentication work below makes this more pressing, not less: session
-tokens and WebSocket tickets currently cross the network in clear text.
+✅ **Encrypted transport** *(was ❌, fixed Oct 1)* — every path uses TLS,
+with certificates from an internal CA (`ops/ca/mes-ca.sh`; ECDSA P-256,
+encrypted root key kept offline on an admin laptop, 1-year server
+certificates):
+
+| Path | Now |
+|---|---|
+| Edge node / edge agents / backend → Mosquitto | `mqtts://…:8883`, listener pinned to TLS 1.2; the plain `1883` listener is gone. Clients verify the broker against the CA (`MQTT_CA_FILE`) and connect by the IP in the certificate's SAN |
+| Browsers and terminals → backend | nginx reverse proxy: HTTPS on 443 (TLS 1.2/1.3); port 80 only redirects. API, `/ws` (`wss://`) and the static frontend all go through it |
+| Edge node → backend (claim, heartbeat) | `https://…` through the proxy; the CA is trusted via `NODE_EXTRA_CA_CERTS` |
+| Proxy → backend | plain HTTP on `127.0.0.1:3001` only — the backend binds to loopback (`HOST=127.0.0.1`) and cannot be reached from the network |
+| Backend → Postgres | TLS 1.3 with `sslmode=verify-full`; `pg_hba.conf` uses `hostssl`, so a TCP connection without TLS is refused. Postgres itself listens on loopback only |
+
+Verified on the pilot: a client without the CA cannot connect to the
+broker; the backend with a wrong CA fails with "unable to verify the first
+certificate" (so `verify-full` really verifies); a TCP connection to
+Postgres with `sslmode=disable` is rejected ("no encryption"); the backend
+(3001) and Postgres (5432) listen on loopback only, and plain MQTT (1883)
+and the Vite port (5173) are closed.
+
+⚠️ **What TLS does not give us** — Mosquitto still runs with
+`allow_anonymous true` (see 8.3). The CA must be installed on every
+browser and terminal tablet (done on the admin laptop; the tablets are
+still to do). `mes.pilot.internal` is a placeholder name with no DNS
+record; clients use the IP, which is in the certificates' SAN.
+Certificates expire after one year (October 2027) and renewal is manual
+(`mes-ca.sh check` exits 2 below 30 days); an expired broker certificate
+stops every edge agent.
 
 ## 8.3 — Identity, Authentication & Access Control
 
@@ -84,10 +113,12 @@ response *and the same response time* (a dummy hash is verified), so
 login doesn't reveal which accounts exist; identifiers are normalized so
 case variants can't bypass a lock. Lock events are audited
 (`login_locked`, `mfa_locked`); blocked requests go to the journal only.
-Verified on node-dc. **Caveat for the TLS work:** limits key on
-`request.ip`; behind a reverse proxy every request would come from the
-proxy's IP and the IP-wide limit would lock everyone out — set Fastify's
-`trustProxy` to the proxy address at that point.
+Verified on node-dc. **Behind the reverse proxy** *(Oct 1)*: limits key
+on `request.ip`, so Fastify's `trustProxy` is set to the proxy address
+(`TRUST_PROXY=127.0.0.1`); audit entries carry the real client IP
+(verified), and the IP-wide limit does not treat everyone as one client.
+Without `TRUST_PROXY` the setting is `false` — remember this if the
+proxy's address ever changes.
 
 ✅ **Session tokens hashed at rest** *(fixed Sep 30)* — the `sessions`
 table previously held raw bearer tokens (as its primary key), so read
@@ -104,29 +135,52 @@ session token in `localStorage`, readable by any script running on the
 page. The practical risk is an XSS bug anywhere in the frontend turning
 into session theft. No such bug is known, and React's default escaping
 limits the surface, but an `HttpOnly`, `Secure`, `SameSite=Strict`
-cookie would remove the exposure. That change requires CSRF handling and
-HTTPS first, so it naturally follows the TLS work.
+cookie would remove the exposure. That change requires CSRF handling; HTTPS, the
+other prerequisite, has been in place since Oct 1.
 
-⚠️ **CORS policy** *(new finding)* — the backend registers
-`@fastify/cors` with `origin: true`, which reflects any requesting
-origin. Because authentication is a bearer token rather than a cookie,
-this does not currently enable cross-site request forgery, but it is
-broader than needed and would become a real issue if auth moved to
-cookies. Should be pinned to the frontend's own origin(s).
+✅ **CORS policy** *(was ⚠️, fixed Oct 1)* — the backend used to reflect
+any requesting origin (`origin: true`). It now allows only the origins
+listed in `CORS_ORIGINS` (comma-separated, in the backend's systemd
+drop-in); with the variable unset, no cross-origin request is allowed at
+all. Verified from the admin laptop. Since the frontend and the API share
+one origin behind the proxy, normal use needs no CORS.
 
-❌ **Per-device identity for edge agents** — every edge agent connects
-with a predictable client ID pattern (`edge-agent-<machineId>`) and no
-per-device certificate or credential on the MQTT side. The Mosquitto
-broker has no authentication configured at all — any client on the
-network segment could currently connect and publish or subscribe. There
-is no way to revoke one compromised edge device at the broker without
-affecting others. (The HTTP-side edge-node registry does use per-node
-tokens with hashed storage and session leases; the gap is the MQTT
-path.) This is a real gap relative to PRD 8.3's PKI-based device
-identity expectation.
+❌ **Per-device identity for edge agents** — unchanged by the TLS work.
+Encryption protects content in transit but does **not** restrict who may
+connect: the TLS listener runs with `allow_anonymous true`, so any host on
+the segment that trusts the (public) CA certificate can connect and
+publish or subscribe. Client IDs still follow a predictable pattern
+(`edge-agent-<machineId>`), and there is no way to revoke one compromised
+device at the broker without affecting others. (The HTTP-side edge-node
+registry does use per-node tokens with hashed storage and session leases;
+the gap is the MQTT path.) Next step: per-device client certificates
+(`require_certificate true`, certificate CN as the identity, issued only
+from the offline CA), which also gives per-device revocation and is the
+foundation for controlling who may add nodes and terminals (licensing).
 
-❌ **mTLS or equivalent between edge and cloud, terminal and edge** — not
-implemented; follows directly from the TLS gap above.
+❌ **mTLS between edge and cloud, terminal and edge** — server-side TLS is
+in place on every path; client certificates are the missing half.
+
+⚠️ **Events from unregistered machines are accepted** *(new finding, Oct 1)* —
+the backend stores events for any machine id on the broker. An event stream
+for an id that is not in `machines` made the hourly production rollup fail
+on a foreign key for **every** machine (found when an edge node fell back
+to its default simulated machine; dashboard counts stopped until the
+orphan events were deleted). With anonymous MQTT this is also a way to
+stall reporting on purpose. Fix: drop events for unknown machines in the
+subscriber and/or make the rollup ignore ids not in `machines`.
+
+⚠️ **Edge node token handling** *(Oct 1)* — the edge node token used to
+sit in the systemd unit file (world-readable) and was exposed in a chat;
+it was regenerated and now lives in `/etc/mes/edge-node.env` (`0600`,
+loaded with `EnvironmentFile=`). Rotation: regenerate in Admin → Edge
+nodes, write the new value into that file, restart `mes-edge-node`; the
+old instance's session lease may answer 409 for a minute or two. No token
+expiry logic was found in the code — a token is valid until regenerated.
+A node started without a token silently falls back to "legacy mode" with a
+simulated default machine instead of failing — consider failing loudly.
+Check that no other unit file or script on node-gate / node-sim contains
+a token.
 
 ✅ **Database credentials** *(was ⚠️, fixed Sep 29)* — the `mes:mes`
 password was rotated to a random 192-bit value, set with psql's
@@ -137,12 +191,13 @@ and not in git. The backend's hardcoded fallback connection string
 (`mes_dev_password`) was removed from `config.ts`: `DATABASE_URL` is now
 mandatory and the process refuses to start without it, without echoing
 the value. Postgres `pg_hba.conf` enforces `scram-sha-256` on TCP
-connections, so the password is actually checked. Remaining gap: the
-connection itself is unencrypted (8.2).
+connections, so the password is actually checked. The connection is
+encrypted and the server is verified (`sslmode=verify-full`, 8.2).
 
 ## 8.4 — Data Protection
 
-❌ **Encryption in transit** — see 8.2; the same gap applies here.
+✅ **Encryption in transit** *(was ❌, fixed Oct 1)* — see 8.2: MQTT, API,
+WebSocket, edge-node HTTP and Postgres are all encrypted.
 
 ❌ **Encryption at rest** — the Postgres database uses a standard,
 unencrypted installation. The edge agent's local offline buffer
@@ -210,9 +265,9 @@ build on later).
 ⚠️ **Cloud-side deployment** — the backend/frontend deploy the same
 manual way the edge agent used to (`git pull` + build + restart), with a
 brief interruption during restart rather than a true rolling/zero-
-downtime deployment. The frontend still runs as the Vite dev server
-(`pnpm dev`) under systemd rather than a static production build behind
-a web server. Acceptable for a single-node pilot; worth revisiting
+downtime deployment. Since Oct 1 the frontend is a static production
+build served by nginx from `/var/www/mes` (the Vite dev server unit is
+disabled), but updating it is still a manual build-and-copy. Acceptable for a single-node pilot; worth revisiting
 before a real production SLA is promised to an external customer.
 
 ## 8.7 — Legacy & Unpatchable Equipment
@@ -289,20 +344,20 @@ Ordered by how much real risk each closes relative to the effort:
 
 1. **Complete the incident-response document** — fill in the contacts and
    have legal confirm the notification duties (the draft exists).
-2. **Enable TLS on Mosquitto, the backend API, and Postgres.** The
-   largest cluster of related gaps (8.2, 8.3, 8.4) — genuinely blocking
-   for any customer whose IT/OT team reviews this seriously, and now also
-   what protects the session tokens and WebSocket tickets in transit.
-   Pin CORS to the frontend origin in the same pass, and set Fastify's
-   `trustProxy` if a reverse proxy terminates TLS (the login limits key
-   on the client IP).
-3. **Add MQTT broker authentication + per-device credentials.** Closes
-   the biggest identity gap; a reasonable next step after TLS is in place
-   (credentials should travel encrypted).
+2. **TLS on every path — done (Oct 1)**: MQTT, API/WebSocket via the
+   reverse proxy, edge-node HTTP and Postgres, with CORS pinning and
+   `trustProxy` in the same pass.
+3. **Per-device client certificates for MQTT** (and for edge nodes and
+   terminals) with `allow_anonymous false`, plus dropping events from
+   unregistered machine ids. Closes the biggest remaining identity gap and
+   is the foundation for controlling who may add nodes and terminals.
 4. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
-5. After TLS: consider moving the session token from `localStorage` to an
+5. Now that TLS is in place: consider moving the session token from `localStorage` to an
    `HttpOnly` cookie (with CSRF protection).
-6. Everything marked ➡️ above stays deferred, matching PRD's own guidance
+6. **Calendar reminder for certificate renewal** — the server
+   certificates expire in October 2027 (`mes-ca.sh check` exits 2 within
+   30 days); also install the CA on the terminal tablets.
+7. Everything marked ➡️ above stays deferred, matching PRD's own guidance
    — revisit only when a specific customer's requirement makes it
    concrete, not speculatively.

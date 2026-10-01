@@ -1,6 +1,6 @@
 # Incident Response
 
-**Status:** Draft v0.1 — September 30, 2026. Fill in every `‹…›` placeholder
+**Status:** Draft v0.2 — October 1, 2026. Fill in every `‹…›` placeholder
 before the first paying customer (PRD 8.8), and review this document at
 least once a year and after every incident.
 
@@ -84,6 +84,7 @@ Copy these off the node before restarts, rotations or restores:
 T=$(date -u +%Y%m%dT%H%M%SZ); mkdir -p /root/incident-$T && cd /root/incident-$T
 journalctl -u mes-backend --since "-7 days" -o json > mes-backend.journal.json
 journalctl -u mosquitto --since "-7 days" -o json > mosquitto.journal.json
+cp -a /var/log/nginx nginx-logs; cp -a /var/log/mosquitto mosquitto-logs
 psql -h localhost -U mes mes -c "\copy (SELECT * FROM audit_log WHERE occurred_at > now() - interval '30 days' ORDER BY occurred_at) TO 'audit_log.csv' CSV HEADER"
 psql -h localhost -U mes mes -c "\copy (SELECT key, failures, window_started_at, locked_until FROM auth_throttle) TO 'auth_throttle.csv' CSV HEADER"
 last -F > logins.txt; ss -tnp > connections.txt
@@ -103,7 +104,9 @@ nodes if the host is trusted.
 | Suspected account compromise | Deactivate the user (`UPDATE users SET is_active = false WHERE email = '…'`) and end all sessions: `DELETE FROM sessions;` (everyone signs in again — MFA still required for admin/manager) |
 | Postgres password exposed | Rotate: procedure in `DEVELOPMENT_STATUS.md` → "Configuration and secrets" |
 | AWS backup key exposed | IAM → user `mes-backup-node-dc` → deactivate the key, create a new one, `aws configure --profile mes-backup` on node-dc, run a backup. The key can't delete backups, but it can read them |
-| Edge node compromised | Admin → Edge nodes → regenerate its token (the old one stops working); `systemctl stop mes-edge-agent` on the node. **Note:** Mosquitto has no authentication yet (`SECURITY_REVIEW.md` 8.3) — also block the node at the network level |
+| Edge node compromised | Admin → Edge nodes → regenerate its token (the old one stops working); `systemctl stop mes-edge-node` on the node; the new token goes into `/etc/mes/edge-node.env` only when the node is trusted again. **Note:** Mosquitto still accepts anonymous clients (TLS only encrypts; `SECURITY_REVIEW.md` 8.3) — also block the node at the network level |
+| CA root key lost or exposed | Treat every certificate as untrusted: build a new CA (`ops/ca/mes-ca.sh init`), re-issue the `mosquitto`, `proxy` and `postgres` certificates, distribute the new `ca.crt` to node-dc, node-gate, terminal tablets and browsers, restart/reload the services. Until then anyone with the key can impersonate the broker, the proxy and the database |
+| Server certificate expired or about to | Re-issue with `mes-ca.sh issue` (move the old directory away first), copy `cert.pem`/`key.pem`, then: Mosquitto → restart (edge agents reconnect on their own); nginx → `nginx -t && systemctl reload nginx`; Postgres → `systemctl reload postgresql@17-main`. An expired broker certificate stops every edge agent |
 | Unknown MQTT publisher | `systemctl stop mosquitto` on node-dc; edge agents buffer until it's back. Identify the source IP from `ss -tnp` / broker log before restarting |
 | Backend or node compromised | Isolate the node at the network (Emlid IT/OT); do not wipe it before evidence is copied |
 | Brute-force attempts | Login throttling locks automatically; review `login_locked` entries; block the source IP at the firewall if it persists |
@@ -118,6 +121,10 @@ nodes if the host is trusted.
 - **Rebuild from source:** code is in GitHub (`JLaszlo92/mes`); nodes
   can be rebuilt from Debian + the repo + `/etc/mes/` (which must be
   recreated with *new* secrets, never copied from a compromised node).
+  TLS certificates are re-issued from the offline CA on the admin machine
+  (`ops/ca/`, `ops/proxy/`); a rebuilt node needs the public `ca.crt`
+  (`/etc/ssl/mes-ca.crt`) and its own `cert.pem`/`key.pem` — never copy a
+  private key from a compromised node.
 - Before declaring recovery: dashboard live, backups succeeding, audit
   log writing, no open `backup_health` alert, edge buffers drained.
 

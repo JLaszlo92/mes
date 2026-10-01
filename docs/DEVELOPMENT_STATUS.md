@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** September 30, 2026
+**Last updated:** October 1, 2026
 
 ## Where things stand
 
@@ -271,8 +271,11 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 
 - `mes-backend.service` loads secrets from
   **`/etc/mes/backend.env`** (`EnvironmentFile=`, directory `0700`, file
-  `0600`, root-only). It currently holds `DATABASE_URL`; `MQTT_URL` is
-  still an `Environment=` line in the unit because it contains no secret.
+  `0600`, root-only). It currently holds `DATABASE_URL` (ending in `?sslmode=verify-full`, see
+  "TLS on every path"). Non-secret settings (`MQTT_URL`, `MQTT_CA_FILE`,
+  `TRUST_PROXY`, `CORS_ORIGINS`, `HOST`, `NODE_EXTRA_CA_CERTS`) are
+  `Environment=` lines in drop-ins under
+  `/etc/systemd/system/mes-backend.service.d/`.
   The Postgres password exists nowhere else except root's `~/.pgpass`, and
   never in git.
 - `DATABASE_URL` is **mandatory** (`packages/backend/src/config.ts`):
@@ -288,6 +291,101 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
   `\password mes` (hashed client-side) → `\q`, then
   `systemctl restart mes-backend`. Do not skip the `\password` step —
   the backend will fail with `password authentication failed`.
+
+## TLS on every path and the internal CA — Oct 1
+
+Since Oct 1 all network traffic is encrypted (assessment and verification
+results: `docs/SECURITY_REVIEW.md` 8.2). Plain MQTT (1883) is gone, the
+backend (3001) and Postgres (5432) listen on loopback only, and the Vite
+dev server (5173) is disabled.
+
+- **CA** (`ops/ca/mes-ca.sh`, README next to it): run on an admin machine,
+  never on node-dc. `init` creates an encrypted root key (10 years,
+  default dir `~/mes-ca`; keep it out of git and back it up offline —
+  without it nothing can be renewed); `issue <name> <SAN,...>` makes a
+  1-year server certificate (refuses to overwrite: move the old directory
+  away to re-issue); `check <cert>` exits 2 if it expires within 30 days.
+  Needs OpenSSL 3.x (macOS's LibreSSL does not work). Issued and deployed:
+  `mosquitto`, `proxy` (nginx) and `postgres`. SANs: `DNS:mes.pilot.internal`
+  (placeholder, no DNS record yet) and `IP:192.168.60.141`; the postgres
+  cert also has `localhost` / `127.0.0.1`. **Renewal: calendar reminder
+  ~30 days before October 2027.** An expired broker certificate stops every
+  edge agent. The public `ca.crt` is at `/etc/ssl/mes-ca.crt` on node-dc
+  and node-gate.
+- **Mosquitto** (node-dc): `/etc/mosquitto/conf.d/tls.conf` has the 8883
+  listener (`cafile`, `certfile`, `keyfile` in `/etc/mosquitto/certs/`,
+  `tls_version tlsv1.2`, `allow_anonymous true` — TLS here is encryption
+  only, no authentication). `conf.d/mes.conf` is only a comment now (old
+  plain listener: `/root/mes.conf.bak`). `cert.pem` / `ca.crt` must be
+  `0644`, `key.pem` `0640 root:mosquitto`, otherwise the broker fails with
+  "Unable to load CA certificates ... Permission denied" (logged to
+  `/var/log/mosquitto/mosquitto.log`, not the journal).
+- **MQTT clients**: `MQTT_CA_FILE` (path to the CA PEM) is read by
+  `mqtt-tls.ts` in both `backend` and `edge-agent`; unset = no change. The
+  URL must use a name or IP that is in the certificate's SAN
+  (`mqtts://192.168.60.141:8883`, not `127.0.0.1`). The edge-agent tag
+  `edge-agent-v2` contains the TLS support.
+- **Reverse proxy** (`ops/proxy/mes-nginx.conf`, installed as
+  `/etc/nginx/sites-available/mes`, default site removed): 80 → 301 to
+  https; 443 with the `proxy` certificate (`/etc/nginx/certs/{cert,key}.pem`),
+  TLS 1.2/1.3, `server_tokens off`, 25 MB body limit. `/api/` and `/health`
+  → `127.0.0.1:3001`; `/ws` with WebSocket upgrade and a 1 h read timeout;
+  `/assets/` cached for a year; everything else from `/var/www/mes` with
+  the SPA fallback. After a change: `nginx -t && systemctl reload nginx`.
+- **Backend settings** (drop-ins in
+  `/etc/systemd/system/mes-backend.service.d/`): `override.conf`
+  (`MQTT_URL`, `MQTT_CA_FILE`, `TRUST_PROXY=127.0.0.1`, `CORS_ORIGINS`),
+  `bind.conf` (`HOST=127.0.0.1`), `ca.conf` (`NODE_EXTRA_CA_CERTS`, used
+  for the Postgres connection). In code (`server.ts`): `TRUST_PROXY` unset
+  → `trustProxy: false`; `CORS_ORIGINS` unset → no cross-origin request is
+  allowed. The default of `HOST` in `config.ts` is still `0.0.0.0` — the
+  drop-in is what keeps the backend off the network.
+- **Frontend**: `api.ts` derives `WS_URL` / `API_BASE` from `location`
+  when `VITE_BACKEND_WS_URL` is unset (https → wss). The old dev unit
+  `mes-frontend` is disabled. Deploy = build on node-dc and copy
+  `packages/frontend/dist/` into `/var/www/mes/`.
+- **Postgres** (17, node-dc): `ssl` was already on with Debian's snakeoil
+  certificate; `/etc/postgresql/17/main/conf.d/mes-tls.conf` now points
+  `ssl_cert_file` / `ssl_key_file` at the CA-issued certificate in
+  `/etc/postgresql/17/main/certs/` (owned by `postgres`, key `0600`) with
+  `ssl_min_protocol_version = 'TLSv1.2'`. `pg_hba.conf`: the `host` lines
+  (127.0.0.1, ::1, also replication) are `hostssl`; the `local ... peer`
+  lines are unchanged, so `mes-backup.sh`, `mes-purge-machine-history.sh`
+  and `mes-restore-test.sh` (all `runuser -u postgres` over the socket) are
+  not affected. `DATABASE_URL` ends in `?sslmode=verify-full`; the backend
+  trusts the CA through `NODE_EXTRA_CA_CERTS`. A certificate swap needs
+  only `systemctl reload postgresql@17-main`. Check:
+  `psql -d mes -Atc "select a.usename, s.ssl, s.version from pg_stat_ssl s join pg_stat_activity a using (pid) where a.usename='mes' group by 1,2,3"`
+  → `mes|t|TLSv1.3`. Rollback files from the change: `/root/pg_hba.conf.bak`.
+- **node-gate**: `mes-edge-node` is the enabled service (claims the node
+  with its token and runs the channels assigned in the backend). Its
+  drop-in sets `MQTT_URL=mqtts://192.168.60.141:8883`, `MQTT_CA_FILE`,
+  `BACKEND_HTTP_URL=https://192.168.60.141`,
+  `NODE_EXTRA_CA_CERTS=/etc/ssl/mes-ca.crt` and
+  `EnvironmentFile=/etc/mes/edge-node.env` (holds `EDGE_NODE_TOKEN`,
+  `0600`; create it with `read -rs`, never echo it). Healthy = nginx
+  `access.log` shows one `POST /api/edge-nodes/claim` 200 and then a
+  `heartbeat` 200 every 30 s from the node's IP. The `mes-edge-agent`,
+  `-modbus`, `-opcua` units are the legacy single-machine mode, disabled
+  on purpose; **do not start them alongside the edge node** (they publish
+  the same machines twice). Token rotation: regenerate in Admin → Edge
+  nodes, put the new value in `/etc/mes/edge-node.env`,
+  `systemctl restart mes-edge-node`; a 409 "another instance of this edge
+  node is already active" means the previous session lease has not expired
+  yet (it cleared within 1–2 minutes). No token expiry logic was found.
+- **Gotchas found while rolling out**:
+  - Without `EDGE_NODE_TOKEN` in its environment the edge node starts in
+    "legacy mode" with a default simulated machine (`sim-machine-01`, not
+    in `machines`). Its events made the hourly production rollup fail with
+    a foreign key error for every machine and the dashboard counts stopped.
+    Check `tr '\0' '\n' < /proc/<pid>/environ | grep -c ^EDGE_NODE_TOKEN`.
+    322 orphan events were deleted after a backup.
+  - `systemctl daemon-reload` is needed after editing a unit or drop-in.
+  - `systemctl cat <unit> | grep Environment` prints secrets; use
+    `systemctl show -p Environment | tr ' ' '\n' | grep MQTT` instead.
+  - node-dc's `curl` needs `--cacert /etc/ssl/mes-ca.crt`; node-gate has no
+    `curl` — a Node `fetch` with `NODE_EXTRA_CA_CERTS` works.
+  - Paste commands into zsh without `#` comment lines.
 
 ## Sessions, audit log and scheduling config — Sep 30 fixes
 
@@ -636,9 +734,8 @@ is in `ops/backup/README.md`.
   (`router.ts`, History API, no dependency). Back button, bookmarks and
   shared links work. `/` and unknown or not-permitted paths redirect to the
   first view the role may see. `/terminal/:id` is unchanged (`main.tsx`).
-  **When the frontend moves from `pnpm dev` to a static build behind a web
-  server, that server needs an SPA fallback** (serve `index.html` for
-  unknown paths), or deep links 404.
+  **The frontend is now a static build behind nginx** (since Oct 1) with an
+  SPA fallback (`try_files $uri /index.html`), so deep links work.
 - The navigation is defined once in `App.tsx` (`NAV`): modules, views and
   which roles see them, mirroring the backend checks (Admin: admin/manager;
   Audit log: admin; Preventive schedules: maintenance/manager/admin; Work
@@ -825,9 +922,10 @@ is in `ops/backup/README.md`.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
-- **Raw-event retention is in dry run.** Review the `would drop chunk` log
-  lines once data passes 90 days (late November), then set
-  `MES_RAW_EVENT_RETENTION_DRY_RUN=false`. Before the pilot.
+- **Raw-event retention looks live**: the backend's startup log on Oct 1
+  shows `retentionDays: 90, dryRun: false`. Confirm that was intended (the
+  default is dry run, meant to be reviewed first) and check `audit_log`
+  for `raw_events_dropped` entries.
 - **Test-data cleanup before the pilot**: the simulator rigs produced
   ~120k status events and ~59k downtime periods. If the pilot runs on this
   database, clear the test machines' data first so reports start clean
@@ -838,8 +936,18 @@ is in `ops/backup/README.md`.
   contacts, customer timelines and legal's notification scope before the
   first external customer. Machine-history purge for the pilot:
   `ops/maintenance/` (dry run by default; not run yet).
-- Next security items per `docs/SECURITY_REVIEW.md`: TLS (Mosquitto, API, Postgres) with CORS pinning and
-  `trustProxy`.
+- TLS is done on every path (see "TLS on every path"). Next security
+  items per `docs/SECURITY_REVIEW.md`: per-device client certificates for
+  MQTT with `allow_anonymous false`; the CA on the terminal tablets; a
+  real DNS name instead of `mes.pilot.internal` (then re-issue the
+  certificates); a calendar reminder for the October 2027 renewal.
+- Backend: ignore (or reject) events for machine ids that are not in
+  `machines`; one unknown id currently stops the production rollup for all
+  machines. An edge node without `EDGE_NODE_TOKEN` should probably fail
+  loudly instead of falling back to a simulated machine.
+- Licensing (subscription, signed license file, only the vendor can add
+  nodes and terminals, no copying): the file format is to be designed after
+  the per-device certificates.
 - The legacy per-segment endpoints (`/api/work-order-assignments` POST/PUT/
   DELETE) have no UI caller left (SchedulePanel removed) — retire them
   unless an integration needs them.
