@@ -541,6 +541,32 @@ is in `ops/backup/README.md`.
   now reports success/failure and doesn't create duplicates.
 - Server-side copies to weekly/ / monthly/ use --copy-props none: by default aws s3 cp copies tags too, which needs s3:GetObjectTagging — deliberately not granted to the node-dc IAM user. Found on the first monthly run (Oct 1).
 
+## Maintenance on the Gantt — Oct 1
+
+- Each machine row in `GanttSchedulePanel.tsx` now has two lanes: production
+  on top (as before), maintenance below (`ROW_HEIGHT` 56 → 64). Open
+  maintenance work orders with a planned window (sql 037) are drawn as
+  striped grey bars; urgent ones get a red border.
+- **Overlap rule: warn, don't block.** A maintenance window that overlaps a
+  production segment of a non-completed, non-cancelled order on the same
+  machine gets an amber border, and so does the production bar; both
+  tooltips name the other side, and the toolbar shows "N maintenance
+  windows overlap production". The planner decides — nothing is rejected.
+  The check is client-side only (the server doesn't know about it); if a
+  hard rule is ever wanted, it belongs in the two schedule endpoints.
+- **Editing**: maintenance/manager/admin can drag a maintenance bar along
+  its own machine row (it can't change machines here — the machine is part
+  of the work order) and resize either edge; saved through
+  `PATCH /api/maintenance-work-orders/:id` with `plannedStart`/`plannedEnd`
+  (15-minute snap). Unplanned open maintenance appears in the left pool under
+  "Maintenance to plan" and can be dropped onto its machine's row with a
+  2-hour default window. Maintenance windows are not split around off-shift
+  time.
+- Production bars are now draggable only for admin/manager (the API already
+  required that; before, other roles could start a drag that then failed).
+- Not built yet: the overlap warning inside the work order and maintenance
+  drawers, and a click-through from a bar to its drawer.
+
 ## Server-paged lists: audit log, alerts, fault reports — Oct 1
 
 - **Shared pattern**: `GET` endpoints return `{ rows, total }` (the audit
