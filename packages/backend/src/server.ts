@@ -137,6 +137,7 @@ import {
 } from "./work-order-assignments-repository.js";
 import { planScheduleChunks, MAX_SCHEDULE_MS, type SchedulePlanRequest } from "./work-order-scheduling.js";
 import { registerAuthGuard, authModeFromEnv } from "./auth-guard.js";
+import { registerLicense } from "./license-routes.js";
 import {
   issueWsTicket,
   redeemWsTicket,
@@ -160,6 +161,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(websocket);
   await app.register(authPlugin);
   registerAuthGuard(app, authModeFromEnv());
+  registerLicense(app);
   await app.register(authRoutes);
   await app.register(machineRegistryRoutes);
   await app.register(plantHierarchyRoutes);

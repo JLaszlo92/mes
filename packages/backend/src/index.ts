@@ -13,6 +13,7 @@ import { startBackupHealthEvaluator } from "./backup-health-evaluator.js";
 import { startStatusRollupEvaluator } from "./status-rollup-evaluator.js";
 import { ensureDatabaseTimezone } from "./db.js";
 import { startRawEventRetentionEvaluator } from "./raw-event-retention-evaluator.js";
+import { startLicenseEvaluator } from "./license-service.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
   startRawEventRetentionEvaluator(app.log);
   startOffShiftEvaluator(app.log);
   startBackupHealthEvaluator(app.log);
+  startLicenseEvaluator(app.log);
 }
 
 main().catch((err) => {

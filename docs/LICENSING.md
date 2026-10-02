@@ -1,8 +1,10 @@
 # Licensing (design, Oct 2)
 
-Status: format, vendor tool and verification module are done and tested
-(`packages/backend/src/license.ts`, `ops/license/mes-license.mjs`). **Not yet
-wired into the backend** — see "Integration steps".
+Status: format, vendor tool, verification module and the backend wiring are
+done and tested (`license.ts`, `license-policy.ts`, `license-service.ts`,
+`license-routes.ts`, `ops/license/mes-license.mjs`). The backend ships in
+**audit mode** (`LICENSE_ENFORCE=false`): it computes and reports the state
+but restricts nothing until enforcement is switched on — see "Operation".
 
 ## Goals and decisions
 
@@ -71,24 +73,52 @@ Renewal = `issue` again (the serial increases) and install the new file.
 Back up `~/mes-license-key/license.key` offline; the `serial` file is the
 counter.
 
-## Integration steps (not done yet)
+## Operation (backend)
 
-1. Config: `LICENSE_FILE` (path) and `LICENSE_PUBLIC_KEY_FILE`; the device
-   CA fingerprint comes from the device CA root certificate that is already
-   deployed next to Mosquitto (`deviceCaFingerprint`).
-2. Table `license_state(serial, installed_at, last_seen_at)`; `minSerial` is
-   the stored serial. `now` for verification is `max(system clock, last_seen_at)`
-   so setting the clock back does not extend a license.
-3. Evaluate at startup and hourly; expose `GET /api/license` (state, days
-   left, limits, usage) for an admin banner.
-4. Enforce in the **edge-node claim** endpoint (count active nodes) and in
-   every configuration-changing route (a Fastify hook using
-   `mayChangeConfiguration`). Never in the MQTT ingestion path.
-5. Install flow: an admin uploads the new file (UI or CLI), the backend
-   verifies it and stores it; serial must be >= the stored one.
-6. Optional later: the backend fetches the renewed file from a vendor
-   endpoint once a day. It is the same signed file, so a faked endpoint
-   cannot forge a license; offline operation is unaffected.
+Environment (`/etc/mes/backend.env`; all optional):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LICENSE_ENFORCE` | `false` | `true` = refuse restricted requests; `false` = audit mode (log "would block", change nothing). A typo fails the start instead of silently disabling it. |
+| `LICENSE_FILE` | `/etc/mes/license.json` | the signed license |
+| `LICENSE_PUBLIC_KEY_FILE` | `/etc/mes/license.pub` | vendor public key (from `keygen`) |
+| `LICENSE_DEVICE_CA_FILE` | `/etc/mosquitto/certs/device-ca.crt` | the device CA root; its sha256 must match the license |
+
+- The backend verifies at startup and hourly; `POST /api/license/reload`
+  (admin) does it immediately. A renewal is a file replacement, no restart.
+- `GET /api/license` (any logged-in user): state, days left, limits, usage.
+- A system alert `license_health` is raised 14 days before expiry, in the
+  grace period, when expired and when invalid; it resolves itself. In audit
+  mode with no license file there is no alert.
+- Table `license_state` (migration 038): highest installed serial and the
+  latest time seen. Verification uses `max(system clock, last_seen_at)`, so
+  setting the clock back does not extend a license. Conversely a clock that
+  once jumped far into the future keeps the license "expired" until it is
+  renewed; to undo a mistaken jump:
+  `UPDATE license_state SET last_seen_at = now();`.
+
+**What is restricted** (only when enforcing, and only while the state is
+`expired` or `invalid`; during `valid`/`grace` everything works):
+POST/PUT/PATCH on `/api/machine-registry`, `/api/edge-nodes`,
+`/api/edge-node-channels`, `/api/alert-rules`, `/api/sites`, `/api/areas`,
+`/api/lines`. Creating an edge node (`POST /api/edge-nodes`) is additionally
+refused at the `limits.edgeNodes` count even while valid.
+
+**Never restricted:** reads, deletes, MQTT ingestion, the edge-node protocol
+(`claim`, `heartbeat`), token regeneration (a leaked token must always be
+rotatable), and every operator/production route. Nothing is restricted before
+the first check finished, and a failed check keeps the previous state.
+
+### Rollout
+
+1. Deploy in audit mode (default). `GET /api/license` shows `state: invalid`,
+   reason "no license file" — expected.
+2. Vendor: `issue` a license, copy `license.pub` and `license.json` to
+   `/etc/mes/` (`0600`), `POST /api/license/reload`; the state becomes `valid`.
+3. Watch the log for `license audit mode: ... would be refused` while using
+   the system normally; there should be none.
+4. Set `LICENSE_ENFORCE=true` in `/etc/mes/backend.env`, restart.
+   Rollback = set it back to `false`.
 
 ## Open: terminals
 
@@ -96,7 +126,9 @@ Edge nodes have a certificate identity; terminals (tablets/browsers) log in
 with user accounts. To count and limit terminals a terminal needs a
 registered identity: either a registered-device record with a device token,
 or a client certificate from the device CA (the "CA on the tablets" item).
-Until decided, `limits.terminals` is carried in the file but not enforced.
+Until decided, `limits.terminals` is carried in the file, shown in
+`GET /api/license` (`usage.terminals` is `null`) but not enforced. There is
+also no user-management route in `auth-routes.ts` to hook it to yet.
 
 ## Honest limits
 
