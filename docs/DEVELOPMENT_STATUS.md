@@ -922,6 +922,28 @@ is in `ops/backup/README.md`.
   site/area/line scope selector; replace the scattered inline colours with
   tokens; `WS_URL`/`API_BASE` dedup.
 
+## Unknown machine ids are dropped — Oct 2
+
+- `packages/backend/src/machine-registry-cache.ts`: `createMachineRegistryCache(load, now, ttlMs=30000, missRefreshMs=3000)`
+  returns `isRegistered(machineId)`. Known ids are cached for 30 s; an
+  unknown id triggers a reload at most every 3 s (new machines are accepted
+  within seconds); concurrent reloads share one query. No `db` import, so it
+  is unit-tested without `DATABASE_URL` (`__tests__/machine-registry-cache.test.ts`, 6 tests).
+- `mqtt-subscriber.ts`: before storing, `registeredMachines.isRegistered(event.machineId)`.
+  Unknown id → ack + drop + `noteUnknownMachine` (warn, max once per 5 min per
+  id, with the dropped count; message "dropped events from a machine id that
+  is not registered"). Lookup error → log error, **no ack**, the edge agent retries.
+- `production-rollup-evaluator.ts`: `FROM events e JOIN machines m ON m.id = e.machine_id`.
+  `status-rollup-evaluator.ts` needed no change (ids come from `machines`).
+- Why ack and not just ignore: the edge agent republishes every unacked
+  event every 4 s, so an ignored event would loop forever and the buffer would grow.
+- End-to-end test (Oct 2): temporary ACL for `admin-laptop` (write on
+  `mes/machines/ghost-test-01/events`), two `machine_status` events from the
+  laptop with `mosquitto_pub`, both acked, one warning in the backend log,
+  `count(*)` = 0. The ACL was restored from `/root/acl.conf.pre-e2e`.
+  Not added on purpose: a topic vs payload `machineId` check (a bug there
+  would stop all ingestion).
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -1003,10 +1025,9 @@ is in `ops/backup/README.md`.
   ACL is not enough; a
   real DNS name instead of `mes.pilot.internal` (then re-issue the
   certificates); a calendar reminder for the October 2027 renewal.
-- Backend: ignore (or reject) events for machine ids that are not in
-  `machines`; one unknown id currently stops the production rollup for all
-  machines. An edge node without `EDGE_NODE_TOKEN` should probably fail
-  loudly instead of falling back to a simulated machine.
+- An edge node without `EDGE_NODE_TOKEN` should probably fail loudly
+  instead of falling back to a simulated machine. (Events for unregistered
+  machine ids are already dropped in the backend, see below.)
 - Licensing (subscription, signed license file, only the vendor can add
   nodes and terminals, no copying): the file format is to be designed after
   the per-device certificates.

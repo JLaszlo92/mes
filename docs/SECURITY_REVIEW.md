@@ -187,15 +187,25 @@ not client certificates. Client IDs are still predictable
 edge node's HTTP calls (claim, heartbeat) go over HTTPS with the per-node
 token.
 
-⚠️ **Events from unregistered machines are accepted** *(new finding, Oct 1)* —
-the backend stores events for any machine id on the broker. An event stream
-for an id that is not in `machines` made the hourly production rollup fail
-on a foreign key for **every** machine (found when an edge node fell back
-to its default simulated machine; dashboard counts stopped until the
-orphan events were deleted). Since the broker now authenticates devices only a
-holder of a valid device certificate could do this on purpose, but a
-compromised edge node could (the ACL is per topic pattern, 8.3). Fix: drop events for unknown machines in the
-subscriber and/or make the rollup ignore ids not in `machines`.
+✅ **Events from unregistered machines are dropped** *(was ⚠️, fixed Oct 2,
+commit ba75419)* — the backend used to store events for any machine id on
+the broker, and an event stream for an id not in `machines` made the hourly
+production rollup fail on a foreign key for **every** machine (found when an
+edge node fell back to its default simulated machine). Now the MQTT
+subscriber checks each event against a cached registry (`SELECT id FROM
+machines`, 30 s TTL, at most one refresh per 3 s for unknown ids, so a new
+machine is accepted within seconds and an id flood cannot hammer Postgres).
+An unknown id is **acked and dropped** (without the ack the edge agent would
+republish it every 4 s forever) and logged as a warning at most once per 5
+minutes per id, with the dropped count. If the registry lookup itself fails
+the event is *not* acked, so the edge agent retries. The production rollup
+also joins `machines`, so a stray id can no longer break it; the status
+rollup already restricted itself to ids from `machines`. Tested end to end
+on Oct 2 (two events for a fake id: two acks, one warning, zero rows).
+Remaining limit: a compromised edge node can still publish events for any
+*registered* machine id (the ACL is per topic pattern, 8.3); a topic vs
+payload `machineId` consistency check was deliberately left out because a
+mistake there would stop ingestion for everyone.
 
 ⚠️ **Edge node token handling** *(Oct 1)* — the edge node token used to
 sit in the systemd unit file (world-readable) and was exposed in a chat;
@@ -375,9 +385,9 @@ Ordered by how much real risk each closes relative to the effort:
    reverse proxy, edge-node HTTP and Postgres, with CORS pinning and
    `trustProxy` in the same pass.
 3. **Per-device client certificates for MQTT — done (Oct 2)**: device CA,
-   mutual TLS on 8884, `allow_anonymous false`, per-topic ACLs. Remaining
-   from it: drop events for unregistered machine ids in the backend, a
-   certificate renewal reminder (device certificates also expire in
+   mutual TLS on 8884, `allow_anonymous false`, per-topic ACLs. Unregistered
+   machine ids are now dropped in the backend (done Oct 2). Remaining
+   from it: a certificate renewal reminder (device certificates also expire in
    October 2027), optionally a CRL.
 4. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
