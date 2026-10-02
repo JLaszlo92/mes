@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 1, 2026
+**Last updated:** October 2, 2026
 
 ## Where things stand
 
@@ -387,7 +387,8 @@ dev server (5173) is disabled.
     in `machines`). Its events made the hourly production rollup fail with
     a foreign key error for every machine and the dashboard counts stopped.
     Check `tr '\0' '\n' < /proc/<pid>/environ | grep -c ^EDGE_NODE_TOKEN`.
-    322 orphan events were deleted after a backup.
+    322 orphan events were deleted after a backup. Since `edge-agent-v4`
+    the agent refuses to start without a token (see "Edge agent v4").
   - `systemctl daemon-reload` is needed after editing a unit or drop-in.
   - `systemctl cat <unit> | grep Environment` prints secrets; use
     `systemctl show -p Environment | tr ' ' '\n' | grep MQTT` instead.
@@ -984,6 +985,31 @@ is in `ops/backup/README.md`.
 - When a certificate is renewed, nothing needs to be told to the monitor: the
   next daily run reads the new file and the alert resolves by itself.
 
+## Edge agent v4: no silent legacy mode, Oct 2
+
+- `edge-agent-v4` (commit `cc54438`, tests `5a9c36c`): without
+  `EDGE_NODE_TOKEN` the agent logs `EDGE_NODE_TOKEN is not set - refusing to
+  start ...` and exits with code **78**. The old single-machine mode must be
+  asked for explicitly with `EDGE_AGENT_LEGACY=true` (any other value than
+  `true`/`false` is a startup error). The decision is a pure function in
+  `packages/edge-agent/src/start-mode.ts` (8 tests); `index.ts` only acts on it.
+- Checked before deploying: node-gate has one unit, `mes-edge-node`, with a
+  token in `/etc/mes/edge-node.env`; node-dc has no edge units; node-sim runs
+  only the three simulators. Deployed by hand on node-gate (checkout tag,
+  build, restart), verified: the service runs, and `env -u EDGE_NODE_TOKEN
+  node dist/index.js` prints the refusal and exits 78.
+- **Restart takes about 70 seconds.** The backend lets a new instance in only
+  when the previous heartbeat is older than `HEARTBEAT_STALE_SECONDS`
+  (`edge-nodes-repository.ts`); until then the new process dies with
+  `another instance of this edge node is already active` and systemd restarts
+  it every ~5 s (`NRestarts` reached 15). Nothing is collected from the
+  machines during that time: expect a gap of about a minute in the data on
+  every edge-agent restart. Improvement not built: release the session on
+  SIGTERM so a restart is immediate.
+- Two edge-agent tests (`gpio-` and `s7-signal-source`) had been failing
+  since `58b141c` (custom status names allowed, a bridge that exits reports
+  `down`); they now assert that behaviour.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -1066,9 +1092,6 @@ is in `ops/backup/README.md`.
   real DNS name instead of `mes.pilot.internal` (then re-issue the
   certificates); (the October 2027 renewal reminder is done: `mes-ca.sh ics` and the
   node-dc expiry monitor, see "Certificate expiry monitoring").
-- An edge node without `EDGE_NODE_TOKEN` should probably fail loudly
-  instead of falling back to a simulated machine. (Events for unregistered
-  machine ids are already dropped in the backend, see below.)
 - Licensing: format, tool and backend wiring are done (audit mode). Open:
   issue a license and switch `LICENSE_ENFORCE=true` after a trial period,
   count terminals (needs a terminal identity), a UI banner/upload.

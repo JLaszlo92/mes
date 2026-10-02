@@ -53,6 +53,20 @@ scripts/deploy-edge-agent.sh --latest
 The script checks out the tag, rebuilds `packages/edge-agent`, and
 restarts every edge-agent systemd service that exists on this node.
 
+**Note:** the script's `SERVICES` list has not been verified against
+`mes-edge-node`. The edge node has so far been updated by hand: `git fetch
+origin --tags && git checkout edge-agent-vN`, `pnpm install --frozen-lockfile`
+and `pnpm run build` in `packages/edge-agent`, then `systemctl restart
+mes-edge-node`.
+
+**A restart costs about a minute of data.** The backend admits a new
+instance of an edge node only when the previous heartbeat is older than
+`HEARTBEAT_STALE_SECONDS`. Until then the new process exits with `another
+instance of this edge node is already active` and systemd restarts it every
+few seconds (the restart counter climbs to ~15; that is expected). Nothing
+is collected during that time, so deploy outside production hours where it
+matters.
+
 ## Rolling back
 
 If a deployed version turns out to have a problem:
