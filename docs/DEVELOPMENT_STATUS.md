@@ -944,6 +944,26 @@ is in `ops/backup/README.md`.
   Not added on purpose: a topic vs payload `machineId` check (a bug there
   would stop all ingestion).
 
+## Licensing and device onboarding — Oct 2
+
+- **Licensing** (`docs/LICENSING.md`): signed license file (`mes-license-v1`,
+  Ed25519, offline vendor key `~/mes-license-key`), vendor tool
+  `ops/license/mes-license.mjs`, verification in `license.ts`, policy in
+  `license-policy.ts`, service/evaluator in `license-service.ts`, endpoints
+  and guard hook in `license-routes.ts`, table `license_state` (migration 038).
+  Ships in **audit mode** (`LICENSE_ENFORCE=false`, the default): state is
+  computed and shown (`GET /api/license`, system alert `license_health`) but
+  nothing is restricted. Enforcement only touches configuration routes
+  (machine registry, edge nodes/channels, alert rules, sites/areas/lines) and
+  node creation at the licensed count; data collection is never blocked.
+  Terminals are not counted yet (no identity for them).
+- **Onboarding scripts** (`ops/onboarding/`): `new-edge-node.sh` (laptop),
+  `mosquitto-device-acl.sh add|remove|list` (node-dc), `install-on-node.sh`
+  (new node, with a mutual-TLS preflight). See its README.
+- Lesson: OpenSSL 3 `s_client` prints `Verify return code: 0 (ok)` even after
+  an aborted handshake; a TLS check must also require a real cipher and no
+  error/alert line (`tls_ok` in `install-on-node.sh`).
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -1028,9 +1048,9 @@ is in `ops/backup/README.md`.
 - An edge node without `EDGE_NODE_TOKEN` should probably fail loudly
   instead of falling back to a simulated machine. (Events for unregistered
   machine ids are already dropped in the backend, see below.)
-- Licensing (subscription, signed license file, only the vendor can add
-  nodes and terminals, no copying): the file format is to be designed after
-  the per-device certificates.
+- Licensing: format, tool and backend wiring are done (audit mode). Open:
+  issue a license and switch `LICENSE_ENFORCE=true` after a trial period,
+  count terminals (needs a terminal identity), a UI banner/upload.
 - The legacy per-segment endpoints (`/api/work-order-assignments` POST/PUT/
   DELETE) have no UI caller left (SchedulePanel removed) — retire them
   unless an integration needs them.
