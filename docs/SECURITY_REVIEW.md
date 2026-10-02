@@ -1,6 +1,6 @@
 # Security Self-Review — IEC 62443 SL2 Baseline
 
-**Date:** September 21, 2026 · **Revised:** October 1, 2026 (TLS on every path)
+**Date:** September 21, 2026 · **Revised:** October 2, 2026 (device certificates)
 **Scope:** PRD Section 8 (Cybersecurity & OT Security), assessed against
 the current Phase 1 implementation. This is a self-review, not a formal
 audit — per PRD 8.1, formal third-party certification is deliberately
@@ -20,15 +20,20 @@ were added in this pass: no login rate limiting, session token stored in
 `localStorage`, and a permissive CORS policy.
 
 **What changed in the October 1 revision:** every network path is now
-encrypted — MQTT (TLS listener on 8883, plain 1883 removed), the API,
+encrypted — MQTT (TLS listener, plain 1883 removed), the API,
 dashboard and WebSocket (nginx reverse proxy on 443; the backend itself
 listens on loopback only), the edge node's HTTP calls, and the Postgres
 connection (`hostssl` + `sslmode=verify-full`). Certificates come from an
 internal CA whose root key is kept offline. Fastify `trustProxy` and CORS
 pinning were done in the same pass, and the frontend is a static build
-served by nginx instead of the Vite dev server. **Not changed:** Mosquitto
-still accepts anonymous clients, so TLS gives encryption but no device
-authentication (8.3).
+served by nginx instead of the Vite dev server.
+
+**What changed in the October 2 revision:** MQTT now authenticates every
+device. Mosquitto has a single listener (8884) that requires a client
+certificate issued by a separate, offline *device CA*, takes the
+certificate CN as the user name and enforces per-topic ACLs; anonymous
+access (and the old 8883 listener) is gone. Backend, edge node and the
+admin laptop each have their own certificate (8.3).
 
 ## 8.1 — Standards Alignment
 
@@ -40,7 +45,7 @@ it contractually.
 ## 8.2 — Network Architecture & Segmentation
 
 ✅ **Outbound-only edge connections** — the edge agent always initiates
-the connection to the MQTT broker (`mqtts://192.168.60.141:8883`); nothing
+the connection to the MQTT broker (`mqtts://192.168.60.141:8884`); nothing
 reaches inbound into node-gate from node-dc. This matches the "no inbound
 firewall rule needed" requirement in shape.
 
@@ -51,21 +56,20 @@ certificates):
 
 | Path | Now |
 |---|---|
-| Edge node / edge agents / backend → Mosquitto | `mqtts://…:8883`, listener pinned to TLS 1.2; the plain `1883` listener is gone. Clients verify the broker against the CA (`MQTT_CA_FILE`) and connect by the IP in the certificate's SAN |
+| Edge node / edge agents / backend → Mosquitto | `mqtts://…:8884`, mutual TLS (TLS 1.2, client certificate required, see 8.3); the plain `1883` and the earlier anonymous `8883` listeners are gone. Clients verify the broker against the server CA (`MQTT_CA_FILE`) and connect by the IP in the certificate's SAN |
 | Browsers and terminals → backend | nginx reverse proxy: HTTPS on 443 (TLS 1.2/1.3); port 80 only redirects. API, `/ws` (`wss://`) and the static frontend all go through it |
 | Edge node → backend (claim, heartbeat) | `https://…` through the proxy; the CA is trusted via `NODE_EXTRA_CA_CERTS` |
 | Proxy → backend | plain HTTP on `127.0.0.1:3001` only — the backend binds to loopback (`HOST=127.0.0.1`) and cannot be reached from the network |
 | Backend → Postgres | TLS 1.3 with `sslmode=verify-full`; `pg_hba.conf` uses `hostssl`, so a TCP connection without TLS is refused. Postgres itself listens on loopback only |
 
 Verified on the pilot: a client without the CA cannot connect to the
-broker; the backend with a wrong CA fails with "unable to verify the first
+broker, and one without a device certificate is dropped by it; the backend with a wrong CA fails with "unable to verify the first
 certificate" (so `verify-full` really verifies); a TCP connection to
 Postgres with `sslmode=disable` is rejected ("no encryption"); the backend
-(3001) and Postgres (5432) listen on loopback only, and plain MQTT (1883)
-and the Vite port (5173) are closed.
+(3001) and Postgres (5432) listen on loopback only, and plain MQTT (1883),
+the old anonymous MQTT port (8883) and the Vite port (5173) are closed.
 
-⚠️ **What TLS does not give us** — Mosquitto still runs with
-`allow_anonymous true` (see 8.3). The CA must be installed on every
+⚠️ **Still open around TLS** — the CA must be installed on every
 browser and terminal tablet (done on the admin laptop; the tablets are
 still to do). `mes.pilot.internal` is a placeholder name with no DNS
 record; clients use the IP, which is in the certificates' SAN.
@@ -145,29 +149,52 @@ drop-in); with the variable unset, no cross-origin request is allowed at
 all. Verified from the admin laptop. Since the frontend and the API share
 one origin behind the proxy, normal use needs no CORS.
 
-❌ **Per-device identity for edge agents** — unchanged by the TLS work.
-Encryption protects content in transit but does **not** restrict who may
-connect: the TLS listener runs with `allow_anonymous true`, so any host on
-the segment that trusts the (public) CA certificate can connect and
-publish or subscribe. Client IDs still follow a predictable pattern
-(`edge-agent-<machineId>`), and there is no way to revoke one compromised
-device at the broker without affecting others. (The HTTP-side edge-node
-registry does use per-node tokens with hashed storage and session leases;
-the gap is the MQTT path.) Next step: per-device client certificates
-(`require_certificate true`, certificate CN as the identity, issued only
-from the offline CA), which also gives per-device revocation and is the
-foundation for controlling who may add nodes and terminals (licensing).
+✅ **Per-device identity on MQTT** *(was ❌, fixed Oct 2)* — a second CA,
+the *device CA* (`~/mes-device-ca` on the admin laptop, own passphrase,
+offline), issues one client certificate per device
+(`mes-ca.sh issue-device <name> <role>`; ECDSA P-256, 1 year). It is kept
+separate from the server CA on purpose: a leaked server key can never be
+turned into a device identity, and whoever holds the device CA key decides
+which devices may exist — the basis for licensing (who may add nodes and
+terminals). Mosquitto (`conf.d/tls.conf`, reference copy in
+`ops/mosquitto/`) has one listener: port 8884, `cafile` = the device CA,
+`require_certificate true`, `use_identity_as_username true`,
+`allow_anonymous false`, `per_listener_settings true`, `acl_file`. Issued
+so far: `backend`, `node-gate` (edge node), `admin-laptop` (read-only
+tool) and `node-sim` (unused — the node-sim machine only runs simulated
+PLCs, no MQTT client). ACLs (`/etc/mosquitto/acl.conf`): `backend` reads
+`mes/machines/+/events` and writes `.../acks`; `node-gate` the reverse;
+`admin-laptop` reads `mes/#` and `$SYS/#`. Tested on the pilot and on a
+separate test broker: no certificate, or one from the server CA → refused;
+a valid device certificate without an ACL entry connects but its
+publishes are dropped and nothing is delivered to it (Mosquitto still
+answers the subscribe with "granted").
 
-❌ **mTLS between edge and cloud, terminal and edge** — server-side TLS is
-in place on every path; client certificates are the missing half.
+⚠️ **Limits of the device identity** — the ACL works on topic *patterns*,
+not per machine id, because the machines assigned to an edge node change
+in the backend: a compromised edge node with its valid key could still
+publish events for any machine id (see the next finding). Revocation is by
+removing the device's entry from `acl.conf` and `systemctl reload
+mosquitto`; the certificate itself stays valid until it expires (no CRL
+yet — Mosquitto's `crlfile` is the next step if that is needed). The
+private key is a file and can be copied; the edge node's session lease
+detects two instances claiming the same node, binding the key to hardware
+(TPM) is a later option. Terminals and browsers use user login over HTTPS,
+not client certificates. Client IDs are still predictable
+(`edge-agent-<machineId>`), but the identity that counts is the CN.
+
+✅ **mTLS between edge and cloud** *(was ❌)* — MQTT is now mutual TLS; the
+edge node's HTTP calls (claim, heartbeat) go over HTTPS with the per-node
+token.
 
 ⚠️ **Events from unregistered machines are accepted** *(new finding, Oct 1)* —
 the backend stores events for any machine id on the broker. An event stream
 for an id that is not in `machines` made the hourly production rollup fail
 on a foreign key for **every** machine (found when an edge node fell back
 to its default simulated machine; dashboard counts stopped until the
-orphan events were deleted). With anonymous MQTT this is also a way to
-stall reporting on purpose. Fix: drop events for unknown machines in the
+orphan events were deleted). Since the broker now authenticates devices only a
+holder of a valid device certificate could do this on purpose, but a
+compromised edge node could (the ACL is per topic pattern, 8.3). Fix: drop events for unknown machines in the
 subscriber and/or make the rollup ignore ids not in `machines`.
 
 ⚠️ **Edge node token handling** *(Oct 1)* — the edge node token used to
@@ -347,10 +374,11 @@ Ordered by how much real risk each closes relative to the effort:
 2. **TLS on every path — done (Oct 1)**: MQTT, API/WebSocket via the
    reverse proxy, edge-node HTTP and Postgres, with CORS pinning and
    `trustProxy` in the same pass.
-3. **Per-device client certificates for MQTT** (and for edge nodes and
-   terminals) with `allow_anonymous false`, plus dropping events from
-   unregistered machine ids. Closes the biggest remaining identity gap and
-   is the foundation for controlling who may add nodes and terminals.
+3. **Per-device client certificates for MQTT — done (Oct 2)**: device CA,
+   mutual TLS on 8884, `allow_anonymous false`, per-topic ACLs. Remaining
+   from it: drop events for unregistered machine ids in the backend, a
+   certificate renewal reminder (device certificates also expire in
+   October 2027), optionally a CRL.
 4. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
 5. Now that TLS is in place: consider moving the session token from `localStorage` to an

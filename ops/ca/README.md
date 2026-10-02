@@ -24,7 +24,11 @@ Each `issued/<name>/` holds `cert.pem`, `key.pem` (secret) and `ca.crt` (public)
   new CA and replace every certificate and every distributed `ca.crt`.
   Add this case to `INCIDENT_RESPONSE.md` section 5.2.
 
-## Mosquitto cutover (keep plain MQTT until every client has switched)
+## Mosquitto server certificate setup (historical: the first TLS cutover)
+
+The current broker configuration (single mTLS listener on 8884, device CA,
+ACL) is in `ops/mosquitto/`; the steps below describe how the server
+certificate was first installed.
 
 1. Copy `cert.pem`, `key.pem`, `ca.crt` to `/etc/mosquitto/certs/`; key
    `0640 root:mosquitto`, `cert.pem` and `ca.crt` `0644` (the broker runs as
@@ -58,5 +62,28 @@ Postgres). Browsers and terminal tablets need the same `ca.crt` installed.
 To renew, move the old `issued/<name>` directory away, run `issue` again
 and replace the files as above. All three certificates expire together.
 
-Not covered yet: client certificates for edge nodes and terminals
-(per-device identity, `allow_anonymous false` on Mosquitto).
+## Device CA (client certificates, per-device identity)
+
+A second, **separate** CA (`~/mes-device-ca`, `MES_DEVICE_CA_DIR`) issues
+one client certificate per device. Keep its root key offline like the
+server CA's, with its own passphrase. Whoever holds this key decides which
+devices can exist — it is the basis of licensing — and a leaked server
+certificate key can never be turned into a device identity.
+
+```bash
+./mes-ca.sh init-device
+./mes-ca.sh issue-device backend   backend
+./mes-ca.sh issue-device node-gate edge-node
+./mes-ca.sh issue-device node-sim  simulator
+./mes-ca.sh check ~/mes-device-ca/issued/node-gate/cert.pem
+```
+
+The first argument becomes the certificate CN (= the MQTT user name once
+Mosquitto uses `use_identity_as_username`), the second the role (OU). One
+certificate per device: never share one between two machines, or you cannot
+tell them apart or revoke one of them. Mosquitto's `cafile` is the **device**
+CA's `root.crt` (it verifies clients), while `certfile`/`keyfile` stay the
+server certificate (clients verify the broker against the server CA).
+
+Not covered yet: client certificates for terminals/browsers, and a CRL
+(revocation is done with the Mosquitto ACL / user list for now).

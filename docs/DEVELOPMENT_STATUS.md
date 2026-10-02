@@ -295,7 +295,8 @@ connected` log line carrying the `userId`; a ticket-less upgrade via
 ## TLS on every path and the internal CA — Oct 1
 
 Since Oct 1 all network traffic is encrypted (assessment and verification
-results: `docs/SECURITY_REVIEW.md` 8.2). Plain MQTT (1883) is gone, the
+results: `docs/SECURITY_REVIEW.md` 8.2). Plain MQTT (1883) and the anonymous 8883 listener are gone (MQTT is mutual
+TLS on 8884, see "Device certificates and MQTT access control" below), the
 backend (3001) and Postgres (5432) listen on loopback only, and the Vite
 dev server (5173) is disabled.
 
@@ -312,19 +313,24 @@ dev server (5173) is disabled.
   ~30 days before October 2027.** An expired broker certificate stops every
   edge agent. The public `ca.crt` is at `/etc/ssl/mes-ca.crt` on node-dc
   and node-gate.
-- **Mosquitto** (node-dc): `/etc/mosquitto/conf.d/tls.conf` has the 8883
-  listener (`cafile`, `certfile`, `keyfile` in `/etc/mosquitto/certs/`,
-  `tls_version tlsv1.2`, `allow_anonymous true` — TLS here is encryption
-  only, no authentication). `conf.d/mes.conf` is only a comment now (old
-  plain listener: `/root/mes.conf.bak`). `cert.pem` / `ca.crt` must be
-  `0644`, `key.pem` `0640 root:mosquitto`, otherwise the broker fails with
-  "Unable to load CA certificates ... Permission denied" (logged to
-  `/var/log/mosquitto/mosquitto.log`, not the journal).
+- **Mosquitto** (node-dc): `/etc/mosquitto/conf.d/tls.conf` has a single
+  listener, 8884 (`cafile` = device CA, `certfile`/`keyfile` = the server
+  certificate in `/etc/mosquitto/certs/`, `tls_version tlsv1.2`,
+  `require_certificate true`, `use_identity_as_username true`,
+  `allow_anonymous false`, `acl_file`; `per_listener_settings true` on the
+  first line). `conf.d/mes.conf` is only a comment now (old plain
+  listener: `/root/mes.conf.bak`). `cert.pem` / `ca.crt` / `device-ca.crt`
+  must be `0644`, `key.pem` `0640 root:mosquitto`, `acl.conf`
+  `0640 root:mosquitto`, otherwise the broker fails with "Unable to load
+  CA certificates ... Permission denied" (logged to
+  `/var/log/mosquitto/mosquitto.log`, not the journal). Reference copies:
+  `ops/mosquitto/`.
 - **MQTT clients**: `MQTT_CA_FILE` (path to the CA PEM) is read by
   `mqtt-tls.ts` in both `backend` and `edge-agent`; unset = no change. The
   URL must use a name or IP that is in the certificate's SAN
-  (`mqtts://192.168.60.141:8883`, not `127.0.0.1`). The edge-agent tag
-  `edge-agent-v2` contains the TLS support.
+  (`mqtts://192.168.60.141:8884`, not `127.0.0.1`). The edge-agent tag
+  `edge-agent-v2` added the TLS support, `edge-agent-v3` the client
+  certificate (`MQTT_CLIENT_CERT` / `MQTT_CLIENT_KEY`, both or neither).
 - **Reverse proxy** (`ops/proxy/mes-nginx.conf`, installed as
   `/etc/nginx/sites-available/mes`, default site removed): 80 → 301 to
   https; 443 with the `proxy` certificate (`/etc/nginx/certs/{cert,key}.pem`),
@@ -359,7 +365,9 @@ dev server (5173) is disabled.
   → `mes|t|TLSv1.3`. Rollback files from the change: `/root/pg_hba.conf.bak`.
 - **node-gate**: `mes-edge-node` is the enabled service (claims the node
   with its token and runs the channels assigned in the backend). Its
-  drop-in sets `MQTT_URL=mqtts://192.168.60.141:8883`, `MQTT_CA_FILE`,
+  drop-ins set `MQTT_URL=mqtts://192.168.60.141:8884`, `MQTT_CA_FILE`,
+  `MQTT_CLIENT_CERT` / `MQTT_CLIENT_KEY` (`/etc/mes/mqtt-client/`, key
+  `0600`, `mtls.conf`),
   `BACKEND_HTTP_URL=https://192.168.60.141`,
   `NODE_EXTRA_CA_CERTS=/etc/ssl/mes-ca.crt` and
   `EnvironmentFile=/etc/mes/edge-node.env` (holds `EDGE_NODE_TOKEN`,
@@ -386,6 +394,59 @@ dev server (5173) is disabled.
   - node-dc's `curl` needs `--cacert /etc/ssl/mes-ca.crt`; node-gate has no
     `curl` — a Node `fetch` with `NODE_EXTRA_CA_CERTS` works.
   - Paste commands into zsh without `#` comment lines.
+
+## Device certificates and MQTT access control — Oct 2
+
+- **Two CAs, on purpose.** The server CA (`~/mes-ca`) signs the server
+  certificates; the **device CA** (`~/mes-device-ca`, own passphrase, both
+  offline on the admin laptop) signs one client certificate per device:
+  `mes-ca.sh init-device`, `mes-ca.sh issue-device <name> <role>` (the name
+  becomes the CN = the MQTT user name, the role the OU). Issued:
+  `backend` (backend), `node-gate` (edge-node), `admin-laptop` (tool) and
+  `node-sim` (unused: node-sim only runs the simulated PLCs
+  `mes-modbus-simulator`, `-opcua-simulator`, `-plc-simulator`, which the
+  edge node reads — they are not MQTT clients). Never share one certificate
+  between two machines. Details and the test results are in `ops/ca/README.md`
+  and `docs/SECURITY_REVIEW.md` 8.3.
+- **Where the files are**: `/etc/mes/mqtt-client/{cert,key}.pem` on node-dc
+  (backend) and on node-gate (edge node), directory `0700`, key `0600`;
+  the broker side has `/etc/mosquitto/certs/device-ca.crt` and
+  `/etc/mosquitto/acl.conf`. Client settings are systemd drop-ins:
+  `mes-backend.service.d/{override,mtls}.conf` and
+  `mes-edge-node.service.d/{override,mtls}.conf`.
+- **ACL** (`/etc/mosquitto/acl.conf`, topics from `@mes/shared`:
+  `mes/machines/<id>/events` edge → backend, `.../acks` backend → edge):
+  `backend` reads `mes/machines/+/events`, writes `mes/machines/+/acks`;
+  `node-gate` the reverse; `admin-laptop` reads `mes/#` and `$SYS/#`.
+  Add a device = issue a certificate + add a `user <CN>` block +
+  `systemctl reload mosquitto`; remove/revoke = delete the block + reload
+  (the certificate stays valid until expiry, but its publishes are dropped
+  and nothing is delivered to it).
+- **Watching the traffic now**: anonymous `mosquitto_sub` no longer works.
+  From the laptop: `mosquitto_sub -h 192.168.60.141 -p 8884 --cafile
+  ~/mes-ca/issued/mosquitto/ca.crt --cert
+  ~/mes-device-ca/issued/admin-laptop/cert.pem --key
+  ~/mes-device-ca/issued/admin-laptop/key.pem -t 'mes/#' -v`.
+- **Gotcha that stopped ingestion for ~5 minutes on Oct 2**: do not use
+  `require_certificate false` together with `use_identity_as_username
+  true` as a "transition mode". With `require_certificate false` Mosquitto
+  does not even request a client certificate, and `use_identity_as_username`
+  then refuses every client ("Connection Refused: bad user name or
+  password"), certificate or not. The safe migration is a second listener
+  (done: 8884 next to the old 8883), clients moved one by one, then the old
+  listener removed. Test any Mosquitto config change on a throw-away broker
+  first.
+- **Gotcha in the edge-agent deploy script**: `scripts/deploy-edge-agent.sh`
+  restarts every unit from its `SERVICES` list that appears in
+  `systemctl list-units --all`; it was not checked whether it can start the
+  disabled legacy `mes-edge-agent*` units or whether it knows
+  `mes-edge-node`. The edge node was updated by hand instead:
+  `git fetch origin --tags && git checkout edge-agent-v3`, `pnpm run build`
+  in `packages/edge-agent`, one `systemctl restart mes-edge-node` (expect a
+  few `409 already active` lines first).
+- **Expiry**: all device certificates are valid for one year (October 2027).
+  An expired device certificate stops that device, so the renewal reminder
+  covers them too.
 
 ## Sessions, audit log and scheduling config — Sep 30 fixes
 
@@ -937,8 +998,9 @@ is in `ops/backup/README.md`.
   first external customer. Machine-history purge for the pilot:
   `ops/maintenance/` (dry run by default; not run yet).
 - TLS is done on every path (see "TLS on every path"). Next security
-  items per `docs/SECURITY_REVIEW.md`: per-device client certificates for
-  MQTT with `allow_anonymous false`; the CA on the terminal tablets; a
+  items per `docs/SECURITY_REVIEW.md`: the CA on the terminal tablets; the
+  `deploy-edge-agent.sh` service list (see above); a CRL if revocation by
+  ACL is not enough; a
   real DNS name instead of `mes.pilot.internal` (then re-issue the
   certificates); a calendar reminder for the October 2027 renewal.
 - Backend: ignore (or reject) events for machine ids that are not in
