@@ -7,6 +7,39 @@ import { insertEvent } from "./events-repository.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
 import { checkAndAutoCompleteWorkOrders } from "./work-order-completion-service.js";
+import { pool } from "./db.js";
+import { createMachineRegistryCache } from "./machine-registry-cache.js";
+
+// Events are only accepted for machines that exist in the registry. An
+// unknown machine id used to be stored anyway, and its hourly rollup then
+// failed on the machines foreign key - for every machine. The cache keeps
+// the check off the hot path (see machine-registry-cache.ts).
+const registeredMachines = createMachineRegistryCache(async () => {
+  const { rows } = await pool.query<{ id: string }>("SELECT id FROM machines");
+  return rows.map((r) => r.id);
+});
+
+// One warning per machine id per 5 minutes, with the number of events
+// dropped meanwhile, so a misconfigured (or malicious) sender cannot flood
+// the log.
+const UNKNOWN_WARN_INTERVAL_MS = 5 * 60_000;
+const unknownSeen = new Map<string, { lastWarn: number; dropped: number }>();
+
+function noteUnknownMachine(log: FastifyBaseLogger, machineId: string): void {
+  const now = Date.now();
+  if (unknownSeen.size > 1000) unknownSeen.clear(); // bound memory against random ids
+  const entry = unknownSeen.get(machineId) ?? { lastWarn: 0, dropped: 0 };
+  entry.dropped += 1;
+  if (now - entry.lastWarn >= UNKNOWN_WARN_INTERVAL_MS) {
+    log.warn(
+      { machineId, dropped: entry.dropped },
+      "dropped events from a machine id that is not registered",
+    );
+    entry.lastWarn = now;
+    entry.dropped = 0;
+  }
+  unknownSeen.set(machineId, entry);
+}
 
 export function startMqttSubscriber(log: FastifyBaseLogger): mqtt.MqttClient {
   // A stable clientId + clean:false gives this client a persistent broker
@@ -60,6 +93,24 @@ async function handleMessage(
     return;
   }
   const event = result.data;
+
+  try {
+    if (!(await registeredMachines.isRegistered(event.machineId))) {
+      noteUnknownMachine(log, event.machineId);
+      // Acked on purpose: the edge agent republishes every unacked event
+      // every few seconds, so a never-registered machine would otherwise be
+      // resent forever while its buffer only grows.
+      client.publish(
+        ackTopic(event.machineId),
+        JSON.stringify({ sourceEventId: event.sourceEventId }),
+        { qos: 1 },
+      );
+      return;
+    }
+  } catch (err) {
+    log.error({ err }, "machine registry lookup failed — NOT acking, edge agent will retry");
+    return;
+  }
 
   try {
     const outcome = await insertEvent(event);

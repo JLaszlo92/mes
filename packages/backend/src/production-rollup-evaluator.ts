@@ -19,16 +19,17 @@ export async function recomputeProductionCounts(from: Date, to?: Date): Promise<
     `
     INSERT INTO production_counts_hourly (machine_id, bucket_start, good_count, scrap_count, updated_at)
     SELECT
-      machine_id,
-      date_trunc('hour', "timestamp") AS bucket_start,
-      COUNT(*) FILTER (WHERE payload->>'result' = 'good'),
-      COUNT(*) FILTER (WHERE payload->>'result' = 'scrap'),
+      e.machine_id,
+      date_trunc('hour', e."timestamp") AS bucket_start,
+      COUNT(*) FILTER (WHERE e.payload->>'result' = 'good'),
+      COUNT(*) FILTER (WHERE e.payload->>'result' = 'scrap'),
       now()
-    FROM events
-    WHERE type = 'production_count'
-      AND "timestamp" >= date_trunc('hour', $1::timestamptz)
-      AND ($2::timestamptz IS NULL OR "timestamp" < date_trunc('hour', $2::timestamptz))
-    GROUP BY machine_id, date_trunc('hour', "timestamp")
+    FROM events e
+    JOIN machines m ON m.id = e.machine_id
+    WHERE e.type = 'production_count'
+      AND e."timestamp" >= date_trunc('hour', $1::timestamptz)
+      AND ($2::timestamptz IS NULL OR e."timestamp" < date_trunc('hour', $2::timestamptz))
+    GROUP BY e.machine_id, date_trunc('hour', e."timestamp")
     ON CONFLICT (machine_id, bucket_start) DO UPDATE SET
       good_count = EXCLUDED.good_count,
       scrap_count = EXCLUDED.scrap_count,
