@@ -28,6 +28,8 @@ describe("S7SignalSource", () => {
       { kind: "machine_status", status: "running" },
       { kind: "production_count", result: "good" },
       { kind: "production_count", result: "scrap" },
+      { kind: "machine_status", status: "bogus_status" },
+      { kind: "machine_status", status: "down" },
     ]);
   });
 

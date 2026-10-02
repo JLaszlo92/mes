@@ -23,12 +23,15 @@ describe("GpioSignalSource", () => {
     });
     source.stop();
 
-    // Exactly the 3 valid lines the fixture emits — the malformed line and
-    // the unknown status value must not produce a reading.
+    // The malformed line is dropped. Custom status names are valid since
+    // 58b141c, so "bogus_status" passes through, and the bridge exiting
+    // makes the source report "down".
     expect(readings).toEqual([
       { kind: "machine_status", status: "running" },
       { kind: "production_count", result: "good" },
       { kind: "production_count", result: "scrap" },
+      { kind: "machine_status", status: "bogus_status" },
+      { kind: "machine_status", status: "down" },
     ]);
   });
 });

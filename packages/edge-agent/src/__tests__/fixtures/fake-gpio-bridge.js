@@ -2,8 +2,8 @@
 // GPIO hardware to be present. GpioSignalSource.ts only cares that
 // *something* is spawned and prints newline-delimited JSON to stdout —
 // this fixture exercises exactly that contract, including a couple of
-// lines that should be rejected (malformed JSON, an unknown status value)
-// so the test can confirm those are dropped rather than crashing anything.
+// lines that should be rejected (malformed JSON, a custom status name)
+// so the test can confirm the first is dropped and the second passes through.
 console.log(JSON.stringify({ kind: "machine_status", status: "running" }));
 setTimeout(() => console.log(JSON.stringify({ kind: "production_count", result: "good" })), 30);
 setTimeout(() => console.log(JSON.stringify({ kind: "production_count", result: "scrap" })), 60);
