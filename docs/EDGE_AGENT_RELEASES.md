@@ -74,3 +74,14 @@ git describe --tags --match 'edge-agent-*' --exact-match
 If this prints a tag name, that tag is exactly what's running. If it
 errors, the working tree is on some untagged commit (e.g. mid-development
 on `main`) rather than a released version.
+
+## Release notes
+
+- **edge-agent-v4** (Oct 2, 2026) — **breaking:** without `EDGE_NODE_TOKEN` the
+  agent no longer starts in legacy mode; it logs why and exits with code 78.
+  The old single-machine mode must be requested with `EDGE_AGENT_LEGACY=true`.
+  Reason: a forgotten token used to make a node publish events for the default
+  machine id `sim-machine-01`. Check before deploying: every unit that should
+  keep running has a token (`/etc/mes/edge-node.env`) or the legacy flag. Units
+  that are disabled "legacy" leftovers now fail on a stray restart instead of
+  publishing, which also makes `deploy-edge-agent.sh` safe against them.

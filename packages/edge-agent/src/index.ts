@@ -13,6 +13,7 @@ import type { SignalReading, SignalSource } from "./signal-sources/SignalSource.
 import { ModbusSignalSource } from "./signal-sources/ModbusSignalSource.js";
 import { SignalPresenceWatchdog } from "./signal-sources/SignalPresenceWatchdog.js";
 import { ProductionGate } from "./signal-sources/ProductionGate.js";
+import { decideStartMode, legacyFlagFromEnv, EXIT_CONFIG } from "./start-mode.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -362,11 +363,16 @@ async function runRegistryMode(token: string): Promise<void> {
 // Belépési pont
 // ============================================================
 
-if (config.edgeNodeToken) {
-  runRegistryMode(config.edgeNodeToken).catch((err) => {
+const startMode = decideStartMode(config.edgeNodeToken, legacyFlagFromEnv(process.env.EDGE_AGENT_LEGACY));
+if (startMode.mode === "registry") {
+  runRegistryMode(startMode.token).catch((err) => {
     log.error({ err }, "failed to start in registry mode");
     process.exit(1);
   });
-} else {
+} else if (startMode.mode === "legacy") {
+  log.warn("EDGE_AGENT_LEGACY=true - legacy single-machine mode (no registry, no heartbeat); the machine id comes from MACHINE_ID");
   runLegacyMode();
+} else {
+  log.error(startMode.reason);
+  process.exit(EXIT_CONFIG);
 }
