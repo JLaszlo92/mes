@@ -386,16 +386,22 @@ Ordered by how much real risk each closes relative to the effort:
    `trustProxy` in the same pass.
 3. **Per-device client certificates for MQTT — done (Oct 2)**: device CA,
    mutual TLS on 8884, `allow_anonymous false`, per-topic ACLs. Unregistered
-   machine ids are now dropped in the backend (done Oct 2). Remaining
-   from it: a certificate renewal reminder (device certificates also expire in
-   October 2027), optionally a CRL.
+   machine ids are now dropped in the backend (done Oct 2). Certificate
+   expiry is now monitored (see item 6). Remaining from it: optionally a CRL.
 4. **Generate an SBOM and run a dependency audit** (`pnpm audit`). Low
    effort, meaningful for any procurement conversation.
 5. Now that TLS is in place: consider moving the session token from `localStorage` to an
    `HttpOnly` cookie (with CSRF protection).
-6. **Calendar reminder for certificate renewal** — the server
-   certificates expire in October 2027 (`mes-ca.sh check` exits 2 within
-   30 days); also install the CA on the terminal tablets.
+6. **Certificate expiry monitoring — done (Oct 2)**, two layers. Admin
+   laptop (holds both CAs, so every certificate incl. the edge nodes'):
+   `mes-ca.sh status` (exit 2 within 60 days) and `mes-ca.sh ics` (one
+   calendar reminder per certificate, 30 days before expiry; import the
+   file). node-dc: `mes-cert-check.timer` (daily) checks the certificates in
+   use there and records the result in `job_status` (`cert_expiry`); the
+   backend's `cert-health-evaluator.ts` raises a system alert when one
+   expires within 30 days / has expired / cannot be read, **and when no check
+   ran for 3 days** (a silent monitor is noticed). Still open: install the CA
+   on the terminal tablets.
 7. Everything marked ➡️ above stays deferred, matching PRD's own guidance
    — revisit only when a specific customer's requirement makes it
    concrete, not speculatively.

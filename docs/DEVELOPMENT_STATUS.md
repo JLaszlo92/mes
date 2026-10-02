@@ -309,8 +309,8 @@ dev server (5173) is disabled.
   Needs OpenSSL 3.x (macOS's LibreSSL does not work). Issued and deployed:
   `mosquitto`, `proxy` (nginx) and `postgres`. SANs: `DNS:mes.pilot.internal`
   (placeholder, no DNS record yet) and `IP:192.168.60.141`; the postgres
-  cert also has `localhost` / `127.0.0.1`. **Renewal: calendar reminder
-  ~30 days before October 2027.** An expired broker certificate stops every
+  cert also has `localhost` / `127.0.0.1`. **Renewal: reminders via
+  `mes-ca.sh ics`, alert via the node-dc expiry monitor (Oct 2).** An expired broker certificate stops every
   edge agent. The public `ca.crt` is at `/etc/ssl/mes-ca.crt` on node-dc
   and node-gate.
 - **Mosquitto** (node-dc): `/etc/mosquitto/conf.d/tls.conf` has a single
@@ -964,6 +964,26 @@ is in `ops/backup/README.md`.
   an aborted handshake; a TLS check must also require a real cipher and no
   error/alert line (`tls_ok` in `install-on-node.sh`).
 
+## Certificate expiry monitoring — Oct 2
+
+- Admin laptop: `mes-ca.sh status [--warn N]` lists every certificate of
+  both CAs with days left (exit 2 if any <= 60 days); `mes-ca.sh ics` writes
+  one all-day reminder per certificate, 30 days before expiry. Portable
+  (macOS and Linux): days are found by a binary search on `openssl -checkend`,
+  not by parsing dates.
+- node-dc: `ops/monitoring/mes-cert-check.sh` + `mes-cert-check.{service,timer}`
+  (daily 05:15 UTC), installed by `ops/monitoring/install-cert-check.sh`.
+  Checks the Mosquitto server cert, both CA roots, the nginx cert, the
+  Postgres cert, the backend device cert and `/etc/ssl/mes-ca.crt`; extra
+  paths go in `/etc/mes/cert-check.paths`. Records the result in
+  `job_status` (`cert_expiry`) the same way `mes-backup.sh` does.
+- Backend: `cert-health-evaluator.ts` (system alert `cert_health`), started
+  from `index.ts`; the decision logic is in `cert-health.ts` (no db import,
+  so its test runs without `DATABASE_URL`). Install the timer first, then deploy the evaluator,
+  otherwise it reports "no check recorded yet".
+- When a certificate is renewed, nothing needs to be told to the monitor: the
+  next daily run reads the new file and the alert resolves by itself.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
@@ -1044,7 +1064,8 @@ is in `ops/backup/README.md`.
   `deploy-edge-agent.sh` service list (see above); a CRL if revocation by
   ACL is not enough; a
   real DNS name instead of `mes.pilot.internal` (then re-issue the
-  certificates); a calendar reminder for the October 2027 renewal.
+  certificates); (the October 2027 renewal reminder is done: `mes-ca.sh ics` and the
+  node-dc expiry monitor, see "Certificate expiry monitoring").
 - An edge node without `EDGE_NODE_TOKEN` should probably fail loudly
   instead of falling back to a simulated machine. (Events for unregistered
   machine ids are already dropped in the backend, see below.)

@@ -1,0 +1,8 @@
+[Unit]
+Description=MES certificate expiry check
+After=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mes-cert-check.sh
+Nice=10

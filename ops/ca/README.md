@@ -87,3 +87,21 @@ server certificate (clients verify the broker against the server CA).
 
 Not covered yet: client certificates for terminals/browsers, and a CRL
 (revocation is done with the Mosquitto ACL / user list for now).
+
+## Expiry overview and calendar reminders
+
+All certificates (server and device, plus both roots) live in the CA
+directories on the admin laptop, so that is where expiry is tracked:
+
+```bash
+./mes-ca.sh status              # every certificate, days left; exit 2 if any <= 60 days
+./mes-ca.sh status --warn 90
+./mes-ca.sh ics                 # writes mes-cert-reminders.ics
+```
+
+`ics` creates one all-day reminder per certificate, 30 days before it
+expires — import the file into your calendar once, and again after every
+renewal (the events are keyed by certificate serial, so a re-issued
+certificate gets a new reminder). Run `status` after every issuance and
+before every site visit. Certificates currently in use on node-dc are also
+checked there by a timer that raises a system alert (`ops/monitoring/`).

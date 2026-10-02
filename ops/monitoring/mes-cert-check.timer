@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily MES certificate expiry check
+
+[Timer]
+# node-dc runs in UTC: 05:15 UTC = 06:15 / 07:15 Budapest time (winter / summer).
+OnCalendar=*-*-* 05:15:00
+RandomizedDelaySec=10min
+# If the machine was down at the scheduled time, run at the next start.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
