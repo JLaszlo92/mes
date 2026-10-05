@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2, 3 and 4)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2, 3, 4 and 5)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer.
 
 ## Method
 
@@ -81,7 +81,7 @@ missing events.
    `StateDirectory=mes-edge`, `BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson`).
    Since `edge-agent-v5` `ops/onboarding/install-on-node.sh` generates the same
    settings for new nodes. The buffer is appended without `fsync`, so a power
-   cut can still lose the last second or two.
+   cut can still lose the last second or two. *(Confirmed for a clean reboot in slice 5.)*
 2. **Every edge agent restart cost about 70 s of data** (`kill -9`, crash,
    deployment). The backend admits a new instance only when the previous
    heartbeat is older than `HEARTBEAT_STALE_SECONDS`, and the agent did not
@@ -170,12 +170,46 @@ Effect: the length of a broker outage at the moment of an agent start no longer
 decides whether parts are lost; the disk buffer takes them, and the
 `catchupMaxMinutes` limit only applies to gaps in which nobody read the PLC.
 
-### Not tested yet
+## Slice 5 — node-gate reboot with the broker down (Oct 5, 2026)
 
+Question: do the buffer and the counter state files in `/var/lib/mes-edge`
+survive a reboot of the edge node, and does the agent come back without
+manual action while the broker is still unreachable? Agent: `edge-agent-v6`.
+node-gate is a Proxmox LXC container, so this is a container reboot (software
+restart, host disk untouched), not a power cut.
+
+**Procedure.** `mes-edge-node` is `enabled`. Mosquitto stopped on node-dc at
+17:32:13 UTC; after about 60 s, with the buffers filling, `sync; reboot` on
+node-gate at 17:33:16. After the boot the broker was kept down for another
+minute, then started.
+
+| Step | Result |
+|---|---|
+| Before the reboot (broker down 63 s) | Buffers 31 / 31 / 21 events (modbus / opcua / s7), oldest at 17:32:15 / 17:32:15 / 17:32:14. Counter files: good/scrap Modbus 53960 / 16058, OPC-UA 183399 / 15719, S7 108346 / 9289 |
+| Boot | Container up in a few seconds; `mes-edge-node` active by itself. `claimed edge node` 7 s after the `reboot` command — **no `already active` wait**, i.e. the SIGTERM during shutdown released the lease. Three `channel started` lines within 0.3 s, with the broker still down; no `connected to broker` line |
+| Catch-up (gap about 10 s) | Modbus 3 good / 1 scrap, OPC-UA 5 / 0 booked from the counter files that were read from disk. No catch-up line for S7 (no parts produced in the gap) |
+| 70 s after the boot, broker still down | Buffers 72 / 69 / 40 events; the **oldest events are the same as before the reboot** (17:32:15.220 / 17:32:15.220 / 17:32:14.846), so the pre-reboot content survived and the new events were appended to it |
+| Broker started | Buffers 0 / 0 / 0 within seconds; stays empty |
+| Database vs PLC counters (per-machine window from `seenAtMs` before and after, two bounds) | Counter differences Modbus 85 good / 6 scrap, OPC-UA 81 / 4, S7 43 / 4; the database holds **85 / 6, 81 / 4, 43 / 4 — exact match, no loss, no duplication** |
+
+Conclusion: a clean reboot of the edge node with a non-empty buffer and a dead
+broker costs no data. Buffer and counter state are on persistent storage, the
+service starts by itself, the lease is released on shutdown, the channels read
+the PLCs without the broker, and the catch-up books the few seconds of the
+reboot. No new defect found.
+
+Limits of this test: it is a clean shutdown of a container. A hard stop
+(`pct stop`, power cut, kernel crash) is still untested: the new instance
+would wait ~90 s for the lease (finding 6) and the last second or two of the
+buffer may be missing because it is appended without `fsync` (finding 1).
+
+## Not tested yet
+
+- Hard stop of the edge node (`pct stop` or a real power cut) with a non-empty
+  buffer: lease wait, size of the unsynced loss at the end of the buffer file,
+  integrity of the last buffer line.
 - Duration of `systemctl stop` with the broker unreachable (the 5 s forced exit
   in v6 is expected to bound it; not measured).
-- A full node-gate reboot (the buffer and the counter files are in
-  `/var/lib/mes-edge`, which should survive it).
 - A gap longer than the limit with the standard 10 minutes (the 1-minute
   variant was tested live).
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the

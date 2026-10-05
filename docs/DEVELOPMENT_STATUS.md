@@ -1073,6 +1073,11 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `StateDirectory=mes-edge` and `BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson`.
   The buffer is appended without `fsync`: a power cut can lose the last
   second or two.
+- **node-gate reboot test passed** (Oct 5, `CHAOS_TEST_FINDINGS.md` slice 5):
+  reboot with the broker down and a non-empty buffer; buffer and counter files
+  survived, the agent came back by itself with a released lease and started the
+  channels without the broker, and the database matched the PLC counter
+  differences exactly (85/6, 81/4, 43/4).
 
 ## Edge node and channel editing — Oct 5
 
@@ -1230,11 +1235,13 @@ rewritten) now edits what used to need the database or a delete and re-add:
   (run `git checkout` on it before commits, or untrack it); the `gpio-` and
   `s7-signal-source` tests wait a fixed 400 ms and can fail on a loaded
   machine.
-- **Chaos tests not done yet**: node-gate reboot, a gap longer than the
-  standard 10 minutes (only the 1-minute variant was run), the settings API
-  with a real session, `systemctl stop` duration with the broker down,
-  Postgres stopped / disk full on node-dc, network partition, clock skew
-  between edge node and server, expired broker certificate.
+- **Chaos tests not done yet**: a hard stop of node-gate (`pct stop` / power
+  cut; the clean reboot passed on Oct 5, see `CHAOS_TEST_FINDINGS.md` slice 5),
+  a gap longer than the standard 10 minutes (only the 1-minute variant was
+  run), the settings API with a real session, `systemctl stop` duration with
+  the broker down, Postgres stopped / disk full on node-dc, network
+  partition, clock skew between edge node and server, expired broker
+  certificate.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
