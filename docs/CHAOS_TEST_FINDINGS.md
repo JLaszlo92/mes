@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
 **Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 and 3)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release).
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer).
 
 ## Method
 
@@ -118,6 +118,7 @@ first). Machines: `s7-rig-01`, `modbus-rig-01`, `opcua-rig-01`.
 | Restart, 4–7 s gap | Parts made during the restart were booked: 2 / 2 / 1 |
 | Agent stopped for 60 s, then started (gap 64 s) | Booked after the start: S7 14 good, Modbus 31 good + 1 scrap, OPC-UA 21 good + 5 scrap. Database window around the start: S7 15 / 0, Modbus 32 / 1, OPC-UA 22 / 5 — the catch-up numbers plus one live part per machine |
 | Per-node limit set to 1 minute (`edge_nodes.settings`, changed in the database), agent stopped for 2 min | The agent used the new limit after the restart and dropped the gap (`too_old`, gap 123–125 s), logging exactly what was lost: S7 26 good / 2 scrap, Modbus 54 / 2, OPC-UA 53 / 7. Limit set back to 10 and the agent restarted afterwards |
+| **Broker stopped, then agent `kill -9` 73 s later, broker started again 3 min after the stop** | Buffer at the kill: 37 / 38 / 21 events (all of them still in the file after the kill). The new instance waited for the lease (18 restarts, ~96 s), claimed the node, and then waited for the broker. After the broker returned: buffers empty, **0 duplicates**, catch-up booked the part of the gap in which nobody observed the PLC (S7 35 good / 4 scrap, Modbus 48 / 3, OPC-UA 42 / 2; gap 101–102 s). Per machine, the good/scrap events in the database between the first and the last counter sample equal the PLC counter difference: Modbus 93 / 6 = 93 / 6, OPC-UA 83 / 5 = 83 / 5, S7 56 / 6 vs 55 / 6 (one live part at the window edge) — no loss, no duplication |
 
 The state files in `/var/lib/mes-edge/` (`counters.<machine>.json`) held the
 last counter values and the time they were seen.
@@ -131,12 +132,31 @@ baseline; more than 5000 parts in one catch-up is treated as a wrong register
 and dropped. The same rule applies to a lost PLC connection while the agent
 runs.
 
+### Findings
+
+5. **An agent that starts while the broker is down does not read the PLC at
+   all until the broker is back.** `runRegistryMode` waits for the MQTT
+   `connect` before it starts the channels. The catch-up makes this harmless
+   up to `catchupMaxMinutes`, but if the broker (or the network to it) is
+   down longer than the limit at the moment the agent starts, the parts of
+   that period are dropped even though the PLC kept counting. Improvement not
+   built: start the channels (which buffer to disk) without waiting for the
+   broker.
+6. The lease wait after a crash is the same ~90 s as before; only a clean
+   shutdown releases the lease. A shorter `HEARTBEAT_STALE_SECONDS` would
+   shorten it at the cost of false duplicate-session errors on a slow
+   network.
+7. Test-method note: a database comparison needs a lower **and** an upper
+   time bound per machine, taken from the `seenAtMs` of the counter files
+   before and after the test. A first query without an upper bound showed
+   too many parts (the machines kept producing).
+
 ### Not tested yet
 
-- `kill -9` while the buffer is not empty (the broker stopped first), and a
-  full node-gate reboot — they would confirm the on-disk buffer survives.
-  After `kill -9` the catch-up rule should also be checked (the stored counter
-  values are at most a few seconds old; the gap includes the lease wait).
+- A full node-gate reboot (the buffer and the counter files are in
+  `/var/lib/mes-edge`, which should survive it).
+- A gap longer than the limit with the standard 10 minutes (the 1-minute
+  variant was tested live).
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
