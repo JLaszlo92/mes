@@ -15,11 +15,17 @@ describe("GpioSignalSource", () => {
     // why that's a faithful enough stand-in for gpio_bridge.py in this test.
     const source = new GpioSignalSource({ pythonPath: "node", scriptPath: FIXTURE_PATH });
 
+    // The fixture ends with the bridge exiting, which the source reports as "down".
+    // Wait for that, not for a fixed delay: a loaded machine starts the process slowly.
     await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 5000);
       source.start((reading) => {
         readings.push(reading);
+        if (reading.kind === "machine_status" && reading.status === "down") {
+          clearTimeout(timer);
+          resolve();
+        }
       });
-      setTimeout(resolve, 400);
     });
     source.stop();
 
