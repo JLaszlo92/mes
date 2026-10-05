@@ -117,6 +117,7 @@ first). Machines: `s7-rig-01`, `modbus-rig-01`, `opcua-rig-01`.
 | Clean `systemctl restart` | New instance claimed the node 2 s after the stop, no `already active` loop (the ~70 s gap is gone for clean restarts) |
 | Restart, 4–7 s gap | Parts made during the restart were booked: 2 / 2 / 1 |
 | Agent stopped for 60 s, then started (gap 64 s) | Booked after the start: S7 14 good, Modbus 31 good + 1 scrap, OPC-UA 21 good + 5 scrap. Database window around the start: S7 15 / 0, Modbus 32 / 1, OPC-UA 22 / 5 — the catch-up numbers plus one live part per machine |
+| Per-node limit set to 1 minute (`edge_nodes.settings`, changed in the database), agent stopped for 2 min | The agent used the new limit after the restart and dropped the gap (`too_old`, gap 123–125 s), logging exactly what was lost: S7 26 good / 2 scrap, Modbus 54 / 2, OPC-UA 53 / 7. Limit set back to 10 and the agent restarted afterwards |
 
 The state files in `/var/lib/mes-edge/` (`counters.<machine>.json`) held the
 last counter values and the time they were seen.
@@ -136,8 +137,9 @@ runs.
   full node-gate reboot — they would confirm the on-disk buffer survives.
   After `kill -9` the catch-up rule should also be checked (the stored counter
   values are at most a few seconds old; the gap includes the lease wait).
-- A gap longer than the limit (set `catchupMaxMinutes` to a small value, stop
-  the agent longer than that) — the unit tests cover it, a live run does not.
+- The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
+  live backend with a real session; the live test above changed the value in
+  the database. Route logic is covered by unit tests.
 - Postgres stopped / disk full on node-dc; network partition between the
   nodes; clock skew between the edge node and node-dc (event timestamps use
   the edge clock; the catch-up age also uses the edge clock); an expired
