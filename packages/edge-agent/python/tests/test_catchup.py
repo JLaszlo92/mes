@@ -46,7 +46,7 @@ class PlanCatchupTest(unittest.TestCase):
         self.assertEqual(plan["lost"], {"good": 10, "scrap": 0})
 
     def test_clock_set_back(self):
-        self.assertEqual(plan_catchup(stored(10, 0, -5000), {"good": 12, "scrap": 0}, NOW, 10 * MIN)["note"], "too_old")
+        self.assertEqual(plan_catchup(stored(10, 0, -5000), {"good": 12, "scrap": 0}, NOW, 10 * MIN)["note"], "clock_back")
 
     def test_too_large(self):
         plan = plan_catchup(stored(0, 0, 1000), {"good": MAX_CATCHUP_PARTS + 1, "scrap": 0}, NOW, 10 * MIN)

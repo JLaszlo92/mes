@@ -103,6 +103,7 @@ export class CounterBaseline {
         this.opts.log.info({ ...ctx, ...plan.emit }, "catch-up: parts produced while not observed are booked now");
         break;
       case "too_old":
+      case "clock_back":
       case "too_large":
       case "disabled":
         this.opts.log.warn(

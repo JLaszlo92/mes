@@ -37,7 +37,9 @@ def plan_catchup(stored, current, now_ms, max_age_ms):
     if max_age_ms <= 0:
         return {"emit": dict(_ZERO), "lost": delta, "note": "disabled", "age_ms": age_ms}
     # A negative age means the clock was set back: the length of the gap is unknown.
-    if age_ms < 0 or age_ms > max_age_ms:
+    if age_ms < 0:
+        return {"emit": dict(_ZERO), "lost": delta, "note": "clock_back", "age_ms": age_ms}
+    if age_ms > max_age_ms:
         return {"emit": dict(_ZERO), "lost": delta, "note": "too_old", "age_ms": age_ms}
     if delta["good"] + delta["scrap"] > MAX_CATCHUP_PARTS:
         return {"emit": dict(_ZERO), "lost": delta, "note": "too_large", "age_ms": age_ms}
@@ -80,7 +82,7 @@ def describe_plan(plan):
     note = plan["note"]
     if note == "caught_up":
         return f"catch-up: booked {plan['emit']['good']} good / {plan['emit']['scrap']} scrap produced while not observed (gap {age}s)"
-    if note in ("too_old", "too_large", "disabled"):
+    if note in ("too_old", "clock_back", "too_large", "disabled"):
         return (
             f"catch-up: {plan['lost']['good']} good / {plan['lost']['scrap']} scrap produced while not observed "
             f"were NOT booked ({note}, gap {age}s)"

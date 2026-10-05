@@ -25,6 +25,7 @@ export type CatchupNote =
   | "no_gap" // nothing was produced while we were away
   | "caught_up" // the missed parts are booked now
   | "too_old" // the gap is longer than allowed: not booked
+  | "clock_back" // the stored reading is from the future (clock set back): gap unknown, not booked
   | "too_large" // implausibly many parts: not booked
   | "counter_reset" // a counter went backwards (PLC restart): new baseline
   | "disabled"; // catch-up switched off (limit 0): not booked
@@ -60,7 +61,8 @@ export function planCatchup(
 
   if (maxAgeMs <= 0) return { emit: ZERO, lost: delta, note: "disabled", ageMs };
   // A negative age means the clock was set back: the length of the gap is unknown.
-  if (ageMs < 0 || ageMs > maxAgeMs) return { emit: ZERO, lost: delta, note: "too_old", ageMs };
+  if (ageMs < 0) return { emit: ZERO, lost: delta, note: "clock_back", ageMs };
+  if (ageMs > maxAgeMs) return { emit: ZERO, lost: delta, note: "too_old", ageMs };
   if (delta.good + delta.scrap > MAX_CATCHUP_PARTS) return { emit: ZERO, lost: delta, note: "too_large", ageMs };
 
   return { emit: delta, lost: ZERO, note: "caught_up", ageMs };

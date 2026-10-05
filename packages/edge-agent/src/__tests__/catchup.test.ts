@@ -40,7 +40,8 @@ describe("planCatchup", () => {
 
   it("does not trust a state from the future (clock set back)", () => {
     const p = planCatchup(stored(10, 0, -5000), { good: 12, scrap: 0 }, NOW, 10 * MIN);
-    expect(p.note).toBe("too_old");
+    expect(p.note).toBe("clock_back");
+    expect(p).toMatchObject({ emit: { good: 0, scrap: 0 }, lost: { good: 2, scrap: 0 } });
   });
 
   it("refuses an implausibly large jump", () => {
