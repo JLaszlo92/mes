@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slice 2)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 and 3)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release).
 
 ## Method
 
@@ -39,7 +39,10 @@ with no manual intervention (no edge-agent restart needed) in any case.
   a timeout or error, the next attempt starts fresh rather than replaying
   exactly what was missed. Given the poll-and-diff model (a counter is
   re-read fully next time, not incrementally), this is not a data-loss
-  risk, just worth noting as a design property.
+  risk, just worth noting as a design property. *(Updated Oct 5: for a
+  lost PLC connection or a restarted agent this is no longer true as such —
+  since `edge-agent-v5` the counters are compared with the last stored
+  values and the gap is booked up to a limit; see slice 3.)*
 
 ## Slice 2 — transport, backend and edge agent outages (Oct 5, 2026)
 
@@ -76,34 +79,66 @@ missing events.
    would have lost every unacknowledged event. Fixed on node-gate with a
    systemd drop-in (`mes-edge-node.service.d/buffer.conf`:
    `StateDirectory=mes-edge`, `BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson`).
-   `ops/onboarding/install-on-node.sh` still generates units without it.
-   The buffer is appended without `fsync`, so a power cut can still lose the
-   last second or two.
-2. **Every edge agent restart costs about 70 s of data** (`kill -9`, crash,
+   Since `edge-agent-v5` `ops/onboarding/install-on-node.sh` generates the same
+   settings for new nodes. The buffer is appended without `fsync`, so a power
+   cut can still lose the last second or two.
+2. **Every edge agent restart cost about 70 s of data** (`kill -9`, crash,
    deployment). The backend admits a new instance only when the previous
-   heartbeat is older than `HEARTBEAT_STALE_SECONDS`, and the agent does not
-   release its session on shutdown. A clean `systemctl restart` can be made
-   nearly instant by releasing the session on SIGTERM; a crash still waits
-   for the lease.
-3. **Parts produced while the agent process is down are not counted.** All
-   three counter sources take the first reading after a start as the
+   heartbeat is older than `HEARTBEAT_STALE_SECONDS`, and the agent did not
+   release its session on shutdown. **Fixed for clean restarts in v5** (the
+   agent releases the session on SIGTERM, see slice 3); after a crash or
+   `kill -9` the new instance still waits for the lease.
+3. **Parts produced while the agent process is down were not counted.** All
+   three counter sources took the first reading after a start as the
    baseline (`first_poll` in `s7_bridge.py`, `lastGoodCount = null` in the
    Modbus and OPC-UA sources) — which is also why a restart does not
-   double-count. Inside a running process a PLC connection loss is
-   caught up afterwards (the previous value is kept). Fix: persist the last
-   counter values next to the buffer and diff against them on start, with a
-   sanity rule for counters that went backwards (PLC reset) and a limit on how
-   old the stored value may be (event timestamps are the time of emission,
-   not of production).
+   double-count. *Correction (Oct 5):* the first version of this document
+   said a PLC connection loss inside a running process is caught up
+   afterwards. That is true for Modbus and OPC-UA (the previous value is
+   kept) but **not for S7**: after a recovery `s7_bridge.py` only re-announces
+   the status and skips the counter diff. Fixed in v5 for all three sources:
+   the last counter values are persisted next to the buffer and compared on
+   start and after a lost connection, with a sanity rule for counters that
+   went backwards (PLC reset) and a limit on the age of the gap (event
+   timestamps are the time of emission, not of production).
 4. `gpio-` and `s7-signal-source` tests had been failing since `58b141c`
    (custom status names are valid, a bridge that exits reports `down`);
    assertions updated on Oct 5. They still wait a fixed 400 ms, so they can
    fail on a loaded machine.
 
+## Slice 3 — edge-agent-v5 re-test (Oct 5, 2026)
+
+Deployed to node-gate by hand (`edge-agent-v5`, backend with migration 039
+first). Machines: `s7-rig-01`, `modbus-rig-01`, `opcua-rig-01`.
+
+| Test | Result |
+|---|---|
+| First start of v5 | The old agent had not released its lease, so the new process looped on `another instance ... already active` for about 90 s (19 restarts, expected once) and then claimed the node; the log showed `catchupMaxMinutes: 10` and, per channel, `no earlier counter values known; starting from the current ones` |
+| Clean `systemctl restart` | New instance claimed the node 2 s after the stop, no `already active` loop (the ~70 s gap is gone for clean restarts) |
+| Restart, 4–7 s gap | Parts made during the restart were booked: 2 / 2 / 1 |
+| Agent stopped for 60 s, then started (gap 64 s) | Booked after the start: S7 14 good, Modbus 31 good + 1 scrap, OPC-UA 21 good + 5 scrap. Database window around the start: S7 15 / 0, Modbus 32 / 1, OPC-UA 22 / 5 — the catch-up numbers plus one live part per machine |
+
+The state files in `/var/lib/mes-edge/` (`counters.<machine>.json`) held the
+last counter values and the time they were seen.
+
+**Rule.** A gap is booked only if it is not longer than `catchupMaxMinutes`
+(default 10, per edge node, `edge_nodes.settings`; `CATCHUP_MAX_MINUTES` is the
+fallback). Longer gaps are dropped with a warning that names the number of
+lost parts, because the events would be stamped with the time of booking and
+land in the wrong hour and shift. A counter that went backwards starts a new
+baseline; more than 5000 parts in one catch-up is treated as a wrong register
+and dropped. The same rule applies to a lost PLC connection while the agent
+runs.
+
 ### Not tested yet
 
 - `kill -9` while the buffer is not empty (the broker stopped first), and a
   full node-gate reboot — they would confirm the on-disk buffer survives.
+  After `kill -9` the catch-up rule should also be checked (the stored counter
+  values are at most a few seconds old; the gap includes the lease wait).
+- A gap longer than the limit (set `catchupMaxMinutes` to a small value, stop
+  the agent longer than that) — the unit tests cover it, a live run does not.
 - Postgres stopped / disk full on node-dc; network partition between the
   nodes; clock skew between the edge node and node-dc (event timestamps use
-  the edge clock); an expired broker certificate.
+  the edge clock; the catch-up age also uses the edge clock); an expired
+  broker certificate.
