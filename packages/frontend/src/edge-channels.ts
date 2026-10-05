@@ -27,6 +27,7 @@ export interface EdgeNode {
   name: string;
   isOnline: boolean;
   lastHeartbeatAt: string | null;
+  lastSeenAt?: string | null;
   channels: EdgeNodeChannel[];
   settings?: { catchupMaxMinutes: number };
 }

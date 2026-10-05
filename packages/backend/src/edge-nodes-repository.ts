@@ -24,6 +24,8 @@ export interface EdgeNode {
   name: string;
   currentSessionId: string | null;
   lastHeartbeatAt: string | null;
+  /** Last contact of the agent (also after a clean stop, when the heartbeat is cleared). */
+  lastSeenAt?: string | null;
   isOnline: boolean;
   createdAt: string;
   channels: EdgeNodeChannel[];
@@ -35,6 +37,7 @@ type NodeRow = {
   name: string;
   current_session_id: string | null;
   last_heartbeat_at: string | null;
+  last_seen_at?: string | null;
   created_at: string;
   settings?: unknown;
 };
@@ -93,6 +96,7 @@ export async function listEdgeNodes(): Promise<EdgeNode[]> {
     name: row.name,
     currentSessionId: row.current_session_id,
     lastHeartbeatAt: row.last_heartbeat_at,
+    lastSeenAt: row.last_seen_at ?? null,
     isOnline: isOnlineFrom(row.last_heartbeat_at),
     createdAt: row.created_at,
     channels: channelsByNode.get(row.id) ?? [],
@@ -232,7 +236,7 @@ export async function claimEdgeNode(token: string): Promise<ClaimResult & { sett
   }
 
   const sessionId = randomBytes(16).toString("hex");
-  await pool.query(`UPDATE edge_nodes SET current_session_id = $2, last_heartbeat_at = now() WHERE id = $1`, [
+  await pool.query(`UPDATE edge_nodes SET current_session_id = $2, last_heartbeat_at = now(), last_seen_at = now() WHERE id = $1`, [
     node.id,
     sessionId,
   ]);
@@ -251,7 +255,7 @@ export async function recordHeartbeat(token: string, sessionId: string): Promise
   if (row.current_session_id !== sessionId) {
     throw new InvalidSessionError();
   }
-  await pool.query(`UPDATE edge_nodes SET last_heartbeat_at = now() WHERE id = $1`, [row.id]);
+  await pool.query(`UPDATE edge_nodes SET last_heartbeat_at = now(), last_seen_at = now() WHERE id = $1`, [row.id]);
 }
 
 export function isForeignKeyViolation(err: unknown): boolean {
@@ -286,7 +290,7 @@ export async function releaseSession(token: string, sessionId: string): Promise<
   const known = await pool.query(`SELECT 1 FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
   if (known.rowCount === 0) throw new InvalidTokenError();
   const result = await pool.query(
-    `UPDATE edge_nodes SET current_session_id = NULL, last_heartbeat_at = NULL
+    `UPDATE edge_nodes SET current_session_id = NULL, last_heartbeat_at = NULL, last_seen_at = now()
      WHERE token_hash = $1 AND current_session_id = $2`,
     [hashToken(token), sessionId],
   );

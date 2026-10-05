@@ -365,7 +365,7 @@ export default function EdgeNodesPanel() {
             />
             <div style={{ fontWeight: 600 }}>{n.name}</div>
             <div style={hintStyle}>
-              last seen: {n.lastHeartbeatAt ? new Date(n.lastHeartbeatAt).toLocaleString() : "never"}
+              last seen: {(n.lastSeenAt ?? n.lastHeartbeatAt) ? new Date((n.lastSeenAt ?? n.lastHeartbeatAt) as string).toLocaleString() : "never"}
             </div>
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
