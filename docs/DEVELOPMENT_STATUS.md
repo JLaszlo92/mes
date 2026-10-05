@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 2, 2026
+**Last updated:** October 5, 2026
 
 ## Where things stand
 
@@ -53,6 +53,21 @@ Since September 30 (morning):
   Pareto** by reason.
 - **Three data-correctness bugs found and fixed** while preparing a
   raw-event retention policy — see "Time, rollups and retention prep".
+
+Since October 2 (edge agent, October 5):
+
+- **Edge agent v5**: parts produced while the agent is down or cannot reach
+  the PLC are booked afterwards (catch-up, per-node limit
+  `catchupMaxMinutes`, default 10); a clean `systemctl restart` no longer
+  costs ~70 s because the agent releases its instance lease on SIGTERM.
+  Backend: migration 039 (`edge_nodes.settings`), settings API, release
+  endpoint. See "Edge agent v5 and v6" below.
+- **Edge agent v6**: channels start without waiting for the MQTT broker
+  (events go to the disk buffer), acks are re-subscribed on every connect.
+- **Chaos tests (M8) slices 2-4** run on the pilot nodes: broker, backend and
+  agent outages, `kill -9` with a non-empty buffer, start with the broker
+  down. No loss and no duplicates in any of them (`docs/CHAOS_TEST_FINDINGS.md`).
+  The edge buffer was moved from `/tmp` (tmpfs) to `/var/lib/mes-edge`.
 
 ## The Gantt scheduler (item 8)
 
@@ -164,7 +179,7 @@ defence-in-depth.
 
 Public by design: `GET /health`, `POST /api/auth/login`,
 `POST /api/auth/mfa/login`, `POST /api/auth/logout`, and the edge-node
-`claim` / `heartbeat` endpoints (they authenticate with their own token in
+`claim` / `heartbeat` / `release` endpoints (they authenticate with their own token in
 the body, not a user session). Unknown routes return 401 rather than 404
 to unauthenticated callers.
 
@@ -1004,11 +1019,57 @@ is in `ops/backup/README.md`.
   `another instance of this edge node is already active` and systemd restarts
   it every ~5 s (`NRestarts` reached 15). Nothing is collected from the
   machines during that time: expect a gap of about a minute in the data on
-  every edge-agent restart. Improvement not built: release the session on
-  SIGTERM so a restart is immediate.
+  every edge-agent restart. **Fixed for clean restarts in v5** (the session
+  is released on SIGTERM, see "Edge agent v5 and v6"); a crash still waits.
 - Two edge-agent tests (`gpio-` and `s7-signal-source`) had been failing
   since `58b141c` (custom status names allowed, a bridge that exits reports
   `down`); they now assert that behaviour.
+
+## Edge agent v5 and v6 — Oct 5
+
+Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
+`docs/CHAOS_TEST_FINDINGS.md` (slices 3 and 4).
+
+- **Catch-up** (`catchup.ts`, `counter-baseline.ts`, `python/catchup.py`): the
+  last PLC counter values are stored in `counters.<machineId>.json` next to
+  the buffer (`/var/lib/mes-edge`). After an agent start or a lost PLC
+  connection the difference is booked if the gap is not longer than
+  `catchupMaxMinutes`; longer gaps are dropped with a warning naming the lost
+  parts (event timestamps are the booking time, so a long gap would land in
+  the wrong hour/shift). Counter going backwards = PLC reset = new baseline;
+  more than 5000 parts at once = dropped.
+- **Per-node settings**: `edge_nodes.settings` jsonb (migration 039),
+  `GET/PATCH /api/edge-nodes/:id/settings` (admin/manager, audited
+  `edge_node_settings_updated`, counts as configuration for the licence
+  policy), delivered in the `claim` response, applied on the next agent
+  start. **No field in Admin -> Edge nodes yet** (needs the panel file,
+  probably `EdgeNodesPanel.tsx`).
+- **Lease release**: `POST /api/edge-nodes/release` (public route like
+  `claim`, authenticated by token + session id; also in the licence
+  `NEVER_RESTRICTED` list). The agent calls it on SIGTERM, so a clean restart
+  is picked up at once. A crash or `kill -9` still waits ~90 s
+  (`HEARTBEAT_STALE_SECONDS`); the catch-up books the parts of that wait if
+  it is within the limit. The first start of v5 over v4 loops on `already
+  active` for ~90 s once.
+- **v6**: `runRegistryMode` no longer waits for the first MQTT `connect`;
+  the ack topic is subscribed on every `connect`; shutdown is forced after
+  5 s. Only `index.ts` changed, so there is no unit test - verified live
+  (broker stopped, agent restarted: channels up at once, buffers filled,
+  drained after the broker came back, DB = PLC counter difference).
+- **Deploy**: still by hand on node-gate (`git fetch --tags`, checkout the
+  tag, `pnpm install --frozen-lockfile`, build `@mes/shared` **and**
+  `@mes/edge-agent`, `systemctl restart mes-edge-node`) because
+  `deploy-edge-agent.sh` does not know `mes-edge-node`. node-gate's checkout
+  had a stale `shared` build, which is why `shared` is built first. Backend
+  first when a release needs a new endpoint (v5 did; v6 does not).
+- **Chaos tooling**: `ops/chaos/buf-snap.sh` (buffer size and time span per
+  machine), `ops/chaos/chaos-svc.sh` (stop a service for N seconds). A DB
+  comparison after a test needs both a lower and an upper time bound per
+  machine (the `seenAtMs` of the counter files before and after).
+- Onboarding (`ops/onboarding/install-on-node.sh`) now generates units with
+  `StateDirectory=mes-edge` and `BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson`.
+  The buffer is appended without `fsync`: a power cut can lose the last
+  second or two.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
@@ -1069,6 +1130,18 @@ is in `ops/backup/README.md`.
 
 ## Still open (lower priority, not blocking)
 
+- **Edge agent follow-ups** (Oct 5): the Admin -> Edge nodes screen has no
+  field for `catchupMaxMinutes`; `deploy-edge-agent.sh` `SERVICES` lacks
+  `mes-edge-node`; `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
+  (run `git checkout` on it before commits, or untrack it); the `gpio-` and
+  `s7-signal-source` tests wait a fixed 400 ms and can fail on a loaded
+  machine.
+- **Chaos tests not done yet**: node-gate reboot, a gap longer than the
+  standard 10 minutes (only the 1-minute variant was run), the settings API
+  with a real session, `systemctl stop` duration with the broker down,
+  Postgres stopped / disk full on node-dc, network partition, clock skew
+  between edge node and server, expired broker certificate.
+
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1
@@ -1107,9 +1180,6 @@ is in `ops/backup/README.md`.
 - The old per-segment assignment endpoints bypass the scheduling business
   rules — either route them through the same checks or retire them once
   it's clear no integration needs them.
-- A data-retention policy for raw events (flagged in earlier revisions,
-  still not implemented — not urgent at current volumes, worth doing
-  before the pilot).
 - `state.test.ts` fails without `DATABASE_URL` (it imports `db.ts`) —
   run tests with the env file loaded, or mock the pool.
 - Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
