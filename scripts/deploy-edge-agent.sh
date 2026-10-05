@@ -16,7 +16,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SERVICES=(mes-edge-agent mes-edge-agent-modbus mes-edge-agent-opcua)
+# mes-edge-node az éles egység; a mes-edge-agent* a régi, egygépes mód (kikapcsolva
+# tartjuk őket - lásd lent: csak AKTÍV egységet indítunk újra).
+SERVICES=(mes-edge-node mes-edge-agent mes-edge-agent-modbus mes-edge-agent-opcua)
 
 git fetch --tags origin
 
@@ -68,16 +70,42 @@ fi
 echo "Telepítés: $TARGET_TAG (jelenleg: $(current_tag))"
 git checkout "$TARGET_TAG"
 
-echo "Fordítás (edge-agent)..."
-(cd packages/edge-agent && pnpm run build)
+echo "Függőségek és fordítás (shared, edge-agent)..."
+pnpm install --frozen-lockfile
+pnpm --filter @mes/shared build
+pnpm --filter @mes/edge-agent build
 
 echo "Edge agent szolgáltatások újraindítása..."
+RESTARTED_NODE=0
+NODE_SINCE=""
 for svc in "${SERVICES[@]}"; do
-  if systemctl list-units --full -all | grep -q "^${svc}\.service"; then
+  # Csak a most FUTÓ egységet indítjuk újra: egy szándékosan kikapcsolt régi
+  # egység újraindítása duplán publikálná a gépek eseményeit.
+  if systemctl is-active --quiet "$svc"; then
+    if [ "$svc" = "mes-edge-node" ]; then
+      RESTARTED_NODE=1
+      NODE_SINCE="$(date '+%Y-%m-%d %H:%M:%S')"
+    fi
     systemctl restart "$svc"
     echo "  újraindítva: $svc"
+  elif systemctl cat "$svc" >/dev/null 2>&1; then
+    echo "  kihagyva (nem fut): $svc"
   fi
 done
+
+if [ "$RESTARTED_NODE" = "1" ]; then
+  echo "Várakozás az edge node jelentkezésére..."
+  OK=0
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    sleep 5
+    if journalctl -u mes-edge-node --since "$NODE_SINCE" --no-pager 2>/dev/null | grep -q "claimed edge node"; then OK=1; break; fi
+  done
+  if [ "$OK" = "1" ]; then
+    echo "  mes-edge-node jelentkezett (claimed edge node)."
+  else
+    echo "FIGYELEM: 60 mp alatt nem látszik 'claimed edge node' a naplóban: journalctl -u mes-edge-node -n 50" >&2
+  fi
+fi
 
 echo ""
 echo "$TARGET_TAG telepítve. Ellenőrizd a dashboardon, hogy minden gép rendesen jelentkezik-e, mielőtt lezártnak tekinted."
