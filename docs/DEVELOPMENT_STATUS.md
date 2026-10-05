@@ -1099,11 +1099,17 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   the Edge nodes page shows "clock: in sync / 120 s ahead" (red above 30 s),
   the agent logs a skew above 30 s, new units wait for `time-sync.target`
   (node-gate got the drop-in by hand); verified live with a +2 min clock.
-  **Still open (decide before the pilot):** an alert on a skewed node (like the
-  certificate and backup health evaluators), a guard against future timestamps
-  at ingestion, later the agent correcting its timestamps with the server time,
-  and a better log reason than `too_old` for a negative gap (details in the
-  findings doc, slice 9).
+  **Follow-up, same evening (Oct 5):** system alert `edge_clock_skew` when an
+  online node's clock differs by more than 30 s in either direction
+  (`36d89da`, evaluator every 60 s, resolves by itself); ingestion guard — an
+  event stamped more than 60 s in the future is stored with the receive time,
+  original in `payload.timestampCorrected`, warning in the backend log
+  (`689caaa`); catch-up log reason `clock_back` instead of `too_old` for a
+  state from the future, TS and Python (`d2d6c27`, **edge-agent-v8**, deployed
+  on node-gate). Alert and guard verified live with a +2 min clock (see the
+  findings doc, "Alert, ingestion guard and log reason"). **Still open:** the
+  agent correcting its timestamps with the server time; a guard for timestamps
+  far in the past.
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1263,19 +1269,17 @@ rewritten) now edits what used to need the database or a delete and re-add:
 
 ## Still open (lower priority, not blocking)
 
-- **Edge agent follow-ups** (Oct 5): the first real run of the fixed
-  `deploy-edge-agent.sh` on node-gate (next release); an agent restart
+- **Edge agent follow-ups** (Oct 5): an agent restart
   button / automatic pickup of changed channel settings (today a change is
   applied when the agent next starts);
   `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
-  (run `git checkout` on it before commits, or untrack it); the `gpio-` and
-  `s7-signal-source` tests wait a fixed 400 ms and can fail on a loaded
-  machine; vitest is not a dependency of the repository (`npx vitest` downloads
-  it on every call and waits for a confirmation, which looks like a hang when
-  piped to `tail`) and it also picks up the compiled copies under `dist/`
-  (use `npx vitest run packages --exclude '**/dist/**'` with a dummy
-  `DATABASE_URL`, e.g. `postgres://x@localhost/x`, for `state.test.ts`) —
-  add vitest as a devDependency, a `test` script and a vitest config;
+  (run `git checkout` on it before commits, or untrack it); run the tests with
+  `pnpm test` in the repository (vitest is already a devDependency of the three
+  packages; the gpio/s7 tests no longer use a fixed 400 ms wait and the backend
+  config gives `DATABASE_URL` a dummy default, `8e6e532`); do not call `npx vitest`
+  from the root (it downloads its own copy and also picks up `dist/`);
+  `test_s7_bridge.py` needs the `snap7` module (missing on node-dc, so the
+  Python test run there shows one import error; node-gate runs 18 tests OK);
   a dropped catch-up gap (longer than `catchupMaxMinutes`) is only visible in
   the journal of the edge node — consider recording it as an event or an alert.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
@@ -1324,8 +1328,6 @@ rewritten) now edits what used to need the database or a delete and re-add:
 - The old per-segment assignment endpoints bypass the scheduling business
   rules — either route them through the same checks or retire them once
   it's clear no integration needs them.
-- `state.test.ts` fails without `DATABASE_URL` (it imports `db.ts`) —
-  run tests with the env file loaded, or mock the pool.
 - Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
   `api.ts` now exports `API_BASE`, so these can become imports.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,

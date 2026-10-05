@@ -366,9 +366,10 @@ Proposed fixes, cheapest first (status: 1 and the first half of 2 done in
 Fix 1 and the detection half of fix 2: the agent sends its clock with the claim
 and the heartbeat, the backend stores `edge_nodes.clock_offset_ms`
 (migration 041), the Edge nodes page shows it, the agent logs a skew above 30 s
-itself, and the onboarding unit waits for `time-sync.target`. Not done yet: the
-alert (fix 2, second half), the ingestion guard (3), the timestamp correction
-in the agent (4) and the log reason (5).
+itself, and the onboarding unit waits for `time-sync.target`. The alert (fix 2,
+second half), the ingestion guard (3) and the log reason (5) followed the same
+evening, see the next section. Not done: the timestamp correction in the agent
+(4).
 
 Live check on node-gate with the agent clock shifted by +2 min (libfaketime,
 drop-in `faketime.conf`, removed afterwards):
@@ -383,6 +384,50 @@ drop-in `faketime.conf`, removed afterwards):
 The same check also exercised the first real run of `deploy-edge-agent.sh`
 (deployment of `edge-agent-v7` on node-gate), see `EDGE_AGENT_RELEASES.md`.
 
+### Alert, ingestion guard and log reason (Oct 5, 2026)
+
+Fixes 2 (alert), 3 and 5 of the list above. Backend commits `36d89da` (alert)
+and `689caaa` (guard); agent `d2d6c27` (log reason, tag `edge-agent-v8`).
+
+**Alert `edge_clock_skew`** (`edge-clock-health.ts`, `edge-clock-health-evaluator.ts`,
+checked every 60 s). One system alert while an *online* node's clock differs
+from the server's by more than 30 s, in either direction; the message names the
+nodes (worst first, at most 5) with the offset. An offline node and an unknown
+offset (agent older than v7) are ignored. It resolves by itself when every
+online node is within the limit.
+
+**Ingestion guard** (`event-timestamp-guard.ts`, used by `insertEvent`). An event
+stamped more than 60 s after the server's receive time is stored with the
+receive time (column and payload); the original stays in
+`payload.timestampCorrected` (`originalTimestamp`, `aheadMs`, `reason: "future"`)
+and the backend logs a warning. Events from the past are not touched.
+
+**Log reason `clock_back`** (`catchup.ts` and the Python mirror
+`python/catchup.py`): a stored state from the future (negative age) is reported
+as `clock_back`, no longer as `too_old`. The parts are still not booked.
+
+Live check on node-gate with the agent clock shifted by +2 min (libfaketime,
+drop-in removed afterwards):
+
+| Check | Result |
+|---|---|
+| Alert | On the Alerts page within a minute: "edge clock skew — The clock of 1 edge node differs from the server's by more than 30 s: node-gate-sim (120 s ahead)…"; the Edge nodes page showed "clock: 120 s ahead"; the alert resolved after the restore |
+| Guard | All three machines, `production_count` and `machine_status` events: `timestamp` = receive time (21:23:57), `timestampCorrected.aheadMs` 119 979 – 119 999, original +2 min kept; backend warnings "event timestamp is in the future — stored with the receive time" |
+| `clock_back` | Unit tests only (TS and Python); not provoked live |
+
+The test left about two minutes of events with a corrected timestamp in the
+database (`payload ? 'timestampCorrected'`); they go with the pilot data cleanup.
+
+Left open from the list: the agent correcting its own timestamps with the
+server time (fix 4), and a guard for timestamps far in the *past* (a clock
+behind the server is reported by the alert but not corrected).
+
+Side result: `pnpm test` was red on a loaded machine because the `gpio-` and
+`s7-signal-source` tests waited a fixed 400 ms for the bridge process; they now
+wait for the final `down` reading (up to 5 s), and `packages/backend/vitest.config.mjs`
+gives `DATABASE_URL` a dummy default. `pnpm test`: shared 6, edge-agent 41,
+backend 133 tests, all green (`8e6e532`).
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -395,5 +440,6 @@ The same check also exercised the first real run of `deploy-edge-agent.sh`
   the database. Route logic is covered by unit tests.
 - Postgres stopped / disk full on node-dc; network partition between the
   nodes; a clock behind the server (the clock ahead was tested in slice 9; the
-  symmetric case is expected to hide status changes in the same way); an
+  alert covers both directions, the ingestion guard only the future; the
+  behind case itself was not run live); an
   expired broker certificate.

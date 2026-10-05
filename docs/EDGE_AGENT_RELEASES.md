@@ -195,12 +195,26 @@ hide real status changes (chaos slice 9). From v7:
       systemctl daemon-reload
 
 The agent does not correct its clock or its timestamps; v7 only makes a wrong
-clock visible. An agent older than v7 sends no clock and shows "unknown" (no
+clock visible. The backend, which needs no agent release, adds two protections
+on top: the system alert `edge_clock_skew` (online node, more than 30 s off in
+either direction, resolves by itself) and an ingestion guard (an event stamped
+more than 60 s in the future is stored with the receive time and keeps the
+original in `payload.timestampCorrected`). From v8 the catch-up log reports a
+stored state from the future as `clock_back` instead of `too_old`. An agent older than v7 sends no clock and shows "unknown" (no
 clock line). **Deploy the backend first** (migration 041; it also accepts the
 older agents).
 
 ## Release notes
 
+- **edge-agent-v8** (Oct 5, 2026) — catch-up: a stored counter state from the
+  future (the clock was set back, negative age) is reported with the reason
+  `clock_back` instead of `too_old`; the parts are still not booked. Change in
+  `catchup.ts`, the log switch in `counter-baseline.ts` and the Python mirror
+  `python/catchup.py` (unit tests updated in both). No backend change, no
+  migration. Deployed on node-gate with `scripts/deploy-edge-agent.sh
+  edge-agent-v8` after checking out the tag (it printed "currently:
+  edge-agent-v8" because of that, which is harmless); the agent claimed at once
+  and the Python tests ran 18 OK there.
 - **edge-agent-v7** (Oct 5, 2026) — the agent sends its clock with the claim and
   every heartbeat, compares it with the server time returned by the claim and
   logs a clock skew above 30 s (chaos finding 8); backend and Edge nodes page
