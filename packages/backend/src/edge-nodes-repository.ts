@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { pool } from "./db.js";
 import { resolveSettings, type EdgeNodeSettings } from "./edge-node-settings.js";
+import { clockOffsetMs, isClockSkewed, parseStoredOffset } from "./clock-offset.js";
 
 export type SignalSourceType = "simulated" | "gpio" | "s7" | "opcua" | "modbus";
 export type StatusMode = "status_bit" | "signal_presence";
@@ -26,6 +27,10 @@ export interface EdgeNode {
   lastHeartbeatAt: string | null;
   /** Last contact of the agent (also after a clean stop, when the heartbeat is cleared). */
   lastSeenAt?: string | null;
+  /** Device clock minus server clock in ms (positive = device ahead); null = unknown. */
+  clockOffsetMs?: number | null;
+  /** The offset is above the warning limit. */
+  clockSkewed?: boolean;
   isOnline: boolean;
   createdAt: string;
   channels: EdgeNodeChannel[];
@@ -38,6 +43,7 @@ type NodeRow = {
   current_session_id: string | null;
   last_heartbeat_at: string | null;
   last_seen_at?: string | null;
+  clock_offset_ms?: string | number | null;
   created_at: string;
   settings?: unknown;
 };
@@ -97,6 +103,8 @@ export async function listEdgeNodes(): Promise<EdgeNode[]> {
     currentSessionId: row.current_session_id,
     lastHeartbeatAt: row.last_heartbeat_at,
     lastSeenAt: row.last_seen_at ?? null,
+    clockOffsetMs: parseStoredOffset(row.clock_offset_ms),
+    clockSkewed: isClockSkewed(parseStoredOffset(row.clock_offset_ms)),
     isOnline: isOnlineFrom(row.last_heartbeat_at),
     createdAt: row.created_at,
     channels: channelsByNode.get(row.id) ?? [],
@@ -222,7 +230,7 @@ export interface ClaimResult {
  * Egy edge-agent folyamat induláskor ezzel jelentkezik be, és megkapja
  * az ÖSSZES hozzá rendelt csatorna (gép) konfigurációját egyben.
  */
-export async function claimEdgeNode(token: string): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
+export async function claimEdgeNode(token: string, clientTimeMs?: unknown): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
   const nodeResult = await pool.query<NodeRow>(`SELECT * FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
   const node = nodeResult.rows[0];
   if (!node) throw new InvalidTokenError();
@@ -241,11 +249,16 @@ export async function claimEdgeNode(token: string): Promise<ClaimResult & { sett
     sessionId,
   ]);
 
+  const offset = clockOffsetMs(clientTimeMs, Date.now());
+  if (offset !== null) {
+    await pool.query(`UPDATE edge_nodes SET clock_offset_ms = $2 WHERE id = $1`, [node.id, offset]);
+  }
+
   const channelsResult = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.edge_node_id = $1`, [node.id]);
   return { sessionId, channels: channelsResult.rows.map(toChannel), settings: resolveSettings(node.settings) };
 }
 
-export async function recordHeartbeat(token: string, sessionId: string): Promise<void> {
+export async function recordHeartbeat(token: string, sessionId: string, clientTimeMs?: unknown): Promise<void> {
   const result = await pool.query<{ id: string; current_session_id: string | null }>(
     `SELECT id, current_session_id FROM edge_nodes WHERE token_hash = $1`,
     [hashToken(token)],
@@ -255,7 +268,7 @@ export async function recordHeartbeat(token: string, sessionId: string): Promise
   if (row.current_session_id !== sessionId) {
     throw new InvalidSessionError();
   }
-  await pool.query(`UPDATE edge_nodes SET last_heartbeat_at = now(), last_seen_at = now() WHERE id = $1`, [row.id]);
+  await pool.query(`UPDATE edge_nodes SET last_heartbeat_at = now(), last_seen_at = now(), clock_offset_ms = COALESCE($2::bigint, clock_offset_ms) WHERE id = $1`, [row.id, clockOffsetMs(clientTimeMs, Date.now())]);
 }
 
 export function isForeignKeyViolation(err: unknown): boolean {

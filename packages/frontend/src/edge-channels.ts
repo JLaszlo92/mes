@@ -28,6 +28,8 @@ export interface EdgeNode {
   isOnline: boolean;
   lastHeartbeatAt: string | null;
   lastSeenAt?: string | null;
+  clockOffsetMs?: number | null;
+  clockSkewed?: boolean;
   channels: EdgeNodeChannel[];
   settings?: { catchupMaxMinutes: number };
 }

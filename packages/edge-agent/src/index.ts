@@ -326,13 +326,16 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   };
 }
 
+import { clockAheadMs, clockSkewWarning } from "./clock-check.js";
+
 async function claimEdgeNode(
   token: string,
-): Promise<{ sessionId: string; channels: ChannelConfig[]; settings: { catchupMaxMinutes: number } }> {
+): Promise<{ sessionId: string; channels: ChannelConfig[]; settings: { catchupMaxMinutes: number }; clockAheadMs: number | null }> {
+  const sentAt = Date.now();
   const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, clientTimeMs: sentAt }),
   });
   if (!res.ok) {
     const errorBody = (await res.json().catch(() => ({}))) as { error?: string };
@@ -341,6 +344,7 @@ async function claimEdgeNode(
   const body = (await res.json()) as {
     sessionId: string;
     settings?: { catchupMaxMinutes?: number };
+    serverTimeMs?: number;
     channels: Array<{
       machineId: string | null;
       signalSource: ChannelConfig["signalSource"];
@@ -353,6 +357,7 @@ async function claimEdgeNode(
   const wanted = body.settings?.catchupMaxMinutes;
   return {
     sessionId: body.sessionId,
+    clockAheadMs: typeof body.serverTimeMs === "number" ? clockAheadMs(sentAt, Date.now(), body.serverTimeMs) : null,
     settings: {
       catchupMaxMinutes:
         typeof wanted === "number" && Number.isInteger(wanted) && wanted >= 0 && wanted <= 1440 ? wanted : config.catchupMaxMinutes,
@@ -374,7 +379,7 @@ async function sendHeartbeat(token: string, sessionId: string): Promise<void> {
   await fetch(`${config.backendHttpUrl}/api/edge-nodes/heartbeat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, sessionId }),
+    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now() }),
   });
 }
 
@@ -394,7 +399,9 @@ async function releaseSession(token: string, sessionId: string): Promise<void> {
 }
 
 async function runRegistryMode(token: string): Promise<void> {
-  const { sessionId, channels, settings } = await claimEdgeNode(token);
+  const { sessionId, channels, settings, clockAheadMs: ahead } = await claimEdgeNode(token);
+  const skew = clockSkewWarning(ahead);
+  if (skew) log.error({ clockAheadMs: ahead }, skew);
   nodeSettings.catchupMaxMinutes = settings.catchupMaxMinutes;
   log.info({ channelCount: channels.length, catchupMaxMinutes: settings.catchupMaxMinutes }, "claimed edge node, starting channels");
 

@@ -367,6 +367,14 @@ export default function EdgeNodesPanel() {
             <div style={hintStyle}>
               last seen: {(n.lastSeenAt ?? n.lastHeartbeatAt) ? new Date((n.lastSeenAt ?? n.lastHeartbeatAt) as string).toLocaleString() : "never"}
             </div>
+            {n.clockOffsetMs != null && (
+              <div
+                style={{ ...hintStyle, color: n.clockSkewed ? "#d03b3b" : undefined, fontWeight: n.clockSkewed ? 600 : undefined }}
+                title="Difference between the device's clock and the server's, measured at its last contact"
+              >
+                clock: {formatClockOffset(n.clockOffsetMs)}
+              </div>
+            )}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
                 New token
@@ -452,4 +460,15 @@ export default function EdgeNodesPanel() {
       ))}
     </section>
   );
+}
+
+/** "in sync", "45 s ahead", "15 min behind", "3 h ahead", "20000 days behind". */
+function formatClockOffset(ms: number): string {
+  const abs = Math.abs(ms);
+  if (abs < 2000) return "in sync";
+  const direction = ms > 0 ? "ahead" : "behind";
+  if (abs < 120_000) return `${Math.round(abs / 1000)} s ${direction}`;
+  if (abs < 7_200_000) return `${Math.round(abs / 60_000)} min ${direction}`;
+  if (abs < 172_800_000) return `${Math.round(abs / 3_600_000)} h ${direction}`;
+  return `${Math.round(abs / 86_400_000)} days ${direction}`;
 }

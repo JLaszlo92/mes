@@ -69,8 +69,9 @@ chmod 600 "$ENV_FILE"
 cat > "$UNIT" <<UNIT_EOF
 [Unit]
 Description=MES edge node ($NODE_NAME)
-After=network-online.target
-Wants=network-online.target
+# Event timestamps come from this device's clock: start after the time sync.
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 
 [Service]
 Type=simple

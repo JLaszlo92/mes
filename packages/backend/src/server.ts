@@ -1195,14 +1195,14 @@ app.delete<{ Params: { id: string } }>(
     },
   );
 
-  app.post<{ Body: { token: string } }>("/api/edge-nodes/claim", async (request, reply) => {
+  app.post<{ Body: { token: string; clientTimeMs?: unknown } }>("/api/edge-nodes/claim", async (request, reply) => {
     const { token } = request.body;
     if (!token) {
       reply.code(400);
       return { error: "token is required" };
     }
     try {
-      return await claimEdgeNode(token);
+      return { ...(await claimEdgeNode(token, request.body.clientTimeMs)), serverTimeMs: Date.now() };
     } catch (err) {
       if (err instanceof DuplicateSessionError) {
         reply.code(409);
@@ -1216,14 +1216,14 @@ app.delete<{ Params: { id: string } }>(
     }
   });
 
-    app.post<{ Body: { token: string; sessionId: string } }>("/api/edge-nodes/heartbeat", async (request, reply) => {
+    app.post<{ Body: { token: string; sessionId: string; clientTimeMs?: unknown } }>("/api/edge-nodes/heartbeat", async (request, reply) => {
       const { token, sessionId } = request.body;
       if (!token || !sessionId) {
         reply.code(400);
         return { error: "token and sessionId are required" };
       }
       try {
-        await recordHeartbeat(token, sessionId);
+        await recordHeartbeat(token, sessionId, request.body.clientTimeMs);
         return { success: true };
       } catch (err) {
         if (err instanceof InvalidSessionError) {
