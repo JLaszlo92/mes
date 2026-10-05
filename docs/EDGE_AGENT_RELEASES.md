@@ -50,13 +50,19 @@ Or, to deploy whatever the newest tag is without looking it up:
 scripts/deploy-edge-agent.sh --latest
 ```
 
-The script checks out the tag, rebuilds `packages/edge-agent`, and
-restarts every edge-agent systemd service that exists on this node.
+The script checks out the tag, runs `pnpm install --frozen-lockfile`, builds
+`@mes/shared` and `@mes/edge-agent`, and restarts the edge-agent systemd
+services that are **running** on this node (`mes-edge-node`, plus the legacy
+`mes-edge-agent*` units if one is active). A unit that exists but is not
+running is skipped and reported, so a deliberately disabled legacy unit is
+never started by a deployment. After restarting `mes-edge-node` it waits up to
+60 s for the `claimed edge node` log line and warns if it does not appear.
 
-**Note:** the script's `SERVICES` list (`mes-edge-agent`, `-modbus`,
-`-opcua`) does not contain `mes-edge-node`, the unit that actually runs on
-node-gate, so it would not restart it. The edge node has so far been updated
-by hand (v3, v4, v5, v6):
+**Note (Oct 5):** until commit `6fe6543` the `SERVICES` list did not contain
+`mes-edge-node`, and its check (`systemctl list-units | grep "^<unit>"`)
+never matched because the output lines start with spaces - the script would
+not have restarted the edge node. The fixed script has **not been run on
+node-gate yet**; v3-v6 were deployed by hand, which remains valid:
 
 ```bash
 cd ~/mes
@@ -94,8 +100,8 @@ scripts/deploy-edge-agent.sh --rollback
 
 This finds the tag immediately before the one currently deployed,
 deploys it, and restarts the services — no need to remember or look up
-the previous version number. (Until the `SERVICES` list is fixed, do it by
-hand on node-gate with `git checkout edge-agent-v<N-1>`, build, restart.)
+the previous version number. (By hand: `git checkout edge-agent-v<N-1>`,
+build, restart, as in the deploy note above.)
 
 ## Checking what's currently deployed
 
