@@ -290,9 +290,15 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
     for (const event of buffer.readAll()) publishBestEffort(event);
   }
 
-  client.subscribe(myAckTopic, (err) => {
-    if (err) log.error({ err, machineId: ch.machineId }, "failed to subscribe to ack topic");
-  });
+  // The channel may start while the broker is down: subscribe now if connected
+  // and again on every (re)connect.
+  const subscribeAcks = (): void => {
+    client.subscribe(myAckTopic, (err) => {
+      if (err) log.error({ err, machineId: ch.machineId }, "failed to subscribe to ack topic");
+    });
+  };
+  if (client.connected) subscribeAcks();
+  client.on("connect", subscribeAcks);
   client.on("message", (receivedTopic, payload) => {
     if (receivedTopic !== myAckTopic) return;
     let raw: unknown;
@@ -315,6 +321,7 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
     stop: () => {
       source.stop();
       clearInterval(retryTimer);
+      client.off("connect", subscribeAcks);
     },
   };
 }
@@ -396,8 +403,9 @@ async function runRegistryMode(token: string): Promise<void> {
   client.on("close", () => log.warn("connection to broker closed"));
   client.on("error", (err) => log.error({ err }, "mqtt client error"));
 
-  await new Promise<void>((resolve) => client.once("connect", () => resolve()));
-  log.info({ url: config.mqttUrl }, "connected to broker");
+  client.on("connect", () => log.info({ url: config.mqttUrl }, "connected to broker"));
+  // The channels start at once: every event is written to the disk buffer first
+  // and published when (and as soon as) the broker is connected.
 
   const runtimes = channels.map((ch) => setupChannel(client, ch));
 
@@ -409,6 +417,7 @@ async function runRegistryMode(token: string): Promise<void> {
     log.info("shutting down…");
     for (const r of runtimes) r.stop();
     clearInterval(heartbeatTimer);
+    setTimeout(() => process.exit(0), 5000); // client.end() may never call back while offline
     void releaseSession(token, sessionId).finally(() => client.end(false, {}, () => process.exit(0)));
   }
   process.on("SIGINT", shutdown);
