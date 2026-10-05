@@ -1094,10 +1094,16 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   timestamp in five places, so future-dated events hide real status changes
   (seen in the data: real `down` periods older than a future `running`); a
   clock step in either direction makes the catch-up drop its gap (no wrong
-  booking). **Open (decide before the pilot):** time-sync dependency in the
-  unit, skew detection and alert via the heartbeat, a guard against future
-  timestamps at ingestion, later the agent correcting its timestamps with the
-  server time (details in the findings doc).
+  booking). **Done in edge-agent-v7 / `b4f5f21` (Oct 5):** the agent sends its
+  clock with claim and heartbeat, `edge_nodes.clock_offset_ms` (migration 041),
+  the Edge nodes page shows "clock: in sync / 120 s ahead" (red above 30 s),
+  the agent logs a skew above 30 s, new units wait for `time-sync.target`
+  (node-gate got the drop-in by hand); verified live with a +2 min clock.
+  **Still open (decide before the pilot):** an alert on a skewed node (like the
+  certificate and backup health evaluators), a guard against future timestamps
+  at ingestion, later the agent correcting its timestamps with the server time,
+  and a better log reason than `too_old` for a negative gap (details in the
+  findings doc, slice 9).
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
