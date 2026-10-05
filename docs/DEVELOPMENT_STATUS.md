@@ -1042,8 +1042,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `GET/PATCH /api/edge-nodes/:id/settings` (admin/manager, audited
   `edge_node_settings_updated`, counts as configuration for the licence
   policy), delivered in the `claim` response, applied on the next agent
-  start. **No field in Admin -> Edge nodes yet** (needs the panel file,
-  probably `EdgeNodesPanel.tsx`).
+  start. Editable in Admin -> Edge nodes since the evening of Oct 5 (see
+  "Edge node and channel editing").
 - **Lease release**: `POST /api/edge-nodes/release` (public route like
   `claim`, authenticated by token + session id; also in the licence
   `NEVER_RESTRICTED` list). The agent calls it on SIGTERM, so a clean restart
@@ -1058,9 +1058,12 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   drained after the broker came back, DB = PLC counter difference).
 - **Deploy**: still by hand on node-gate (`git fetch --tags`, checkout the
   tag, `pnpm install --frozen-lockfile`, build `@mes/shared` **and**
-  `@mes/edge-agent`, `systemctl restart mes-edge-node`) because
-  `deploy-edge-agent.sh` does not know `mes-edge-node`. node-gate's checkout
-  had a stale `shared` build, which is why `shared` is built first. Backend
+  `@mes/edge-agent`, `systemctl restart mes-edge-node`). `deploy-edge-agent.sh`
+  was fixed on Oct 5 (commit `6fe6543`: knows `mes-edge-node`, installs
+  dependencies, builds `shared` too, restarts only running units, waits for
+  `claimed edge node`) but has **not been run on node-gate yet**; the manual
+  way stays valid. node-gate's checkout had a stale `shared` build, which is
+  why `shared` is built first. Backend
   first when a release needs a new endpoint (v5 did; v6 does not).
 - **Chaos tooling**: `ops/chaos/buf-snap.sh` (buffer size and time span per
   machine), `ops/chaos/chaos-svc.sh` (stop a service for N seconds). A DB
@@ -1070,6 +1073,54 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `StateDirectory=mes-edge` and `BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson`.
   The buffer is appended without `fsync`: a power cut can lose the last
   second or two.
+
+## Edge node and channel editing — Oct 5
+
+Commit `336b584`. The Admin -> Edge nodes screen (`EdgeNodesPanel.tsx`,
+rewritten) now edits what used to need the database or a delete and re-add:
+
+- **Node setting**: "Catch-up limit (minutes)" on the node card
+  (`PATCH /api/edge-nodes/:id/settings`); Save is enabled only for a changed
+  value. New node settings go into the same form.
+- **Channels** show their connection (e.g. `host:port · unit`) and have an
+  **Edit** form: machine, status mode, no-signal timeout / accept production
+  while down, and every connection field of the protocol. The protocol itself
+  cannot be changed (remove and add a new channel). Server errors name the
+  field and the input is marked red. Node removal, token regeneration and
+  channel removal ask for confirmation.
+- **`PATCH /api/edge-node-channels/:channelId`** (`edge-node-routes.ts`,
+  admin/manager): partial update. In `connectionConfig` a key set to `null`
+  is removed, other keys are set, keys not mentioned stay (so unknown keys
+  of hand-made channels survive). No change = no write and no audit entry;
+  otherwise audit `edge_node_channel_updated` with `changes: {field: {from,
+  to}}`. Unknown machine -> 404 `{field: "machineId"}`. The licence policy
+  already treated `/api/edge-node-channels` as configuration.
+- **Validation** (`edge-node-channel-input.ts`, pure, 12 + 4 tests): known
+  connection keys are checked for type and range (Modbus port 1-65535, unit
+  0-255, registers 0-65535; OPC-UA endpoint `opc.tcp://...`; S7 rack 0-7,
+  slot 0-31, port 1-65535; GPIO pin number or name); required: Modbus `host`,
+  OPC-UA `endpointUrl`, S7 `plcIp`. Strings are trimmed, unknown keys kept.
+  On a PATCH the merged connection is re-validated only when the patch
+  touches it, so a legacy channel with an odd config can still be moved to
+  another machine. `POST /api/edge-nodes/:id/channels` uses the same
+  validation now (before, any JSON was stored and a bad address showed up
+  only in the agent log); existing channels are not touched.
+- **A change is applied when the agent next starts** (it reads its channels
+  from the `claim` response) - the screen says so. Not built: a restart
+  button, or the agent noticing a change through the heartbeat.
+- Tests: `edge-node-channel-input.test.ts`, `edge-node-channel-routes.test.ts`
+  (and the mock in `edge-node-routes.test.ts`). The panel itself was checked
+  with a throw-away DOM test (jsdom + testing-library: shows the connection,
+  saves the limit, edit with a field error, confirm on remove, add with blank
+  fields left out) that is not in the repo - the frontend has no jsdom or
+  testing-library dependency.
+- **Not covered by the dashboard on purpose**: issuing the device certificate
+  and the Mosquitto ACL entry for a new edge node (`ops/onboarding/`,
+  `new-edge-node.sh` on the admin laptop, `mosquitto-device-acl.sh` on
+  node-dc, `install-on-node.sh` on the device) - the CA keys are offline.
+- Lesson: `AuditEventInput.details` is `Record<string, unknown>`; an
+  interface-typed object does not fit it (no index signature) - pass
+  `{ ...value }`.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
@@ -1130,9 +1181,11 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
 
 ## Still open (lower priority, not blocking)
 
-- **Edge agent follow-ups** (Oct 5): the Admin -> Edge nodes screen has no
-  field for `catchupMaxMinutes`; `deploy-edge-agent.sh` `SERVICES` lacks
-  `mes-edge-node`; `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
+- **Edge agent follow-ups** (Oct 5): the first real run of the fixed
+  `deploy-edge-agent.sh` on node-gate (next release); an agent restart
+  button / automatic pickup of changed channel settings (today a change is
+  applied when the agent next starts);
+  `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
   (run `git checkout` on it before commits, or untrack it); the `gpio-` and
   `s7-signal-source` tests wait a fixed 400 ms and can fail on a loaded
   machine.
@@ -1160,7 +1213,7 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `ops/maintenance/` (dry run by default; not run yet).
 - TLS is done on every path (see "TLS on every path"). Next security
   items per `docs/SECURITY_REVIEW.md`: the CA on the terminal tablets; the
-  `deploy-edge-agent.sh` service list (see above); a CRL if revocation by
+  a CRL if revocation by
   ACL is not enough; a
   real DNS name instead of `mes.pilot.internal` (then re-issue the
   certificates); (the October 2027 renewal reminder is done: `mes-ca.sh ics` and the

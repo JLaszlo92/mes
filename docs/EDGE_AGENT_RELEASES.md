@@ -152,8 +152,9 @@ PATCH /api/edge-nodes/:id/settings   {"catchupMaxMinutes": 15}   # integer 0..14
 ```
 
 `CATCHUP_MAX_MINUTES` in the unit is the fallback for legacy mode and older
-backends. There is no field in the Admin → Edge nodes screen yet. More
-per-node settings can be added to the same JSON object.
+backends. Since Oct 5 the value is edited in Admin → Edge nodes (field
+"Catch-up limit (minutes)" on the node card). More per-node settings can be
+added to the same JSON object and the same form.
 
 The legacy single-machine mode uses the same catch-up with the `MACHINE_ID`
 and the environment limit.
