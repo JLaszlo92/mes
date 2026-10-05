@@ -270,11 +270,15 @@ Observations:
 
 - The Admin → Edge nodes page showed a red dot while the agent was stopped
   (as intended) and the text `node-gate-sim last seen: never`, although the
-  node had been seen minutes earlier and `edge_nodes.last_heartbeat_at` is set
-  while it runs. The probable cause is that the clean release at shutdown
-  clears the heartbeat so that the node turns offline immediately; the cause
-  has not been checked in the code. Cosmetic, but misleading: "never" should
-  not appear for a node that was just stopped.
+  node had been seen minutes earlier. Cause (checked in the code):
+  `releaseSession` clears `last_heartbeat_at` on a clean stop so that the node
+  turns offline at once and the next start does not wait for the lease, and the
+  page took its "last seen" from that column. **Fixed in `8bdc397`:** new column
+  `edge_nodes.last_seen_at` (migration 040), set by claim, heartbeat and
+  release; the page shows it, while the online state and the lease still use
+  `last_heartbeat_at`. Live check: after `systemctl stop mes-edge-node`,
+  `last_heartbeat_at` is empty, `has_session` is false and `last_seen_at` holds
+  the stop time; the page shows that time next to the red dot.
 - The `edge_nodes` table has only this one node (`node-gate-sim`).
 
 ## Not tested yet

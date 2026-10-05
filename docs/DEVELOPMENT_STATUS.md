@@ -1088,8 +1088,13 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   the lost parts per machine, and the database equals the PLC counter
   difference minus the lost parts exactly. The lost counts exist only in the
   journal of the edge node (idea: record a dropped gap as an event or alert).
-  Cosmetic: the Edge nodes page shows `last seen: never` for a node after a
-  clean stop (probably the release clears the heartbeat; not checked).
+- **Edge node "last seen" after a clean stop fixed** (Oct 5, `8bdc397`): the
+  Edge nodes page showed `last seen: never` because the release clears
+  `last_heartbeat_at` (it drives the online state and the lease). New column
+  `edge_nodes.last_seen_at` (migration 040) is set by claim, heartbeat and
+  release; the page shows it. Online state and lease logic are unchanged.
+  Four unit tests (`edge-nodes-last-seen.test.ts`); checked live (stop: heartbeat
+  empty, `last_seen_at` = stop time, page shows it).
 
 ## Edge node and channel editing — Oct 5
 
@@ -1246,7 +1251,14 @@ rewritten) now edits what used to need the database or a delete and re-add:
   `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
   (run `git checkout` on it before commits, or untrack it); the `gpio-` and
   `s7-signal-source` tests wait a fixed 400 ms and can fail on a loaded
-  machine.
+  machine; vitest is not a dependency of the repository (`npx vitest` downloads
+  it on every call and waits for a confirmation, which looks like a hang when
+  piped to `tail`) and it also picks up the compiled copies under `dist/`
+  (use `npx vitest run packages --exclude '**/dist/**'` with a dummy
+  `DATABASE_URL`, e.g. `postgres://x@localhost/x`, for `state.test.ts`) —
+  add vitest as a devDependency, a `test` script and a vitest config;
+  a dropped catch-up gap (longer than `catchupMaxMinutes`) is only visible in
+  the journal of the edge node — consider recording it as an event or an alert.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session, `systemctl stop` duration with
