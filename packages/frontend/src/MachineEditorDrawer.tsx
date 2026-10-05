@@ -4,6 +4,7 @@ import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine, type PlantHierarchy } from "./master-data.js";
 import MachineDataSourceSection from "./MachineDataSourceSection.js";
+import MachineRelatedSection from "./MachineRelatedSection.js";
 
 export interface NamedOption {
   id: string;
@@ -363,6 +364,7 @@ export default function MachineEditorDrawer({
       ) : readOnly ? null : (
         <MachineDataSourceSection machineId={draft.id} />
       )}
+      {!creating && !readOnly && <MachineRelatedSection machineId={draft.id} />}
     </Drawer>
   );
 }

@@ -103,6 +103,7 @@ import {
   isForeignKeyViolation as isEdgeNodeForeignKeyViolation,
 } from "./edge-nodes-repository.js";
 import { validateChannelCreate } from "./edge-node-channel-input.js";
+import { registerMachineRelated } from "./machine-related-routes.js";
 import {
   listUnexplainedDowntimePeriods,
   explainDowntimePeriod,
@@ -165,6 +166,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   registerAuthGuard(app, authModeFromEnv());
   registerLicense(app);
   registerEdgeNodeExtras(app);
+  registerMachineRelated(app);
   await app.register(authRoutes);
   await app.register(machineRegistryRoutes);
   await app.register(plantHierarchyRoutes);
