@@ -27,6 +27,7 @@ const PUBLIC_ROUTES = new Set<string>([
   // Edge node-ok: saját tokennel hitelesítenek a body-ban, nem emberi sessionnel.
   "POST /api/edge-nodes/claim",
   "POST /api/edge-nodes/heartbeat",
+  "POST /api/edge-nodes/release",
   // A böngésző WebSocketen nem küld Authorization headert: a /ws-t a
   // route maga hitelesíti egyszer használható tickettel (ws-tickets.ts).
   "GET /ws",

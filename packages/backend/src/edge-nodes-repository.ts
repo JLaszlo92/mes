@@ -1,5 +1,6 @@
 import { randomBytes, createHash } from "node:crypto";
 import { pool } from "./db.js";
+import { resolveSettings, type EdgeNodeSettings } from "./edge-node-settings.js";
 
 export type SignalSourceType = "simulated" | "gpio" | "s7" | "opcua" | "modbus";
 export type StatusMode = "status_bit" | "signal_presence";
@@ -26,6 +27,7 @@ export interface EdgeNode {
   isOnline: boolean;
   createdAt: string;
   channels: EdgeNodeChannel[];
+  settings?: EdgeNodeSettings;
 }
 
 type NodeRow = {
@@ -34,6 +36,7 @@ type NodeRow = {
   current_session_id: string | null;
   last_heartbeat_at: string | null;
   created_at: string;
+  settings?: unknown;
 };
 
 type ChannelRow = {
@@ -93,6 +96,7 @@ export async function listEdgeNodes(): Promise<EdgeNode[]> {
     isOnline: isOnlineFrom(row.last_heartbeat_at),
     createdAt: row.created_at,
     channels: channelsByNode.get(row.id) ?? [],
+    settings: resolveSettings(row.settings),
   }));
 }
 
@@ -187,7 +191,7 @@ export interface ClaimResult {
  * Egy edge-agent folyamat induláskor ezzel jelentkezik be, és megkapja
  * az ÖSSZES hozzá rendelt csatorna (gép) konfigurációját egyben.
  */
-export async function claimEdgeNode(token: string): Promise<ClaimResult> {
+export async function claimEdgeNode(token: string): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
   const nodeResult = await pool.query<NodeRow>(`SELECT * FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
   const node = nodeResult.rows[0];
   if (!node) throw new InvalidTokenError();
@@ -207,7 +211,7 @@ export async function claimEdgeNode(token: string): Promise<ClaimResult> {
   ]);
 
   const channelsResult = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.edge_node_id = $1`, [node.id]);
-  return { sessionId, channels: channelsResult.rows.map(toChannel) };
+  return { sessionId, channels: channelsResult.rows.map(toChannel), settings: resolveSettings(node.settings) };
 }
 
 export async function recordHeartbeat(token: string, sessionId: string): Promise<void> {
@@ -225,4 +229,39 @@ export async function recordHeartbeat(token: string, sessionId: string): Promise
 
 export function isForeignKeyViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23503";
+}
+
+export async function getEdgeNodeSettings(id: string): Promise<EdgeNodeSettings | null> {
+  const result = await pool.query<{ settings: unknown }>(`SELECT settings FROM edge_nodes WHERE id = $1`, [id]);
+  const row = result.rows[0];
+  return row ? resolveSettings(row.settings) : null;
+}
+
+/** Merges the patch into the stored settings; null if the node does not exist. */
+export async function updateEdgeNodeSettings(
+  id: string,
+  patch: Partial<EdgeNodeSettings>,
+): Promise<EdgeNodeSettings | null> {
+  const result = await pool.query<{ settings: unknown }>(
+    `UPDATE edge_nodes SET settings = settings || $2::jsonb WHERE id = $1 RETURNING settings`,
+    [id, JSON.stringify(patch)],
+  );
+  const row = result.rows[0];
+  return row ? resolveSettings(row.settings) : null;
+}
+
+/**
+ * The agent gives its instance lease back on a clean shutdown, so the next
+ * start does not have to wait for the heartbeat timeout. Only the current
+ * session can release; a stale session is a no-op.
+ */
+export async function releaseSession(token: string, sessionId: string): Promise<"released" | "not_current"> {
+  const known = await pool.query(`SELECT 1 FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
+  if (known.rowCount === 0) throw new InvalidTokenError();
+  const result = await pool.query(
+    `UPDATE edge_nodes SET current_session_id = NULL, last_heartbeat_at = NULL
+     WHERE token_hash = $1 AND current_session_id = $2`,
+    [hashToken(token), sessionId],
+  );
+  return result.rowCount === 1 ? "released" : "not_current";
 }

@@ -47,6 +47,7 @@ const NEVER_RESTRICTED = new Set<string>([
   // The edge-node protocol carries production data.
   "POST /api/edge-nodes/claim",
   "POST /api/edge-nodes/heartbeat",
+  "POST /api/edge-nodes/release",
   // A leaked token must always be rotatable.
   "POST /api/edge-nodes/:id/regenerate-token",
 ]);
