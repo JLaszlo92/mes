@@ -1083,6 +1083,13 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   about 71 s, catch-up booked the gap, database equal to the PLC counter
   differences (113/8, 115/7, 62/6). A real power cut (unsynced appends) is
   still untested.
+- **10 minute catch-up limit tested live** (Oct 5, slice 7): agent stopped
+  for 11.6 min with the standard limit; the gap was dropped, the log named
+  the lost parts per machine, and the database equals the PLC counter
+  difference minus the lost parts exactly. The lost counts exist only in the
+  journal of the edge node (idea: record a dropped gap as an event or alert).
+  Cosmetic: the Edge nodes page shows `last seen: never` for a node after a
+  clean stop (probably the release clears the heartbeat; not checked).
 
 ## Edge node and channel editing — Oct 5
 
@@ -1242,8 +1249,7 @@ rewritten) now edits what used to need the database or a delete and re-add:
   machine.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
-  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), a gap longer than the standard 10 minutes (only the 1-minute variant was
-  run), the settings API with a real session, `systemctl stop` duration with
+  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session, `systemctl stop` duration with
   the broker down, Postgres stopped / disk full on node-dc, network
   partition, clock skew between edge node and server, expired broker
   certificate.

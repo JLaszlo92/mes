@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 6)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 7)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit.
 
 ## Method
 
@@ -236,14 +236,53 @@ is shorter than `catchupMaxMinutes`). No half-written last line was found.
 The remaining uncertainty is the real power cut (unsynced appends) which needs
 a host-level or hardware test.
 
+## Slice 7 — gap longer than the 10 minute catch-up limit (Oct 5, 2026)
+
+Question: with the standard limit (`catchupMaxMinutes` = 10, shown in the claim
+log line), is a gap longer than the limit dropped, are the lost parts reported
+exactly, and are they really absent from the database? Slice 3 had tested this
+only with the limit set to 1 minute. Broker and backend were up.
+
+**Procedure.** Counters read at 17:54:23 UTC; `systemctl stop mes-edge-node`
+at 17:54:31 (clean stop, lease released); start scheduled with
+`systemd-run --on-active=665`. The agent claimed the node at 18:06:05 (the
+timer fires up to a minute late by default, `AccuracySec`), gap 696–698 s.
+
+| Machine | Log line at the start | PLC counter difference (whole window) | Database (same window) |
+|---|---|---|---|
+| Modbus | `NOT booked`, `reason: too_old`, `ageSeconds` 696, `lostGood` 287, `lostScrap` 31 | 302 good / 33 scrap | 15 / 2 |
+| OPC-UA | `NOT booked`, `too_old`, 698 s, lost 305 / 23 | 317 / 29 | 12 / 6 |
+| S7 | `catch-up: 155 good / 16 scrap ... were NOT booked (too_old, gap 697s)` | 160 / 16 | 5 / 0 |
+
+Counter difference minus the parts named as lost equals the database exactly
+for every machine and both result types (302 − 287 = 15, 33 − 31 = 2,
+317 − 305 = 12, 29 − 23 = 6, 160 − 155 = 5, 16 − 16 = 0): the dropped gap is
+not in the database, the parts before the stop and after the start (the live
+ones) are, and nothing was booked twice. The log level of the Node channels is
+40 (warning), so the loss is visible in the journal.
+
+Conclusion: the limit works as documented. For an agent outage longer than 10
+minutes the loss is not silent, but it is real: the lost part counts exist only
+in the journal of the edge node. A visible record in the dashboard (an event or
+an alert for a dropped gap) would make it auditable.
+
+Observations:
+
+- The Admin → Edge nodes page showed a red dot while the agent was stopped
+  (as intended) and the text `node-gate-sim last seen: never`, although the
+  node had been seen minutes earlier and `edge_nodes.last_heartbeat_at` is set
+  while it runs. The probable cause is that the clean release at shutdown
+  clears the heartbeat so that the node turns offline immediately; the cause
+  has not been checked in the code. Cosmetic, but misleading: "never" should
+  not appear for a node that was just stopped.
+- The `edge_nodes` table has only this one node (`node-gate-sim`).
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
 - Duration of `systemctl stop` with the broker unreachable (the 5 s forced exit
   in v6 is expected to bound it; not measured).
-- A gap longer than the limit with the standard 10 minutes (the 1-minute
-  variant was tested live).
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
