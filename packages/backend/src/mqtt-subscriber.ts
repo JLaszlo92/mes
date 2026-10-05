@@ -113,7 +113,9 @@ async function handleMessage(
   }
 
   try {
-    const outcome = await insertEvent(event);
+    const outcome = await insertEvent(event, (info) =>
+      log.warn({ machineId: event.machineId, sourceEventId: event.sourceEventId, ...info }, "event timestamp is in the future — stored with the receive time"),
+    );
     if (outcome === "duplicate") {
       log.debug({ sourceEventId: event.sourceEventId }, "duplicate event ignored");
     } else {
