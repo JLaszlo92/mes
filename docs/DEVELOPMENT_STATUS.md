@@ -1088,6 +1088,16 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   the lost parts per machine, and the database equals the PLC counter
   difference minus the lost parts exactly. The lost counts exist only in the
   journal of the edge node (idea: record a dropped gap as an event or alert).
+- **Clock skew of the edge node tested** (Oct 5, slice 9, agent clock +15
+  min with libfaketime): the backend accepts future-dated events without any
+  warning; the current status is taken from the event with the latest
+  timestamp in five places, so future-dated events hide real status changes
+  (seen in the data: real `down` periods older than a future `running`); a
+  clock step in either direction makes the catch-up drop its gap (no wrong
+  booking). **Open (decide before the pilot):** time-sync dependency in the
+  unit, skew detection and alert via the heartbeat, a guard against future
+  timestamps at ingestion, later the agent correcting its timestamps with the
+  server time (details in the findings doc).
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1267,8 +1277,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session,
   `systemctl stop` with the broker unreachable by dropped packets (refused
   connection tested, slice 8), Postgres stopped / disk full on node-dc, network
-  partition, clock skew between edge node and server, expired broker
-  certificate.
+  partition, an edge clock *behind* the server (the clock ahead was tested, see
+  `CHAOS_TEST_FINDINGS.md` slice 9), expired broker certificate.
 
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.

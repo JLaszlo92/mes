@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 8)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit. Slice 8: stopping the agent while the broker is down.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 9)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit. Slice 8: stopping the agent while the broker is down. Slice 9: clock skew of the edge node (+15 minutes).
 
 ## Method
 
@@ -303,6 +303,63 @@ exit was not even needed. It stays untested for a connection that hangs instead
 of being refused (packets dropped, a real network partition), where closing the
 MQTT client could block.
 
+## Slice 9 — clock skew of the edge node (Oct 5, 2026)
+
+Question: the events carry the timestamp of the edge node's clock, and the
+catch-up compares the stored `seenAtMs` with the edge clock. What happens when
+that clock is wrong?
+
+**Method.** node-gate is an LXC container and cannot set its system clock, so
+only the clock of the agent process was shifted: `libfaketime`
+(`LD_PRELOAD=.../libfaketime.so.1`, `FAKETIME=+15m`, `DONT_FAKE_MONOTONIC=1`)
+in a temporary systemd drop-in `faketime.conf` (removed afterwards). The agent
+ran with the clock 15 minutes ahead from 18:31:55 UTC (restart) to 18:34:36
+(restart without the drop-in). The broker and the backend were up.
+
+| Observation | Result |
+|---|---|
+| Ingestion | The backend **accepted and stored** events stamped up to 14 min 59 s in the future (`max(timestamp) - now()` = 00:14:59.5). No rejection, no log line, no warning anywhere |
+| Catch-up at the start with the +15 min clock | Gap seen as 903–905 s although the real gap was a few seconds: `NOT booked (too_old)`, lost S7 1 / 0, Modbus 1 / 0, OPC-UA 2 / 0. A clock that steps forward after a restart makes the catch-up drop a gap that would have been booked |
+| Dashboard during the skew | The machines' "last seen" showed 20:49 while the real time was 20:34 |
+| Restoring the real clock (restart) | The stored state was now 15 minutes in the future: gap −896 s, `NOT booked (too_old, gap -896s)`, lost S7 1 / 0, Modbus 2 / 0, OPC-UA 2 / 0. No negative or wrong booking (the "state from the future" rule works), but the reason label `too_old` for a negative age is misleading |
+| Current status from the latest timestamp | `state.ts`, the shift summary, the downtime evaluator, the status timeline and the status rollup choose the current status with `ORDER BY "timestamp" DESC LIMIT 1`. After the restore the OPC-UA rig had 9 future-dated status events (latest `running`, 20:49:08, real time 20:39). The real `down` periods at 20:38:38–20:38:44 and 20:39:28–20:39:34 are older than that `running`, so a view built on the latest timestamp does not show them until real time catches up with the fake events. The overview page was in sync with the system time at that moment (user observation): it apparently takes its "last seen" from another source (not checked which) |
+| Mixed streams | When real time reaches the fake timestamps (20:47 to 20:49) the timeline of that period holds two streams of events (the test data stays in the database; it belongs to the pilot test-data cleanup) |
+
+### Findings
+
+8. **A wrong edge clock is not noticed by anything.** The backend accepts
+   timestamps from the future, the heartbeat does not carry the agent's time,
+   the Edge nodes page shows no skew, no alert exists.
+9. **A clock ahead of the server hides real status changes** wherever the
+   current status is "the event with the latest timestamp" (five places, see
+   above), for as long as the skew lasts and until real time passes the
+   future-dated events. A clock behind the server does the symmetric damage
+   (new events are older than the existing ones; not tested).
+10. **A clock step in either direction makes the catch-up drop its gap**
+    (forward: the gap looks too old; backward: the stored state is in the
+    future). Nothing is booked wrongly, but the parts of the gap are lost and
+    the log reason is misleading for the backward case.
+11. Realistic causes on edge hardware: a device without a real-time clock
+    that boots before NTP is synchronised (Raspberry Pi), a dead RTC battery, a
+    time sync that steps the clock while the agent runs, a wrong time zone
+    setting is not a cause (timestamps are UTC).
+
+Proposed fixes (not implemented yet), cheapest first:
+
+1. Start the agent only after time sync: `After=time-sync.target` and
+   `Wants=time-sync.target` in the unit generated by `install-on-node.sh`.
+2. Detection: the heartbeat carries the agent's clock; the backend stores the
+   offset in `edge_nodes`, shows it on the Edge nodes page and raises an alert
+   above a limit (for example 30 s), like the existing certificate and backup
+   health evaluators.
+3. Ingestion guard: an event stamped more than about 60 s in the future gets
+   the receive time as its timestamp and is marked.
+4. Stronger, later: the claim and heartbeat responses carry the server time and
+   the agent corrects its own timestamps (and the catch-up age) with the
+   measured offset, so a wrong edge clock no longer corrupts the data.
+5. Log reason `clock_back` (or similar) instead of `too_old` for a negative
+   gap.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -314,6 +371,6 @@ MQTT client could block.
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
 - Postgres stopped / disk full on node-dc; network partition between the
-  nodes; clock skew between the edge node and node-dc (event timestamps use
-  the edge clock; the catch-up age also uses the edge clock); an expired
-  broker certificate.
+  nodes; a clock behind the server (the clock ahead was tested in slice 9; the
+  symmetric case is expected to hide status changes in the same way); an
+  expired broker certificate.
