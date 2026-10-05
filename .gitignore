@@ -11,3 +11,4 @@ generated/
 __pycache__/
 *.pyc
 sbom-out/
+*.tar.gz
