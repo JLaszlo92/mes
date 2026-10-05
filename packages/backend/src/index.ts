@@ -15,6 +15,7 @@ import { ensureDatabaseTimezone } from "./db.js";
 import { startRawEventRetentionEvaluator } from "./raw-event-retention-evaluator.js";
 import { startLicenseEvaluator } from "./license-service.js";
 import { startCertHealthEvaluator } from "./cert-health-evaluator.js";
+import { startEdgeClockEvaluator } from "./edge-clock-health-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -44,6 +45,7 @@ async function main(): Promise<void> {
   startBackupHealthEvaluator(app.log);
   startLicenseEvaluator(app.log);
   startCertHealthEvaluator(app.log);
+  startEdgeClockEvaluator(app.log);
 }
 
 main().catch((err) => {
