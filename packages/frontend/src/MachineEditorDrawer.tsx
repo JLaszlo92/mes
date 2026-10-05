@@ -3,6 +3,7 @@ import Drawer from "./ui/Drawer.js";
 import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine, type PlantHierarchy } from "./master-data.js";
+import MachineDataSourceSection from "./MachineDataSourceSection.js";
 
 export interface NamedOption {
   id: string;
@@ -74,7 +75,7 @@ type Payload = Record<string, string | number | boolean | null>;
 
 /** Az API-nak küldött mezők. A telephely nem kerül bele: a részlegből származik. */
 function toPayload(d: Draft): Payload {
-  const cycle = d.idealCycleTimeSeconds.trim();
+  const cycle = d.idealCycleTimeSeconds.trim().replace(",", ".");
   const micro = d.microStopThresholdSeconds.trim();
   return {
     name: d.name.trim(),
@@ -98,7 +99,7 @@ function localErrors(d: Draft, creating: boolean): Record<string, string> {
   if (creating && !MACHINE_ID_RE.test(d.id.trim())) e.id = "1–64 characters: letters, digits, '.', '_' or '-'.";
   if (d.name.trim() === "") e.name = "Enter a name.";
   if (!d.areaId) e.areaId = "Choose an area.";
-  const cycle = d.idealCycleTimeSeconds.trim();
+  const cycle = d.idealCycleTimeSeconds.trim().replace(",", ".");
   if (cycle !== "" && !(Number(cycle) > 0)) e.idealCycleTimeSeconds = "Enter a positive number of seconds, or leave empty.";
   const micro = Number(d.microStopThresholdSeconds);
   if (!Number.isInteger(micro) || micro < 0 || micro > 3600) e.microStopThresholdSeconds = "Whole seconds between 0 and 3600.";
@@ -354,6 +355,14 @@ export default function MachineEditorDrawer({
           </section>
         </fieldset>
       </form>
+      {creating ? (
+        <section className="ui-section">
+          <h3 className="ui-section-title">Data source</h3>
+          <p className="ui-field-hint">Save the machine first, then connect its data source here.</p>
+        </section>
+      ) : readOnly ? null : (
+        <MachineDataSourceSection machineId={draft.id} />
+      )}
     </Drawer>
   );
 }

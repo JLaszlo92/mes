@@ -1,33 +1,29 @@
 import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch, API_BASE } from "./api.js";
+import { ApiError } from "./master-data.js";
+import {
+  FIELDS,
+  PROTOCOLS,
+  addChannel as createChannel,
+  api as call,
+  channelPatchBody,
+  describeConnection,
+  emptyChannelForm,
+  fetchEdgeNodes,
+  formFromChannel,
+  protocolLabel,
+  toNumber,
+  updateChannel,
+  type ChannelForm,
+  type EdgeNode,
+  type EdgeNodeChannel,
+  type SignalSource,
+  type StatusMode,
+} from "./edge-channels.js";
 
 interface Machine {
   id: string;
   name: string;
-}
-
-type SignalSource = "simulated" | "gpio" | "s7" | "opcua" | "modbus";
-type StatusMode = "status_bit" | "signal_presence";
-
-interface EdgeNodeChannel {
-  id: string;
-  machineId: string | null;
-  machineName: string | null;
-  signalSource: SignalSource;
-  statusMode: StatusMode;
-  noSignalTimeoutSeconds: number;
-  acceptProductionWhileDown: boolean;
-  connectionConfig: Record<string, unknown>;
-}
-
-interface EdgeNode {
-  id: string;
-  name: string;
-  isOnline: boolean;
-  lastHeartbeatAt: string | null;
-  channels: EdgeNodeChannel[];
-  settings?: { catchupMaxMinutes: number };
 }
 
 const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
@@ -43,155 +39,6 @@ const buttonStyle = {
 const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
 const dangerButtonStyle = { ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" };
 const hintStyle = { fontSize: 11, color: "#898781" };
-
-// ---------------------------------------------------------------- api helper
-
-class ApiError extends Error {
-  field?: string;
-  constructor(message: string, field?: string) {
-    super(message);
-    this.field = field;
-  }
-}
-
-/** JSON call to our backend. apiFetch adds the session token and signs out on a 401. */
-async function call<T = unknown>(path: string, method: string, body?: unknown): Promise<T | null> {
-  const res = await apiFetch(`${API_BASE}${path}`, {
-    method,
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    const b = await res.json().catch(() => ({}));
-    throw new ApiError(b.error ?? `${res.status} ${res.statusText}`, b.field);
-  }
-  if (res.status === 204) return null;
-  return (await res.json()) as T;
-}
-
-// ------------------------------------------------------------ channel fields
-
-type FieldKind = "text" | "int" | "pin";
-interface FieldDef {
-  key: string;
-  label: string;
-  placeholder?: string;
-  width: number;
-  kind: FieldKind;
-}
-
-const FIELDS: Record<SignalSource, FieldDef[]> = {
-  modbus: [
-    { key: "host", label: "Host", placeholder: "192.168.1.20", width: 150, kind: "text" },
-    { key: "port", label: "Port", placeholder: "502", width: 80, kind: "int" },
-    { key: "unitId", label: "Unit ID", placeholder: "1", width: 70, kind: "int" },
-    { key: "goodCountRegister", label: "Good register", width: 100, kind: "int" },
-    { key: "scrapCountRegister", label: "Scrap register", width: 100, kind: "int" },
-    { key: "statusRegister", label: "Status register", width: 100, kind: "int" },
-  ],
-  opcua: [
-    { key: "endpointUrl", label: "Endpoint URL", placeholder: "opc.tcp://192.168.1.30:4840", width: 250, kind: "text" },
-    { key: "goodCountNodeId", label: "Good node ID", width: 160, kind: "text" },
-    { key: "scrapCountNodeId", label: "Scrap node ID", width: 160, kind: "text" },
-    { key: "statusNodeId", label: "Status node ID", width: 160, kind: "text" },
-  ],
-  s7: [
-    { key: "plcIp", label: "PLC IP", placeholder: "192.168.1.40", width: 150, kind: "text" },
-    { key: "plcRack", label: "Rack", placeholder: "0", width: 70, kind: "int" },
-    { key: "plcSlot", label: "Slot", placeholder: "1", width: 70, kind: "int" },
-    { key: "plcPort", label: "Port", placeholder: "102", width: 80, kind: "int" },
-  ],
-  gpio: [
-    { key: "goodPin", label: "Good pin", width: 90, kind: "pin" },
-    { key: "scrapPin", label: "Scrap pin", width: 90, kind: "pin" },
-    { key: "statusPin", label: "Status pin", width: 90, kind: "pin" },
-  ],
-  simulated: [],
-};
-
-const PROTOCOLS: { value: SignalSource; label: string }[] = [
-  { value: "modbus", label: "Modbus TCP" },
-  { value: "opcua", label: "OPC-UA" },
-  { value: "s7", label: "S7" },
-  { value: "gpio", label: "GPIO" },
-  { value: "simulated", label: "Simulated" },
-];
-const protocolLabel = (s: SignalSource) => PROTOCOLS.find((p) => p.value === s)?.label ?? s;
-
-interface ChannelForm {
-  machineId: string;
-  signalSource: SignalSource;
-  statusMode: StatusMode;
-  noSignalTimeoutSeconds: string;
-  acceptProductionWhileDown: boolean;
-  config: Record<string, string>;
-}
-
-function emptyChannelForm(): ChannelForm {
-  return {
-    machineId: "",
-    signalSource: "modbus",
-    statusMode: "status_bit",
-    noSignalTimeoutSeconds: "60",
-    acceptProductionWhileDown: true,
-    config: {},
-  };
-}
-
-function formFromChannel(c: EdgeNodeChannel): ChannelForm {
-  const config: Record<string, string> = {};
-  for (const f of FIELDS[c.signalSource]) {
-    const v = c.connectionConfig?.[f.key];
-    config[f.key] = v === undefined || v === null ? "" : String(v);
-  }
-  return {
-    machineId: c.machineId ?? "",
-    signalSource: c.signalSource,
-    statusMode: c.statusMode,
-    noSignalTimeoutSeconds: String(c.noSignalTimeoutSeconds),
-    acceptProductionWhileDown: c.acceptProductionWhileDown,
-    config,
-  };
-}
-
-/** A number the user typed; anything that is not a finite number is sent as text so the server rejects it (NaN would become null). */
-function toNumber(raw: string): number | string {
-  const n = Number(raw);
-  return raw.trim() !== "" && Number.isFinite(n) ? n : raw;
-}
-
-/** create: blank fields are left out. patch: blank fields are sent as null, which clears them. */
-function buildConnectionConfig(form: ChannelForm, mode: "create" | "patch"): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const f of FIELDS[form.signalSource]) {
-    const raw = (form.config[f.key] ?? "").trim();
-    if (raw === "") {
-      if (mode === "patch") out[f.key] = null;
-      continue;
-    }
-    if (f.kind === "int") out[f.key] = toNumber(raw);
-    else if (f.kind === "pin") out[f.key] = /^\d+$/.test(raw) ? Number(raw) : raw;
-    else out[f.key] = raw;
-  }
-  return out;
-}
-
-function describeConnection(c: EdgeNodeChannel): string {
-  const cfg = c.connectionConfig ?? {};
-  const s = (k: string) => (cfg[k] === undefined || cfg[k] === null ? "" : String(cfg[k]));
-  switch (c.signalSource) {
-    case "modbus":
-      return s("host") ? `${s("host")}:${s("port") || "502"}${s("unitId") ? ` · unit ${s("unitId")}` : ""}` : "no host set";
-    case "opcua":
-      return s("endpointUrl") || "no endpoint set";
-    case "s7":
-      return s("plcIp") ? `${s("plcIp")}${s("plcRack") || s("plcSlot") ? ` · rack ${s("plcRack") || "0"} / slot ${s("plcSlot") || "0"}` : ""}` : "no PLC address set";
-    case "gpio":
-      return ["goodPin", "scrapPin", "statusPin"].filter(s).map((k) => `${k.replace("Pin", "")} ${s(k)}`).join(" · ") || "no pins set";
-    default:
-      return "simulated signal";
-  }
-}
 
 // --------------------------------------------------------------- form pieces
 
@@ -365,11 +212,11 @@ export default function EdgeNodesPanel() {
   function load() {
     Promise.all([
       call<Machine[]>("/api/machine-registry?active=true", "GET"),
-      call<EdgeNode[]>("/api/edge-nodes", "GET"),
+      fetchEdgeNodes(),
     ])
       .then(([m, n]) => {
-        setMachines(m ?? []);
-        setNodes(n ?? []);
+        setMachines(m);
+        setNodes(n);
         setError(null);
       })
       .catch((err) => setError(String(err instanceof Error ? err.message : err)));
@@ -385,7 +232,7 @@ export default function EdgeNodesPanel() {
     setError(null);
     try {
       const body = await call<{ name: string; token: string }>("/api/edge-nodes", "POST", { name: newNodeName.trim() });
-      if (body) setNewToken({ name: body.name, token: body.token });
+      setNewToken({ name: body.name, token: body.token });
       setNewNodeName("");
       load();
     } catch (err) {
@@ -410,7 +257,7 @@ export default function EdgeNodesPanel() {
     if (!window.confirm(`Create a new token for "${node.name}"? The old token stops working at once; the device must be given the new one.`)) return;
     try {
       const body = await call<{ token: string }>(`/api/edge-nodes/${encodeURIComponent(node.id)}/regenerate-token`, "POST");
-      if (body) setNewToken({ name: node.name, token: body.token });
+      setNewToken({ name: node.name, token: body.token });
     } catch (err) {
       fail(err);
     }
@@ -421,14 +268,7 @@ export default function EdgeNodesPanel() {
     setSubmitting(true);
     setFormError(null);
     try {
-      await call(`/api/edge-nodes/${encodeURIComponent(edgeNodeId)}/channels`, "POST", {
-        machineId: channelForm.machineId || undefined,
-        signalSource: channelForm.signalSource,
-        connectionConfig: buildConnectionConfig(channelForm, "create"),
-        statusMode: channelForm.statusMode,
-        noSignalTimeoutSeconds: toNumber(channelForm.noSignalTimeoutSeconds),
-        acceptProductionWhileDown: channelForm.acceptProductionWhileDown,
-      });
+      await createChannel(edgeNodeId, channelForm);
       setChannelForm(emptyChannelForm());
       setAddingChannelFor(null);
       load();
@@ -444,13 +284,7 @@ export default function EdgeNodesPanel() {
     setSubmitting(true);
     setFormError(null);
     try {
-      await call(`/api/edge-node-channels/${encodeURIComponent(channelId)}`, "PATCH", {
-        machineId: channelForm.machineId || null,
-        statusMode: channelForm.statusMode,
-        noSignalTimeoutSeconds: toNumber(channelForm.noSignalTimeoutSeconds),
-        acceptProductionWhileDown: channelForm.acceptProductionWhileDown,
-        connectionConfig: buildConnectionConfig(channelForm, "patch"),
-      });
+      await updateChannel(channelId, channelPatchBody(channelForm));
       setEditingChannel(null);
       load();
     } catch (err) {
