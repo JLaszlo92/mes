@@ -13,7 +13,7 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/websocket": "^11.0.1",
     "@mes/shared": "workspace:*",
-    "fastify": "^5.1.0",
+    "fastify": "^5.12.5",
     "fastify-plugin": "^6.0.0",
     "mqtt": "^5.10.1",
     "otplib": "^12",

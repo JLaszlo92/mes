@@ -22,6 +22,9 @@
       "@prisma/engines",
       "esbuild",
       "prisma"
-    ]
+    ],
+    "overrides": {
+      "ip-address": "^10.7.1"
+    }
   }
 }
