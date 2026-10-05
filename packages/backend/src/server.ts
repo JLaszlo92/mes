@@ -102,6 +102,7 @@ import {
   InvalidSessionError,
   isForeignKeyViolation as isEdgeNodeForeignKeyViolation,
 } from "./edge-nodes-repository.js";
+import { validateChannelCreate } from "./edge-node-channel-input.js";
 import {
   listUnexplainedDowntimePeriods,
   explainDowntimePeriod,
@@ -1144,18 +1145,21 @@ app.delete<{ Params: { id: string } }>(
       acceptProductionWhileDown?: boolean;
     };
   }>("/api/edge-nodes/:id/channels", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
-    const { signalSource } = request.body;
-    if (!signalSource) {
+    const parsed = validateChannelCreate(request.body);
+    if (!parsed.ok) {
       reply.code(400);
-      return { error: "signalSource is required" };
+      return { error: parsed.error, field: parsed.field };
     }
     try {
-      const channel = await addChannel(request.params.id, request.body);
+      const channel = await addChannel(request.params.id, {
+        ...parsed.value,
+        machineId: parsed.value.machineId ?? undefined,
+      });
       await recordAuditEvent({
         actorId: request.user!.id,
         action: "edge_node_channel_added",
         target: channel.id,
-        details: request.body,
+        details: { ...parsed.value },
         ipAddress: request.ip,
       });
       reply.code(201);

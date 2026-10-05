@@ -166,6 +166,33 @@ export async function deleteChannel(channelId: string): Promise<boolean> {
   return (result.rowCount ?? 0) > 0;
 }
 
+export async function getChannel(channelId: string): Promise<EdgeNodeChannel | null> {
+  const result = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.id = $1`, [channelId]);
+  const row = result.rows[0];
+  return row ? toChannel(row) : null;
+}
+
+export interface ChannelUpdate {
+  machineId: string | null;
+  connectionConfig: Record<string, unknown>;
+  statusMode: StatusMode;
+  noSignalTimeoutSeconds: number;
+  acceptProductionWhileDown: boolean;
+}
+
+/** Replaces the editable fields of a channel (the protocol and the node never change). */
+export async function updateChannel(channelId: string, f: ChannelUpdate): Promise<EdgeNodeChannel | null> {
+  const result = await pool.query(
+    `UPDATE edge_node_channels
+        SET machine_id = $2, connection_config = $3, status_mode = $4,
+            no_signal_timeout_seconds = $5, accept_production_while_down = $6
+      WHERE id = $1`,
+    [channelId, f.machineId, JSON.stringify(f.connectionConfig), f.statusMode, f.noSignalTimeoutSeconds, f.acceptProductionWhileDown],
+  );
+  if ((result.rowCount ?? 0) === 0) return null;
+  return getChannel(channelId);
+}
+
 export class DuplicateSessionError extends Error {
   constructor() {
     super("another instance of this edge node is already active");

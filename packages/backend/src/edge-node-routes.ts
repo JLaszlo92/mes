@@ -2,18 +2,23 @@ import type { FastifyInstance } from "fastify";
 import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import {
+  getChannel,
   getEdgeNodeSettings,
   InvalidTokenError,
+  isForeignKeyViolation,
   releaseSession,
+  updateChannel,
   updateEdgeNodeSettings,
 } from "./edge-nodes-repository.js";
 import { validateSettingsPatch } from "./edge-node-settings.js";
+import { diffChannel, mergeChannelPatch, type ChannelFields } from "./edge-node-channel-input.js";
 
 /**
  * Extra edge node routes:
  *  - POST /api/edge-nodes/release: the agent gives its instance lease back on
  *    a clean shutdown (public, like claim/heartbeat: the token is the credential).
  *  - GET/PATCH /api/edge-nodes/:id/settings: per node settings (admin/manager).
+ *  - PATCH /api/edge-node-channels/:channelId: edit a channel (admin/manager).
  */
 export function registerEdgeNodeExtras(app: FastifyInstance): void {
   app.post<{ Body: { token?: string; sessionId?: string } }>("/api/edge-nodes/release", async (request, reply) => {
@@ -68,6 +73,55 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
         ipAddress: request.ip,
       });
       return settings;
+    },
+  );
+
+  app.patch<{ Params: { channelId: string }; Body: unknown }>(
+    "/api/edge-node-channels/:channelId",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const existing = await getChannel(request.params.channelId);
+      if (!existing) {
+        reply.code(404);
+        return { error: "unknown channel" };
+      }
+      const before: ChannelFields = {
+        machineId: existing.machineId,
+        signalSource: existing.signalSource,
+        connectionConfig: existing.connectionConfig ?? {},
+        statusMode: existing.statusMode,
+        noSignalTimeoutSeconds: existing.noSignalTimeoutSeconds,
+        acceptProductionWhileDown: existing.acceptProductionWhileDown,
+      };
+      const merged = mergeChannelPatch(before, request.body);
+      if (!merged.ok) {
+        reply.code(400);
+        return { error: merged.error, field: merged.field };
+      }
+      const changes = diffChannel(before, merged.value);
+      if (Object.keys(changes).length === 0) return existing;
+      try {
+        const updated = await updateChannel(request.params.channelId, merged.value);
+        if (!updated) {
+          reply.code(404);
+          return { error: "unknown channel" };
+        }
+        await recordAuditEvent({
+          actorId: request.user!.id,
+          actorEmail: request.user?.email,
+          action: "edge_node_channel_updated",
+          target: request.params.channelId,
+          details: { changes },
+          ipAddress: request.ip,
+        });
+        return updated;
+      } catch (err) {
+        if (isForeignKeyViolation(err)) {
+          reply.code(404);
+          return { error: "unknown machine", field: "machineId" };
+        }
+        throw err;
+      }
     },
   );
 }

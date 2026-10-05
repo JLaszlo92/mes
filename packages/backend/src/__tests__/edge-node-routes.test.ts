@@ -8,6 +8,9 @@ const repo = {
   releaseSession: vi.fn(),
   getEdgeNodeSettings: vi.fn(),
   updateEdgeNodeSettings: vi.fn(),
+  getChannel: vi.fn(),
+  updateChannel: vi.fn(),
+  isForeignKeyViolation: vi.fn(() => false),
 };
 const audit = vi.fn(async () => {});
 

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
 
@@ -7,12 +7,18 @@ interface Machine {
   name: string;
 }
 
+type SignalSource = "simulated" | "gpio" | "s7" | "opcua" | "modbus";
+type StatusMode = "status_bit" | "signal_presence";
+
 interface EdgeNodeChannel {
   id: string;
   machineId: string | null;
   machineName: string | null;
-  signalSource: "simulated" | "gpio" | "s7" | "opcua" | "modbus";
-  statusMode: "status_bit" | "signal_presence";
+  signalSource: SignalSource;
+  statusMode: StatusMode;
+  noSignalTimeoutSeconds: number;
+  acceptProductionWhileDown: boolean;
+  connectionConfig: Record<string, unknown>;
 }
 
 interface EdgeNode {
@@ -21,6 +27,7 @@ interface EdgeNode {
   isOnline: boolean;
   lastHeartbeatAt: string | null;
   channels: EdgeNodeChannel[];
+  settings?: { catchupMaxMinutes: number };
 }
 
 const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
@@ -34,218 +41,461 @@ const buttonStyle = {
   fontSize: 13,
 };
 const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
+const dangerButtonStyle = { ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" };
+const hintStyle = { fontSize: 11, color: "#898781" };
 
-const emptyConfig = {
-  host: "",
-  port: "",
-  unitId: "",
-  goodCountRegister: "",
-  scrapCountRegister: "",
-  statusRegister: "",
-  endpointUrl: "",
-  goodCountNodeId: "",
-  scrapCountNodeId: "",
-  statusNodeId: "",
-  plcIp: "",
-  plcRack: "",
-  plcSlot: "",
-  plcPort: "",
-  goodPin: "",
-  scrapPin: "",
-  statusPin: "",
+// ---------------------------------------------------------------- api helper
+
+class ApiError extends Error {
+  field?: string;
+  constructor(message: string, field?: string) {
+    super(message);
+    this.field = field;
+  }
+}
+
+/** JSON call to our backend. apiFetch adds the session token and signs out on a 401. */
+async function call<T = unknown>(path: string, method: string, body?: unknown): Promise<T | null> {
+  const res = await apiFetch(`${API_BASE}${path}`, {
+    method,
+    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const b = await res.json().catch(() => ({}));
+    throw new ApiError(b.error ?? `${res.status} ${res.statusText}`, b.field);
+  }
+  if (res.status === 204) return null;
+  return (await res.json()) as T;
+}
+
+// ------------------------------------------------------------ channel fields
+
+type FieldKind = "text" | "int" | "pin";
+interface FieldDef {
+  key: string;
+  label: string;
+  placeholder?: string;
+  width: number;
+  kind: FieldKind;
+}
+
+const FIELDS: Record<SignalSource, FieldDef[]> = {
+  modbus: [
+    { key: "host", label: "Host", placeholder: "192.168.1.20", width: 150, kind: "text" },
+    { key: "port", label: "Port", placeholder: "502", width: 80, kind: "int" },
+    { key: "unitId", label: "Unit ID", placeholder: "1", width: 70, kind: "int" },
+    { key: "goodCountRegister", label: "Good register", width: 100, kind: "int" },
+    { key: "scrapCountRegister", label: "Scrap register", width: 100, kind: "int" },
+    { key: "statusRegister", label: "Status register", width: 100, kind: "int" },
+  ],
+  opcua: [
+    { key: "endpointUrl", label: "Endpoint URL", placeholder: "opc.tcp://192.168.1.30:4840", width: 250, kind: "text" },
+    { key: "goodCountNodeId", label: "Good node ID", width: 160, kind: "text" },
+    { key: "scrapCountNodeId", label: "Scrap node ID", width: 160, kind: "text" },
+    { key: "statusNodeId", label: "Status node ID", width: 160, kind: "text" },
+  ],
+  s7: [
+    { key: "plcIp", label: "PLC IP", placeholder: "192.168.1.40", width: 150, kind: "text" },
+    { key: "plcRack", label: "Rack", placeholder: "0", width: 70, kind: "int" },
+    { key: "plcSlot", label: "Slot", placeholder: "1", width: 70, kind: "int" },
+    { key: "plcPort", label: "Port", placeholder: "102", width: 80, kind: "int" },
+  ],
+  gpio: [
+    { key: "goodPin", label: "Good pin", width: 90, kind: "pin" },
+    { key: "scrapPin", label: "Scrap pin", width: 90, kind: "pin" },
+    { key: "statusPin", label: "Status pin", width: 90, kind: "pin" },
+  ],
+  simulated: [],
 };
 
-function emptyChannelForm() {
+const PROTOCOLS: { value: SignalSource; label: string }[] = [
+  { value: "modbus", label: "Modbus TCP" },
+  { value: "opcua", label: "OPC-UA" },
+  { value: "s7", label: "S7" },
+  { value: "gpio", label: "GPIO" },
+  { value: "simulated", label: "Simulated" },
+];
+const protocolLabel = (s: SignalSource) => PROTOCOLS.find((p) => p.value === s)?.label ?? s;
+
+interface ChannelForm {
+  machineId: string;
+  signalSource: SignalSource;
+  statusMode: StatusMode;
+  noSignalTimeoutSeconds: string;
+  acceptProductionWhileDown: boolean;
+  config: Record<string, string>;
+}
+
+function emptyChannelForm(): ChannelForm {
   return {
     machineId: "",
-    signalSource: "modbus" as EdgeNodeChannel["signalSource"],
-    statusMode: "status_bit" as "status_bit" | "signal_presence",
+    signalSource: "modbus",
+    statusMode: "status_bit",
     noSignalTimeoutSeconds: "60",
     acceptProductionWhileDown: true,
-    config: { ...emptyConfig },
+    config: {},
   };
 }
 
+function formFromChannel(c: EdgeNodeChannel): ChannelForm {
+  const config: Record<string, string> = {};
+  for (const f of FIELDS[c.signalSource]) {
+    const v = c.connectionConfig?.[f.key];
+    config[f.key] = v === undefined || v === null ? "" : String(v);
+  }
+  return {
+    machineId: c.machineId ?? "",
+    signalSource: c.signalSource,
+    statusMode: c.statusMode,
+    noSignalTimeoutSeconds: String(c.noSignalTimeoutSeconds),
+    acceptProductionWhileDown: c.acceptProductionWhileDown,
+    config,
+  };
+}
+
+/** A number the user typed; anything that is not a finite number is sent as text so the server rejects it (NaN would become null). */
+function toNumber(raw: string): number | string {
+  const n = Number(raw);
+  return raw.trim() !== "" && Number.isFinite(n) ? n : raw;
+}
+
+/** create: blank fields are left out. patch: blank fields are sent as null, which clears them. */
+function buildConnectionConfig(form: ChannelForm, mode: "create" | "patch"): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const f of FIELDS[form.signalSource]) {
+    const raw = (form.config[f.key] ?? "").trim();
+    if (raw === "") {
+      if (mode === "patch") out[f.key] = null;
+      continue;
+    }
+    if (f.kind === "int") out[f.key] = toNumber(raw);
+    else if (f.kind === "pin") out[f.key] = /^\d+$/.test(raw) ? Number(raw) : raw;
+    else out[f.key] = raw;
+  }
+  return out;
+}
+
+function describeConnection(c: EdgeNodeChannel): string {
+  const cfg = c.connectionConfig ?? {};
+  const s = (k: string) => (cfg[k] === undefined || cfg[k] === null ? "" : String(cfg[k]));
+  switch (c.signalSource) {
+    case "modbus":
+      return s("host") ? `${s("host")}:${s("port") || "502"}${s("unitId") ? ` · unit ${s("unitId")}` : ""}` : "no host set";
+    case "opcua":
+      return s("endpointUrl") || "no endpoint set";
+    case "s7":
+      return s("plcIp") ? `${s("plcIp")}${s("plcRack") || s("plcSlot") ? ` · rack ${s("plcRack") || "0"} / slot ${s("plcSlot") || "0"}` : ""}` : "no PLC address set";
+    case "gpio":
+      return ["goodPin", "scrapPin", "statusPin"].filter(s).map((k) => `${k.replace("Pin", "")} ${s(k)}`).join(" · ") || "no pins set";
+    default:
+      return "simulated signal";
+  }
+}
+
+// --------------------------------------------------------------- form pieces
+
+function ChannelFormFields(props: {
+  form: ChannelForm;
+  setForm: Dispatch<SetStateAction<ChannelForm>>;
+  machines: Machine[];
+  canChangeProtocol: boolean;
+  errorField?: string;
+}) {
+  const { form, setForm, machines, canChangeProtocol, errorField } = props;
+  const setConfig = (key: string, value: string) =>
+    setForm((f) => ({ ...f, config: { ...f.config, [key]: value } }));
+  const fieldStyle = (key: string, width: number) => ({
+    ...inputStyle,
+    width,
+    borderColor: errorField === `connectionConfig.${key}` ? "#d03b3b" : "#e1e0d9",
+  });
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <label style={{ fontSize: 12 }}>
+          Machine<br />
+          <select
+            value={form.machineId}
+            onChange={(e) => setForm((f) => ({ ...f, machineId: e.target.value }))}
+            style={{ ...inputStyle, borderColor: errorField === "machineId" ? "#d03b3b" : "#e1e0d9" }}
+          >
+            <option value="">unassigned</option>
+            {machines.map((m) => (
+              <option key={m.id} value={m.id}>{m.name}</option>
+            ))}
+          </select>
+        </label>
+        <label style={{ fontSize: 12 }}>
+          Protocol<br />
+          {canChangeProtocol ? (
+            <select
+              value={form.signalSource}
+              onChange={(e) => setForm((f) => ({ ...f, signalSource: e.target.value as SignalSource, config: {} }))}
+              style={inputStyle}
+            >
+              {PROTOCOLS.map((p) => (
+                <option key={p.value} value={p.value}>{p.label}</option>
+              ))}
+            </select>
+          ) : (
+            <span style={{ display: "inline-block", padding: "6px 0", fontWeight: 600 }}>{protocolLabel(form.signalSource)}</span>
+          )}
+        </label>
+        <label style={{ fontSize: 12 }}>
+          Status mode<br />
+          <select
+            value={form.statusMode}
+            onChange={(e) => setForm((f) => ({ ...f, statusMode: e.target.value as StatusMode }))}
+            style={inputStyle}
+          >
+            <option value="status_bit">Dedicated status bit</option>
+            <option value="signal_presence">Signal presence</option>
+          </select>
+        </label>
+        {form.statusMode === "signal_presence" ? (
+          <label style={{ fontSize: 12 }}>
+            No-signal timeout (s)<br />
+            <input
+              type="number"
+              value={form.noSignalTimeoutSeconds}
+              onChange={(e) => setForm((f) => ({ ...f, noSignalTimeoutSeconds: e.target.value }))}
+              style={{ ...inputStyle, width: 90, borderColor: errorField === "noSignalTimeoutSeconds" ? "#d03b3b" : "#e1e0d9" }}
+            />
+          </label>
+        ) : (
+          <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
+            <input
+              type="checkbox"
+              checked={form.acceptProductionWhileDown}
+              onChange={(e) => setForm((f) => ({ ...f, acceptProductionWhileDown: e.target.checked }))}
+            />
+            Accept production while down
+          </label>
+        )}
+      </div>
+
+      {FIELDS[form.signalSource].length > 0 && (
+        <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {FIELDS[form.signalSource].map((f) => (
+            <label key={f.key} style={{ fontSize: 12 }}>
+              {f.label}<br />
+              <input
+                placeholder={f.placeholder}
+                value={form.config[f.key] ?? ""}
+                onChange={(e) => setConfig(f.key, e.target.value)}
+                style={fieldStyle(f.key, f.width)}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function NodeSettings(props: { node: EdgeNode; onSaved: () => void }) {
+  const { node, onSaved } = props;
+  const saved = node.settings?.catchupMaxMinutes ?? 10;
+  const [minutes, setMinutes] = useState(String(saved));
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const dirty = minutes !== String(saved);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setMessage(null);
+    try {
+      await call(`/api/edge-nodes/${encodeURIComponent(node.id)}/settings`, "PATCH", {
+        catchupMaxMinutes: toNumber(minutes),
+      });
+      setMessage({ ok: true, text: "Saved. The edge node applies it the next time its agent starts." });
+      onSaved();
+    } catch (err) {
+      setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} style={{ marginTop: 10, paddingLeft: 26, display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <label style={{ fontSize: 12 }}>
+        Catch-up limit (minutes)<br />
+        <input
+          type="number"
+          min={0}
+          max={1440}
+          value={minutes}
+          onChange={(e) => setMinutes(e.target.value)}
+          style={{ ...inputStyle, width: 90 }}
+        />
+      </label>
+      <button type="submit" disabled={busy || !dirty} style={{ ...buttonStyle, opacity: busy || !dirty ? 0.5 : 1 }}>
+        {busy ? "Saving…" : "Save"}
+      </button>
+      <div style={{ ...hintStyle, maxWidth: 520 }}>
+        Parts made while the agent was stopped or could not reach the machine are booked afterwards, if the gap is not longer than this.
+        Longer gaps are dropped (and logged). 0 = off. Default 10.
+      </div>
+      {message && <div style={{ fontSize: 12, color: message.ok ? "#0ca30c" : "#d03b3b", width: "100%" }}>{message.text}</div>}
+    </form>
+  );
+}
+
+// --------------------------------------------------------------------- panel
+
 export default function EdgeNodesPanel() {
-  const { auth, logout } = useAuth();
+  const { auth } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [nodes, setNodes] = useState<EdgeNode[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [newToken, setNewToken] = useState<{ name: string; token: string } | null>(null);
   const [newNodeName, setNewNodeName] = useState("");
   const [addingChannelFor, setAddingChannelFor] = useState<string | null>(null);
-  const [channelForm, setChannelForm] = useState(emptyChannelForm());
+  const [editingChannel, setEditingChannel] = useState<string | null>(null);
+  const [channelForm, setChannelForm] = useState<ChannelForm>(emptyChannelForm());
+  const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const isAdmin = auth?.role === "admin" || auth?.role === "manager";
 
   function load() {
     Promise.all([
-      apiFetch(`${API_BASE}/api/machine-registry?active=true`).then((r) => r.json()),
-      apiFetch(`${API_BASE}/api/edge-nodes`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
-        if (res.status === 401) {
-          logout();
-          throw new Error("session expired — please sign in again");
-        }
-        return res.json();
-      }),
+      call<Machine[]>("/api/machine-registry?active=true", "GET"),
+      call<EdgeNode[]>("/api/edge-nodes", "GET"),
     ])
       .then(([m, n]) => {
-        setMachines(m);
-        setNodes(n);
+        setMachines(m ?? []);
+        setNodes(n ?? []);
         setError(null);
       })
-      .catch((err) => setError(String(err)));
+      .catch((err) => setError(String(err instanceof Error ? err.message : err)));
   }
 
   useEffect(load, []);
+
+  const fail = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
 
   async function createNode(e: FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     setError(null);
     try {
-      const res = await apiFetch(`${API_BASE}/api/edge-nodes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({ name: newNodeName.trim() }),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      const body = await res.json();
-      setNewToken({ name: body.name, token: body.token });
+      const body = await call<{ name: string; token: string }>("/api/edge-nodes", "POST", { name: newNodeName.trim() });
+      if (body) setNewToken({ name: body.name, token: body.token });
       setNewNodeName("");
       load();
     } catch (err) {
-      setError(String(err));
+      fail(err);
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function removeNode(id: string) {
-    const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    load();
-  }
-
-  async function regenerateToken(id: string, name: string) {
-    const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(id)}/regenerate-token`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
-    }
-    if (res.ok) {
-      const body = await res.json();
-      setNewToken({ name, token: body.token });
+  async function removeNode(node: EdgeNode) {
+    const what = node.channels.length > 0 ? ` and its ${node.channels.length} channel(s)` : "";
+    if (!window.confirm(`Remove edge node "${node.name}"${what}? The device stops collecting data until it is set up again.`)) return;
+    try {
+      await call(`/api/edge-nodes/${encodeURIComponent(node.id)}`, "DELETE");
+      load();
+    } catch (err) {
+      fail(err);
     }
   }
 
-  function buildConnectionConfig(): Record<string, unknown> {
-    const c = channelForm.config;
-    switch (channelForm.signalSource) {
-      case "modbus":
-        return {
-          host: c.host,
-          port: c.port ? Number(c.port) : undefined,
-          unitId: c.unitId ? Number(c.unitId) : undefined,
-          goodCountRegister: c.goodCountRegister ? Number(c.goodCountRegister) : undefined,
-          scrapCountRegister: c.scrapCountRegister ? Number(c.scrapCountRegister) : undefined,
-          statusRegister: c.statusRegister ? Number(c.statusRegister) : undefined,
-        };
-      case "opcua":
-        return {
-          endpointUrl: c.endpointUrl,
-          goodCountNodeId: c.goodCountNodeId,
-          scrapCountNodeId: c.scrapCountNodeId,
-          statusNodeId: c.statusNodeId,
-        };
-      case "s7":
-        return {
-          plcIp: c.plcIp,
-          plcRack: c.plcRack ? Number(c.plcRack) : undefined,
-          plcSlot: c.plcSlot ? Number(c.plcSlot) : undefined,
-          plcPort: c.plcPort ? Number(c.plcPort) : undefined,
-        };
-      case "gpio":
-        return { goodPin: c.goodPin, scrapPin: c.scrapPin, statusPin: c.statusPin };
-      default:
-        return {};
+  async function regenerateToken(node: EdgeNode) {
+    if (!window.confirm(`Create a new token for "${node.name}"? The old token stops working at once; the device must be given the new one.`)) return;
+    try {
+      const body = await call<{ token: string }>(`/api/edge-nodes/${encodeURIComponent(node.id)}/regenerate-token`, "POST");
+      if (body) setNewToken({ name: node.name, token: body.token });
+    } catch (err) {
+      fail(err);
     }
   }
 
   async function addChannel(edgeNodeId: string, e: FormEvent) {
     e.preventDefault();
     setSubmitting(true);
-    setError(null);
+    setFormError(null);
     try {
-      const res = await apiFetch(`${API_BASE}/api/edge-nodes/${encodeURIComponent(edgeNodeId)}/channels`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          machineId: channelForm.machineId || undefined,
-          signalSource: channelForm.signalSource,
-          connectionConfig: buildConnectionConfig(),
-          statusMode: channelForm.statusMode,
-          noSignalTimeoutSeconds: Number(channelForm.noSignalTimeoutSeconds) || 60,
-          acceptProductionWhileDown: channelForm.acceptProductionWhileDown,
-        }),
+      await call(`/api/edge-nodes/${encodeURIComponent(edgeNodeId)}/channels`, "POST", {
+        machineId: channelForm.machineId || undefined,
+        signalSource: channelForm.signalSource,
+        connectionConfig: buildConnectionConfig(channelForm, "create"),
+        statusMode: channelForm.statusMode,
+        noSignalTimeoutSeconds: toNumber(channelForm.noSignalTimeoutSeconds),
+        acceptProductionWhileDown: channelForm.acceptProductionWhileDown,
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
       setChannelForm(emptyChannelForm());
       setAddingChannelFor(null);
       load();
     } catch (err) {
-      setError(String(err));
+      setFormError({ message: err instanceof Error ? err.message : String(err), field: err instanceof ApiError ? err.field : undefined });
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function removeChannel(channelId: string) {
-    const res = await apiFetch(`${API_BASE}/api/edge-node-channels/${encodeURIComponent(channelId)}`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.status === 401) {
-      logout();
-      return;
+  async function saveChannel(channelId: string, e: FormEvent) {
+    e.preventDefault();
+    setSubmitting(true);
+    setFormError(null);
+    try {
+      await call(`/api/edge-node-channels/${encodeURIComponent(channelId)}`, "PATCH", {
+        machineId: channelForm.machineId || null,
+        statusMode: channelForm.statusMode,
+        noSignalTimeoutSeconds: toNumber(channelForm.noSignalTimeoutSeconds),
+        acceptProductionWhileDown: channelForm.acceptProductionWhileDown,
+        connectionConfig: buildConnectionConfig(channelForm, "patch"),
+      });
+      setEditingChannel(null);
+      load();
+    } catch (err) {
+      setFormError({ message: err instanceof Error ? err.message : String(err), field: err instanceof ApiError ? err.field : undefined });
+    } finally {
+      setSubmitting(false);
     }
-    load();
+  }
+
+  async function removeChannel(c: EdgeNodeChannel) {
+    if (!window.confirm(`Remove the ${protocolLabel(c.signalSource)} channel of "${c.machineName ?? "unassigned"}"? Data collection for it stops when the node restarts.`)) return;
+    try {
+      await call(`/api/edge-node-channels/${encodeURIComponent(c.id)}`, "DELETE");
+      load();
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  function startAdd(nodeId: string) {
+    setChannelForm(emptyChannelForm());
+    setFormError(null);
+    setEditingChannel(null);
+    setAddingChannelFor(nodeId);
+  }
+
+  function startEdit(c: EdgeNodeChannel) {
+    setChannelForm(formFromChannel(c));
+    setFormError(null);
+    setAddingChannelFor(null);
+    setEditingChannel(c.id);
   }
 
   if (!isAdmin) return null;
 
-  const setConfig = (field: string, value: string) =>
-    setChannelForm((f) => ({ ...f, config: { ...f.config, [field]: value } }));
+  const formErrorLine = formError && (
+    <div style={{ color: "#d03b3b", fontSize: 12, marginTop: 8 }}>{formError.message}</div>
+  );
 
   return (
     <section style={{ marginTop: 32 }}>
       <h2 style={{ fontSize: 16 }}>Edge nodes</h2>
-      <p style={{ fontSize: 12, color: "#898781" }}>
-        Egy edge-node egy fizikai eszköz, saját tokennel — tetszőleges számú géphez (csatornához) rendelhető.
+      <p style={hintStyle}>
+        An edge node is a physical device with its own token, and can serve any number of machines (channels).
+        Channel and node settings are applied when the node's agent starts, so restart the agent after a change.
       </p>
 
       {newToken && (
@@ -280,129 +530,75 @@ export default function EdgeNodesPanel() {
               title={n.isOnline ? "online" : "offline"}
             />
             <div style={{ fontWeight: 600 }}>{n.name}</div>
-            <div style={{ fontSize: 11, color: "#898781" }}>
+            <div style={hintStyle}>
               last seen: {n.lastHeartbeatAt ? new Date(n.lastHeartbeatAt).toLocaleString() : "never"}
             </div>
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-              <button style={secondaryButtonStyle} onClick={() => regenerateToken(n.id, n.name)}>
+              <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
                 New token
               </button>
-              <button style={{ ...secondaryButtonStyle, color: "#d03b3b", borderColor: "#d03b3b" }} onClick={() => removeNode(n.id)}>
+              <button style={dangerButtonStyle} onClick={() => removeNode(n)}>
                 Remove node
               </button>
             </div>
           </div>
 
+          <NodeSettings key={`${n.id}-${n.settings?.catchupMaxMinutes ?? 10}`} node={n} onSaved={load} />
+
           <div style={{ marginTop: 10, paddingLeft: 26 }}>
-            {n.channels.map((c) => (
-              <div key={c.id} style={{ display: "flex", gap: 16, alignItems: "center", fontSize: 13, padding: "6px 0", borderTop: "1px solid #f0efeb" }}>
-                <span>📡</span>
-                <div>{c.machineName ?? "unassigned"}</div>
-                <div style={{ color: "#898781" }}>{c.signalSource} · {c.statusMode}</div>
-                <button
-                  style={{ ...secondaryButtonStyle, marginLeft: "auto", padding: "3px 8px", fontSize: 11 }}
-                  onClick={() => removeChannel(c.id)}
+            {n.channels.map((c) =>
+              editingChannel === c.id ? (
+                <form
+                  key={c.id}
+                  onSubmit={(e) => saveChannel(c.id, e)}
+                  style={{ marginTop: 6, padding: 10, background: "#f7f7f5", borderRadius: 8 }}
                 >
-                  Remove
-                </button>
-              </div>
-            ))}
+                  <ChannelFormFields
+                    form={channelForm}
+                    setForm={setChannelForm}
+                    machines={machines}
+                    canChangeProtocol={false}
+                    errorField={formError?.field}
+                  />
+                  {formErrorLine}
+                  <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                    <button type="submit" disabled={submitting} style={buttonStyle}>
+                      {submitting ? "Saving…" : "Save channel"}
+                    </button>
+                    <button type="button" style={secondaryButtonStyle} onClick={() => setEditingChannel(null)}>
+                      Cancel
+                    </button>
+                    <span style={hintStyle}>Applied when the node's agent restarts. The protocol cannot be changed; add a new channel instead.</span>
+                  </div>
+                </form>
+              ) : (
+                <div key={c.id} style={{ display: "flex", gap: 16, alignItems: "center", fontSize: 13, padding: "6px 0", borderTop: "1px solid #f0efeb" }}>
+                  <span>📡</span>
+                  <div style={{ minWidth: 120 }}>{c.machineName ?? "unassigned"}</div>
+                  <div style={{ color: "#898781" }}>{protocolLabel(c.signalSource)} · {c.statusMode}</div>
+                  <div style={{ color: "#898781", fontSize: 12 }}>{describeConnection(c)}</div>
+                  <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                    <button style={{ ...secondaryButtonStyle, padding: "3px 8px", fontSize: 11 }} onClick={() => startEdit(c)}>
+                      Edit
+                    </button>
+                    <button style={{ ...dangerButtonStyle, padding: "3px 8px", fontSize: 11 }} onClick={() => removeChannel(c)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ),
+            )}
 
             {addingChannelFor === n.id ? (
               <form onSubmit={(e) => addChannel(n.id, e)} style={{ marginTop: 10, padding: 10, background: "#f7f7f5", borderRadius: 8 }}>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-                  <label style={{ fontSize: 12 }}>
-                    Machine<br />
-                    <select value={channelForm.machineId} onChange={(e) => setChannelForm((f) => ({ ...f, machineId: e.target.value }))} style={inputStyle}>
-                      <option value="">unassigned</option>
-                      {machines.map((m) => (
-                        <option key={m.id} value={m.id}>{m.name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label style={{ fontSize: 12 }}>
-                    Protocol<br />
-                    <select
-                      value={channelForm.signalSource}
-                      onChange={(e) => setChannelForm((f) => ({ ...f, signalSource: e.target.value as EdgeNodeChannel["signalSource"] }))}
-                      style={inputStyle}
-                    >
-                      <option value="modbus">Modbus TCP</option>
-                      <option value="opcua">OPC-UA</option>
-                      <option value="s7">S7</option>
-                      <option value="gpio">GPIO</option>
-                      <option value="simulated">Simulated</option>
-                    </select>
-                  </label>
-                  <label style={{ fontSize: 12 }}>
-                    Status mode<br />
-                    <select
-                      value={channelForm.statusMode}
-                      onChange={(e) => setChannelForm((f) => ({ ...f, statusMode: e.target.value as "status_bit" | "signal_presence" }))}
-                      style={inputStyle}
-                    >
-                      <option value="status_bit">Dedicated status bit</option>
-                      <option value="signal_presence">Signal presence</option>
-                    </select>
-                  </label>
-                  {channelForm.statusMode === "signal_presence" ? (
-                    <label style={{ fontSize: 12 }}>
-                      No-signal timeout (s)<br />
-                      <input
-                        type="number"
-                        value={channelForm.noSignalTimeoutSeconds}
-                        onChange={(e) => setChannelForm((f) => ({ ...f, noSignalTimeoutSeconds: e.target.value }))}
-                        style={{ ...inputStyle, width: 80 }}
-                      />
-                    </label>
-                  ) : (
-                    <label style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4 }}>
-                      <input
-                        type="checkbox"
-                        checked={channelForm.acceptProductionWhileDown}
-                        onChange={(e) => setChannelForm((f) => ({ ...f, acceptProductionWhileDown: e.target.checked }))}
-                      />
-                      Accept production while down
-                    </label>
-                  )}
-                </div>
-
-                <div style={{ marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {channelForm.signalSource === "modbus" && (
-                    <>
-                      <input placeholder="Host" value={channelForm.config.host} onChange={(e) => setConfig("host", e.target.value)} style={inputStyle} />
-                      <input placeholder="Port (502)" value={channelForm.config.port} onChange={(e) => setConfig("port", e.target.value)} style={{ ...inputStyle, width: 90 }} />
-                      <input placeholder="Unit ID" value={channelForm.config.unitId} onChange={(e) => setConfig("unitId", e.target.value)} style={{ ...inputStyle, width: 80 }} />
-                      <input placeholder="Good register" value={channelForm.config.goodCountRegister} onChange={(e) => setConfig("goodCountRegister", e.target.value)} style={{ ...inputStyle, width: 100 }} />
-                      <input placeholder="Scrap register" value={channelForm.config.scrapCountRegister} onChange={(e) => setConfig("scrapCountRegister", e.target.value)} style={{ ...inputStyle, width: 100 }} />
-                      <input placeholder="Status register" value={channelForm.config.statusRegister} onChange={(e) => setConfig("statusRegister", e.target.value)} style={{ ...inputStyle, width: 100 }} />
-                    </>
-                  )}
-                  {channelForm.signalSource === "opcua" && (
-                    <>
-                      <input placeholder="Endpoint URL" value={channelForm.config.endpointUrl} onChange={(e) => setConfig("endpointUrl", e.target.value)} style={{ ...inputStyle, width: 220 }} />
-                      <input placeholder="Good node ID" value={channelForm.config.goodCountNodeId} onChange={(e) => setConfig("goodCountNodeId", e.target.value)} style={inputStyle} />
-                      <input placeholder="Scrap node ID" value={channelForm.config.scrapCountNodeId} onChange={(e) => setConfig("scrapCountNodeId", e.target.value)} style={inputStyle} />
-                      <input placeholder="Status node ID" value={channelForm.config.statusNodeId} onChange={(e) => setConfig("statusNodeId", e.target.value)} style={inputStyle} />
-                    </>
-                  )}
-                  {channelForm.signalSource === "s7" && (
-                    <>
-                      <input placeholder="PLC IP" value={channelForm.config.plcIp} onChange={(e) => setConfig("plcIp", e.target.value)} style={inputStyle} />
-                      <input placeholder="Rack" value={channelForm.config.plcRack} onChange={(e) => setConfig("plcRack", e.target.value)} style={{ ...inputStyle, width: 70 }} />
-                      <input placeholder="Slot" value={channelForm.config.plcSlot} onChange={(e) => setConfig("plcSlot", e.target.value)} style={{ ...inputStyle, width: 70 }} />
-                      <input placeholder="Port (102)" value={channelForm.config.plcPort} onChange={(e) => setConfig("plcPort", e.target.value)} style={{ ...inputStyle, width: 90 }} />
-                    </>
-                  )}
-                  {channelForm.signalSource === "gpio" && (
-                    <>
-                      <input placeholder="Good pin" value={channelForm.config.goodPin} onChange={(e) => setConfig("goodPin", e.target.value)} style={{ ...inputStyle, width: 90 }} />
-                      <input placeholder="Scrap pin" value={channelForm.config.scrapPin} onChange={(e) => setConfig("scrapPin", e.target.value)} style={{ ...inputStyle, width: 90 }} />
-                      <input placeholder="Status pin" value={channelForm.config.statusPin} onChange={(e) => setConfig("statusPin", e.target.value)} style={{ ...inputStyle, width: 90 }} />
-                    </>
-                  )}
-                </div>
-
+                <ChannelFormFields
+                  form={channelForm}
+                  setForm={setChannelForm}
+                  machines={machines}
+                  canChangeProtocol
+                  errorField={formError?.field}
+                />
+                {formErrorLine}
                 <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
                   <button type="submit" disabled={submitting} style={buttonStyle}>
                     {submitting ? "Adding…" : "Add channel"}
@@ -413,13 +609,7 @@ export default function EdgeNodesPanel() {
                 </div>
               </form>
             ) : (
-              <button
-                style={{ ...secondaryButtonStyle, marginTop: 8, fontSize: 12 }}
-                onClick={() => {
-                  setChannelForm(emptyChannelForm());
-                  setAddingChannelFor(n.id);
-                }}
-              >
+              <button style={{ ...secondaryButtonStyle, marginTop: 8, fontSize: 12 }} onClick={() => startAdd(n.id)}>
                 + Add channel (machine)
               </button>
             )}
