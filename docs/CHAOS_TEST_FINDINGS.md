@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 7)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 8)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit. Slice 8: stopping the agent while the broker is down.
 
 ## Method
 
@@ -281,12 +281,35 @@ Observations:
   the stop time; the page shows that time next to the red dot.
 - The `edge_nodes` table has only this one node (`node-gate-sim`).
 
+## Slice 8 — `systemctl stop` with the broker down (Oct 5, 2026)
+
+Question: does stopping the agent hang when the MQTT connection cannot be
+closed cleanly? v6 forces the exit 5 s after SIGTERM; without that, systemd
+would wait for its default 90 s `TimeoutStopSec`. Mosquitto stopped on node-dc
+(the agent logged `ECONNREFUSED 192.168.60.141:8884` and reconnect attempts every
+2 s), then `time systemctl stop mes-edge-node` on node-gate.
+
+| Step | Result |
+|---|---|
+| `time systemctl stop` | **real 0.018 s**. Journal: `Stopping` and `shutting down…` in the same second, the S7 bridge got SIGTERM, `Deactivated successfully` |
+| Exit state | `systemctl is-failed` prints `inactive` (a clean stop, not `failed`) |
+| Lease | The release reached the backend although the broker was down (it goes over HTTP): `last_heartbeat_at` empty, `has_session` false, `last_seen_at` = stop time (20:26:28) |
+| Start 74 s later (broker still down) | `claimed edge node` at once, no `already active`, three `channel started` lines |
+| Catch-up (gap 75–77 s) | S7 12 good / 1 scrap, Modbus 29 / 4, OPC-UA 38 / 0 booked |
+| Broker started again | Buffers 0 / 0 / 0 |
+
+Conclusion: with a refused connection the stop is immediate; the 5 s forced
+exit was not even needed. It stays untested for a connection that hangs instead
+of being refused (packets dropped, a real network partition), where closing the
+MQTT client could block.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
-- Duration of `systemctl stop` with the broker unreachable (the 5 s forced exit
-  in v6 is expected to bound it; not measured).
+- `systemctl stop` while the broker is unreachable by dropped packets (not
+  refused): the 5 s forced exit of v6 is expected to bound it; only the refused
+  case was measured (slice 8).
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.

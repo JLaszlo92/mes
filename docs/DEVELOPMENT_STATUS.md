@@ -1088,6 +1088,9 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   the lost parts per machine, and the database equals the PLC counter
   difference minus the lost parts exactly. The lost counts exist only in the
   journal of the edge node (idea: record a dropped gap as an event or alert).
+- **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
+  unit state `inactive`, lease released (HTTP to the backend), next start
+  claimed at once and caught up the 75 s gap.
 - **Edge node "last seen" after a clean stop fixed** (Oct 5, `8bdc397`): the
   Edge nodes page showed `last seen: never` because the release clears
   `last_heartbeat_at` (it drives the online state and the lease). New column
@@ -1261,8 +1264,9 @@ rewritten) now edits what used to need the database or a delete and re-add:
   the journal of the edge node — consider recording it as an event or an alert.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
-  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session, `systemctl stop` duration with
-  the broker down, Postgres stopped / disk full on node-dc, network
+  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session,
+  `systemctl stop` with the broker unreachable by dropped packets (refused
+  connection tested, slice 8), Postgres stopped / disk full on node-dc, network
   partition, clock skew between edge node and server, expired broker
   certificate.
 
