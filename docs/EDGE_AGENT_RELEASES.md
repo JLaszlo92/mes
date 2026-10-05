@@ -41,7 +41,7 @@ On node-gate:
 
 ```bash
 git pull origin main          # make sure the tagged commit is available locally
-scripts/deploy-edge-agent.sh edge-agent-v5
+scripts/deploy-edge-agent.sh edge-agent-v6
 ```
 
 Or, to deploy whatever the newest tag is without looking it up:
@@ -56,7 +56,7 @@ restarts every edge-agent systemd service that exists on this node.
 **Note:** the script's `SERVICES` list (`mes-edge-agent`, `-modbus`,
 `-opcua`) does not contain `mes-edge-node`, the unit that actually runs on
 node-gate, so it would not restart it. The edge node has so far been updated
-by hand (v3, v4, v5):
+by hand (v3, v4, v5, v6):
 
 ```bash
 cd ~/mes
@@ -71,7 +71,7 @@ Building `@mes/shared` is needed on node-gate: its checkout had a stale
 status). Deploy the **backend first** when a release uses a new endpoint
 (v5 needs `POST /api/edge-nodes/release` and the `settings` in the claim
 response; an older backend only makes the agent log a warning on shutdown and
-use the environment default).
+use the environment default). v6 needs no backend change.
 
 **A restart used to cost about a minute of data; since v5 a clean restart
 does not.** The backend admits a new instance of an edge node only when the
@@ -152,8 +152,29 @@ per-node settings can be added to the same JSON object.
 The legacy single-machine mode uses the same catch-up with the `MACHINE_ID`
 and the environment limit.
 
+## Starting without the broker (v6)
+
+Until v5 the registry-mode agent waited for the first MQTT `connect` before it
+started the channels, so with the broker (or the network to it) down at start
+the PLCs were not read at all. From v6 the channels start right after the
+claim. Events go into the file buffer as always and are published when the
+connection is there; the acknowledgement topic is subscribed on **every**
+`connect`, not once, because a channel can now exist before the first
+connection. On SIGTERM the agent forces the exit after 5 s, so a shutdown with
+the broker unreachable cannot hang until systemd's timeout. The log line
+`connected to broker` now appears whenever the connection is (re)established,
+and not before the channels start.
+
 ## Release notes
 
+- **edge-agent-v6** (Oct 5, 2026) — channels start without waiting for the MQTT
+  broker (chaos finding 5), acks are re-subscribed on every connect, shutdown
+  is forced after 5 s. Change only in `packages/edge-agent/src/index.ts`; no
+  backend change, no new unit test (the entry point cannot be imported in a
+  test), verified live. Tested on node-gate: with the broker stopped, a clean
+  restart started all three channels at once and buffered 13 / 12 / 7 events;
+  after the broker was started the buffers emptied and the database matched
+  the PLC counter difference exactly (55 / 5, 53 / 2, 28 / 1).
 - **edge-agent-v5** (Oct 5, 2026) — parts produced while the agent was not
   running, or could not reach the PLC, are booked afterwards (S7, Modbus and
   OPC-UA), for gaps up to the per-node limit `catchupMaxMinutes` (default 10).

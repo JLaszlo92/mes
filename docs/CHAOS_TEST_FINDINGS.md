@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 and 3)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer).
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2, 3 and 4)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down.
 
 ## Method
 
@@ -135,13 +135,12 @@ runs.
 ### Findings
 
 5. **An agent that starts while the broker is down does not read the PLC at
-   all until the broker is back.** `runRegistryMode` waits for the MQTT
-   `connect` before it starts the channels. The catch-up makes this harmless
-   up to `catchupMaxMinutes`, but if the broker (or the network to it) is
-   down longer than the limit at the moment the agent starts, the parts of
-   that period are dropped even though the PLC kept counting. Improvement not
-   built: start the channels (which buffer to disk) without waiting for the
-   broker.
+   all until the broker is back.** `runRegistryMode` waited for the MQTT
+   `connect` before it started the channels. The catch-up made this harmless
+   up to `catchupMaxMinutes`, but if the broker (or the network to it) was
+   down longer than the limit at the moment the agent started, the parts of
+   that period were dropped even though the PLC kept counting. **Fixed in
+   `edge-agent-v6`** (see slice 4).
 6. The lease wait after a crash is the same ~90 s as before; only a clean
    shutdown releases the lease. A shorter `HEARTBEAT_STALE_SECONDS` would
    shorten it at the cost of false duplicate-session errors on a slow
@@ -151,8 +150,30 @@ runs.
    before and after the test. A first query without an upper bound showed
    too many parts (the machines kept producing).
 
+## Slice 4 — edge-agent-v6: start with the broker down (Oct 5, 2026)
+
+Change (`packages/edge-agent/src/index.ts` only): the channels start right after
+the claim, without waiting for the MQTT `connect`; the ack topic is subscribed
+on every `connect`; SIGTERM forces the exit after 5 s. There is no unit test for
+it (the entry point starts the agent on import), so the live test is the
+evidence.
+
+| Step | Result |
+|---|---|
+| Mosquitto stopped on node-dc (16:34:54 UTC), agent restarted cleanly on node-gate (16:35:05) | Claimed the node immediately (no lease wait), then `channel started` for all three machines within 0.2 s — with the broker down. No `connected to broker` line while it was down |
+| Catch-up at the start | Modbus 2 good / 1 scrap (gap 5 s), OPC-UA 1 / 0 (gap 6 s) booked into the buffer |
+| 15 s into the outage | Buffers held 13 / 12 / 7 events (they also contain the events of the previous agent from the first seconds of the outage) |
+| Mosquitto started again | Buffers 0 / 0 / 0; acks work after the late connection (the subscription is repeated on every `connect`) |
+| Database vs PLC counters, per-machine window from the counter files before and after the test (two time bounds, see finding 7) | Modbus 55 good / 5 scrap, OPC-UA 53 / 2, S7 28 / 1 in the database; the PLC counter differences are 55 / 5, 53 / 2, 28 / 1 — **exact match, no loss, no duplication** |
+
+Effect: the length of a broker outage at the moment of an agent start no longer
+decides whether parts are lost; the disk buffer takes them, and the
+`catchupMaxMinutes` limit only applies to gaps in which nobody read the PLC.
+
 ### Not tested yet
 
+- Duration of `systemctl stop` with the broker unreachable (the 5 s forced exit
+  in v6 is expected to bound it; not measured).
 - A full node-gate reboot (the buffer and the counter files are in
   `/var/lib/mes-edge`, which should survive it).
 - A gap longer than the limit with the standard 10 minutes (the 1-minute
