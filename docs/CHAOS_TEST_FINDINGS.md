@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2, 3, 4 and 5)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer.
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 6)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container.
 
 ## Method
 
@@ -198,16 +198,48 @@ service starts by itself, the lease is released on shutdown, the channels read
 the PLCs without the broker, and the catch-up books the few seconds of the
 reboot. No new defect found.
 
-Limits of this test: it is a clean shutdown of a container. A hard stop
-(`pct stop`, power cut, kernel crash) is still untested: the new instance
-would wait ~90 s for the lease (finding 6) and the last second or two of the
-buffer may be missing because it is appended without `fsync` (finding 1).
+Limits of this test: it is a clean shutdown of a container. The hard stop is
+slice 6.
+
+## Slice 6 — hard stop of the edge node container (Oct 5, 2026)
+
+Question: what happens when the edge node dies without any shutdown (no
+SIGTERM, so no lease release), with the broker down and a non-empty buffer?
+`pct stop 101` on the Proxmox host (immediate stop, equivalent to a crash of
+the container), started again 10 s later. Agent: `edge-agent-v6`.
+
+**Limit of the method.** The container's files live on the host's disk and
+page cache, and the host keeps running. So this test cannot reproduce the loss
+of data that was appended without `fsync` in a real power cut (finding 1); it
+covers the lease wait, a half-written last buffer line and the catch-up after a
+hard stop. A host power cut was deliberately not tried (it would hit the other
+containers).
+
+**Procedure.** Mosquitto stopped on node-dc at 17:42:15 UTC; buffers read at
+17:43:18 (31 / 31 / 13 events); no `sync`; `pct stop` at 17:43:46, container
+started at 17:43:56.
+
+| Step | Result |
+|---|---|
+| Right after the boot (17:44:35) | Buffer files 45 / 45 / 17 lines, **0 invalid lines** (every line parsed as JSON, including the last one); the oldest events are the ones from before the stop |
+| Lease | The service looped 12 times on `another instance ... already active` and **claimed the node at 17:44:57**, about 71 s after the stop (the old instance had not released its lease; expected, finding 6) |
+| Channels | All three started within 0.2 s of the claim, with the broker still down |
+| Catch-up (gap 71–73 s, within the 10 minute limit) | S7 22 good / 2 scrap, Modbus 35 / 1, OPC-UA 33 / 4 booked |
+| Buffers while the broker was down | 131 / 132 / 69 events at 17:46:35; oldest events unchanged |
+| Broker started | Buffers 0 / 0 / 0 within seconds |
+| Database vs PLC counters (per-machine window from `seenAtMs` before and after, two bounds) | Counter differences Modbus 113 good / 8 scrap, OPC-UA 115 / 7, S7 62 / 6; the database holds **113 / 8, 115 / 7, 62 / 6 — exact match, no loss, no duplication** |
+
+Conclusion: a hard stop of the edge node with a non-empty buffer and a dead
+broker costs no data, only the ~70 to 90 s lease wait during which the PLC is
+not read by anyone; the catch-up books that period afterwards (as long as it
+is shorter than `catchupMaxMinutes`). No half-written last line was found.
+The remaining uncertainty is the real power cut (unsynced appends) which needs
+a host-level or hardware test.
 
 ## Not tested yet
 
-- Hard stop of the edge node (`pct stop` or a real power cut) with a non-empty
-  buffer: lease wait, size of the unsynced loss at the end of the buffer file,
-  integrity of the last buffer line.
+- A real power cut of the edge node hardware: size of the unsynced loss at the
+  end of the buffer file (the container stop in slice 6 cannot show it).
 - Duration of `systemctl stop` with the broker unreachable (the 5 s forced exit
   in v6 is expected to bound it; not measured).
 - A gap longer than the limit with the standard 10 minutes (the 1-minute
