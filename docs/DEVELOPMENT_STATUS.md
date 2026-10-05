@@ -1140,10 +1140,28 @@ rewritten) now edits what used to need the database or a delete and re-add:
   `FIELDS` there and shows up in both screens - and in
   `edge-node-channel-input.ts` on the backend for validation.
 - The ideal cycle time field accepts a decimal comma (`1,5`).
-- Not built: a summary of the other machine-level configuration in the
-  editor (fault codes, alert rules, preventive schedules, terminal) with
-  links to those views - they live in separate admin views and are not
-  visible from the machine.
+
+### Machine editor: related configuration (commit `e63fc65`)
+
+- `MachineRelatedSection.tsx` (below the data source section, edit mode,
+  admin/manager only, read only): fault codes (active / inactive), alert
+  rules (for this machine, and active ones that apply to all machines),
+  preventive schedules (active / inactive) and the terminals the machine is
+  on, each with a link to its admin view (`/admin/fault-codes`,
+  `/alerts/rules`, `/maintenance/preventive`, `/admin/terminals`) that opens
+  in a new tab, so the editor's unsaved changes stay. Gaps are spelled out
+  (no fault codes: operators cannot give a reason; no alert rules: a long
+  stop raises no alert; no terminal: operators cannot report from the
+  machine).
+- Backend: `GET /api/machine-registry/:id/related` (admin/manager;
+  `machine-related-routes.ts`, shaping in the pure `machine-related.ts`):
+  counts from `machine_fault_codes`, `alert_rules` (`machine_id` NULL = all
+  machines), `preventive_maintenance_schedules`, and the terminals from
+  `terminal_ui_machines`. 404 for an unknown machine. No schema change.
+  Registered in `server.ts` right after `registerEdgeNodeExtras(app)`.
+- Lesson (tests): a vitest `beforeEach(() => mock.mockReset())` returns the
+  mock, which vitest then calls as a cleanup function after the test with
+  no arguments - use braces.
 
 ## Practical notes for whoever (or whatever session) picks this up
 
