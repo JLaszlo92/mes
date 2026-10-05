@@ -1122,6 +1122,29 @@ rewritten) now edits what used to need the database or a delete and re-add:
   interface-typed object does not fit it (no index signature) - pass
   `{ ...value }`.
 
+### Machine editor: data source (commit `6730489`)
+
+- `MachineEditorDrawer.tsx` has a **Data source** section
+  (`MachineDataSourceSection.tsx`, outside the machine `<form>` because forms
+  cannot be nested; it saves on its own): the channel(s) feeding the machine
+  with the edge node's online state, **Edit** (same fields and server errors
+  as in Admin -> Edge nodes), **Disconnect** (PATCH `machineId: null`, asks
+  first), **Connect an unassigned channel**, **+ Add new data source** (node,
+  protocol, fields; assigned to this machine). Only for admin/manager (the
+  edge node API is restricted to them); a new machine shows "Save the machine
+  first". No backend change.
+- `edge-channels.ts` is the shared module of this section and of
+  `EdgeNodesPanel.tsx`: types, the connection fields per protocol, form <->
+  API body conversion, `api()` helper (apiFetch + `readJsonOrThrow`, errors
+  are `ApiError` with the server's `field`). A new protocol field goes into
+  `FIELDS` there and shows up in both screens - and in
+  `edge-node-channel-input.ts` on the backend for validation.
+- The ideal cycle time field accepts a decimal comma (`1,5`).
+- Not built: a summary of the other machine-level configuration in the
+  editor (fault codes, alert rules, preventive schedules, terminal) with
+  links to those views - they live in separate admin views and are not
+  visible from the machine.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - All notes from previous revisions still apply: build on node-dc not
