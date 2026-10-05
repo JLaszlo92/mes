@@ -2,12 +2,16 @@ import { OPCUAClient, MessageSecurityMode, SecurityPolicy, AttributeIds, ClientS
 import type { MachineStatusValue } from "@mes/shared";
 import type { SignalReading, SignalSource } from "./SignalSource.js";
 
+import type { CounterBaseline } from "../counter-baseline.js";
+
 export interface OpcUaSignalSourceOptions {
   endpointUrl: string;
   goodCountNodeId: string;
   scrapCountNodeId: string;
   statusNodeId: string;
   pollIntervalMs?: number;
+  /** Books parts produced while the agent or the PLC link was down (see counter-baseline.ts). */
+  counterBaseline?: CounterBaseline;
 }
 
 const READ_TIMEOUT_MS = 3000;
@@ -106,6 +110,19 @@ export class OpcUaSignalSource implements SignalSource {
       const scrapCount = results[1]?.value?.value as number | undefined;
       const status = results[2]?.value?.value as string | undefined;
 
+      if (
+        this.options.counterBaseline &&
+        this.lastGoodCount === null &&
+        this.lastScrapCount === null &&
+        typeof goodCount === "number" &&
+        typeof scrapCount === "number"
+      ) {
+        // First reading after a start or a lost connection: book the parts made while not observed.
+        const seeded = this.options.counterBaseline.onFirstRead(goodCount, scrapCount);
+        for (let i = 0; i < seeded.good; i++) onReading({ kind: "production_count", result: "good" });
+        for (let i = 0; i < seeded.scrap; i++) onReading({ kind: "production_count", result: "scrap" });
+      }
+
       if (typeof goodCount === "number") {
         if (this.lastGoodCount !== null && goodCount > this.lastGoodCount) {
           for (let i = 0; i < goodCount - this.lastGoodCount; i++) {
@@ -124,6 +141,10 @@ export class OpcUaSignalSource implements SignalSource {
         this.lastScrapCount = scrapCount;
       }
 
+      if (typeof goodCount === "number" && typeof scrapCount === "number") {
+        this.options.counterBaseline?.onRead(goodCount, scrapCount);
+      }
+
       if (typeof status === "string" && status !== this.lastStatus) {
         this.lastStatus = status;
         onReading({ kind: "machine_status", status: status as MachineStatusValue });
@@ -133,6 +154,11 @@ export class OpcUaSignalSource implements SignalSource {
       if (!this.reportedDown) {
         this.reportedDown = true;
         this.lastStatus = null;
+        if (this.options.counterBaseline) {
+          // Re-baseline after the connection is back (see CounterBaseline.onFirstRead).
+          this.lastGoodCount = null;
+          this.lastScrapCount = null;
+        }
         onReading({ kind: "machine_status", status: "down" });
       }
     } finally {

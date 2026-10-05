@@ -14,6 +14,8 @@ import { ModbusSignalSource } from "./signal-sources/ModbusSignalSource.js";
 import { SignalPresenceWatchdog } from "./signal-sources/SignalPresenceWatchdog.js";
 import { ProductionGate } from "./signal-sources/ProductionGate.js";
 import { decideStartMode, legacyFlagFromEnv, EXIT_CONFIG } from "./start-mode.js";
+import { join as joinPath } from "node:path";
+import { CounterBaseline } from "./counter-baseline.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -22,6 +24,30 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 // visszafelé kompatibilitás miatt, amíg a meglévő szolgáltatások át
 // nem lettek migrálva az edge-node regisztrációra.
 // ============================================================
+
+// Per-node settings. In registry mode the backend delivers them on claim; the
+// environment value is the fallback (legacy mode, older backends).
+const nodeSettings = { catchupMaxMinutes: config.catchupMaxMinutes };
+
+function counterStateFile(machineId: string): string {
+  return joinPath(config.counterStateDir, `counters.${machineId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+}
+
+function counterBaselineFor(machineId: string): CounterBaseline {
+  return new CounterBaseline({
+    machineId,
+    filePath: counterStateFile(machineId),
+    maxAgeMs: nodeSettings.catchupMaxMinutes * 60_000,
+    log: { info: (obj, msg) => log.info(obj, msg), warn: (obj, msg) => log.warn(obj, msg) },
+  });
+}
+
+function s7CatchupEnv(machineId: string): Record<string, string> {
+  return {
+    COUNTER_STATE_FILE: counterStateFile(machineId),
+    CATCHUP_MAX_AGE_SECONDS: String(nodeSettings.catchupMaxMinutes * 60),
+  };
+}
 
 function buildInnerSignalSource(): SignalSource {
   switch (config.signalSource) {
@@ -45,6 +71,7 @@ function buildInnerSignalSource(): SignalSource {
           ...(config.s7.plcSlot ? { PLC_SLOT: config.s7.plcSlot } : {}),
           ...(config.s7.plcPort ? { PLC_PORT: config.s7.plcPort } : {}),
           ...(config.s7.pollIntervalMs ? { POLL_INTERVAL_MS: config.s7.pollIntervalMs } : {}),
+          ...s7CatchupEnv(config.machineId),
         },
       });
     case "opcua":
@@ -54,6 +81,7 @@ function buildInnerSignalSource(): SignalSource {
         scrapCountNodeId: config.opcua.scrapCountNodeId,
         statusNodeId: config.opcua.statusNodeId,
         pollIntervalMs: config.opcua.pollIntervalMs ? parseInt(config.opcua.pollIntervalMs, 10) : undefined,
+        counterBaseline: counterBaselineFor(config.machineId),
       });
     case "modbus":
       return new ModbusSignalSource({
@@ -64,6 +92,7 @@ function buildInnerSignalSource(): SignalSource {
         scrapCountRegister: config.modbus.scrapCountRegister ? parseInt(config.modbus.scrapCountRegister, 10) : undefined,
         statusRegister: config.modbus.statusRegister ? parseInt(config.modbus.statusRegister, 10) : undefined,
         pollIntervalMs: config.modbus.pollIntervalMs ? parseInt(config.modbus.pollIntervalMs, 10) : undefined,
+        counterBaseline: counterBaselineFor(config.machineId),
       });
     default:
       return new SimulatedSignalSource();
@@ -193,6 +222,7 @@ function buildSourceFromChannel(ch: ChannelConfig): SignalSource {
           ...(cc.plcRack !== undefined ? { PLC_RACK: String(cc.plcRack) } : {}),
           ...(cc.plcSlot !== undefined ? { PLC_SLOT: String(cc.plcSlot) } : {}),
           ...(cc.plcPort !== undefined ? { PLC_PORT: String(cc.plcPort) } : {}),
+          ...s7CatchupEnv(ch.machineId),
         },
       });
       break;
@@ -202,6 +232,7 @@ function buildSourceFromChannel(ch: ChannelConfig): SignalSource {
         goodCountNodeId: cc.goodCountNodeId,
         scrapCountNodeId: cc.scrapCountNodeId,
         statusNodeId: cc.statusNodeId,
+        counterBaseline: counterBaselineFor(ch.machineId),
       });
       break;
     case "modbus":
@@ -212,6 +243,7 @@ function buildSourceFromChannel(ch: ChannelConfig): SignalSource {
         goodCountRegister: cc.goodCountRegister,
         scrapCountRegister: cc.scrapCountRegister,
         statusRegister: cc.statusRegister,
+        counterBaseline: counterBaselineFor(ch.machineId),
       });
       break;
     default:
@@ -287,7 +319,9 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   };
 }
 
-async function claimEdgeNode(token: string): Promise<{ sessionId: string; channels: ChannelConfig[] }> {
+async function claimEdgeNode(
+  token: string,
+): Promise<{ sessionId: string; channels: ChannelConfig[]; settings: { catchupMaxMinutes: number } }> {
   const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -299,6 +333,7 @@ async function claimEdgeNode(token: string): Promise<{ sessionId: string; channe
   }
   const body = (await res.json()) as {
     sessionId: string;
+    settings?: { catchupMaxMinutes?: number };
     channels: Array<{
       machineId: string | null;
       signalSource: ChannelConfig["signalSource"];
@@ -308,8 +343,13 @@ async function claimEdgeNode(token: string): Promise<{ sessionId: string; channe
       acceptProductionWhileDown: boolean;
     }>;
   };
+  const wanted = body.settings?.catchupMaxMinutes;
   return {
     sessionId: body.sessionId,
+    settings: {
+      catchupMaxMinutes:
+        typeof wanted === "number" && Number.isInteger(wanted) && wanted >= 0 && wanted <= 1440 ? wanted : config.catchupMaxMinutes,
+    },
     channels: body.channels
       .filter((c) => !!c.machineId)
       .map((c) => ({
@@ -331,9 +371,25 @@ async function sendHeartbeat(token: string, sessionId: string): Promise<void> {
   });
 }
 
+/** Gives the instance lease back on a clean shutdown, so the next start does not wait for the 90 s heartbeat timeout. */
+async function releaseSession(token: string, sessionId: string): Promise<void> {
+  try {
+    const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/release`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, sessionId }),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) log.warn({ status: res.status }, "could not release the edge node session");
+  } catch (err) {
+    log.warn({ err }, "could not release the edge node session (the next start may wait up to 90 s)");
+  }
+}
+
 async function runRegistryMode(token: string): Promise<void> {
-  const { sessionId, channels } = await claimEdgeNode(token);
-  log.info({ channelCount: channels.length }, "claimed edge node, starting channels");
+  const { sessionId, channels, settings } = await claimEdgeNode(token);
+  nodeSettings.catchupMaxMinutes = settings.catchupMaxMinutes;
+  log.info({ channelCount: channels.length, catchupMaxMinutes: settings.catchupMaxMinutes }, "claimed edge node, starting channels");
 
   const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, clientId: `edge-node-${randomUUID()}` });
   client.on("reconnect", () => log.warn("reconnecting to broker…"));
@@ -353,7 +409,7 @@ async function runRegistryMode(token: string): Promise<void> {
     log.info("shutting down…");
     for (const r of runtimes) r.stop();
     clearInterval(heartbeatTimer);
-    client.end(false, {}, () => process.exit(0));
+    void releaseSession(token, sessionId).finally(() => client.end(false, {}, () => process.exit(0)));
   }
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

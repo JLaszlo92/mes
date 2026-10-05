@@ -42,6 +42,8 @@ import time
 
 from snap7.util import get_bool, get_dint
 
+from catchup import describe_plan, load_counter_state, plan_catchup, save_counter_state
+
 PLC_IP = os.environ.get("PLC_IP", "127.0.0.1")
 PLC_RACK = int(os.environ.get("PLC_RACK", 0))
 PLC_SLOT = int(os.environ.get("PLC_SLOT", 1))
@@ -50,6 +52,10 @@ DB_NUMBER = int(os.environ.get("DB_NUMBER", 1))
 DB_SIZE = int(os.environ.get("DB_SIZE", 16))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_MS", 300)) / 1000.0
 RECONNECT_DELAY_SECONDS = float(os.environ.get("RECONNECT_DELAY_SECONDS", 3.0))
+# Catch-up of parts produced while this bridge could not see the PLC (see catchup.py).
+COUNTER_STATE_FILE = os.environ.get("COUNTER_STATE_FILE", "")
+CATCHUP_MAX_AGE_SECONDS = float(os.environ.get("CATCHUP_MAX_AGE_SECONDS", 600))
+COUNTER_SAVE_EVERY_SECONDS = 5.0
 
 
 def decode_state(buffer: bytes) -> dict:
@@ -98,6 +104,11 @@ def main() -> None:
     previous = {"running": False, "good": 0, "scrap": 0}
     first_poll = True
     down_reported = False
+    # Last observed counters, in memory and (if COUNTER_STATE_FILE is set) on disk.
+    last_seen = load_counter_state(COUNTER_STATE_FILE)
+    saved = None
+    last_saved_at = 0.0
+    last_save_warning_at = 0.0
 
     while True:
         try:
@@ -113,12 +124,34 @@ def main() -> None:
                     # if it happens to equal what `previous` already holds,
                     # since a synthetic "down" was emitted in between.
                     emit({"kind": "machine_status", "status": "running" if current["running"] else "down"})
+                    # Book the parts made while we could not see the PLC (within the allowed gap).
+                    plan = plan_catchup(last_seen, current, int(time.time() * 1000), int(CATCHUP_MAX_AGE_SECONDS * 1000))
+                    for _ in range(plan["emit"]["good"]):
+                        emit({"kind": "production_count", "result": "good"})
+                    for _ in range(plan["emit"]["scrap"]):
+                        emit({"kind": "production_count", "result": "scrap"})
+                    message = describe_plan(plan)
+                    if message:
+                        print(f"[s7-bridge] {message}", file=sys.stderr, flush=True)
                     first_poll = False
                     down_reported = False
                 else:
                     for event in diff_events(previous, current):
                         emit(event)
                 previous = current
+                last_seen = {"good": current["good"], "scrap": current["scrap"], "seenAtMs": int(time.time() * 1000)}
+                if COUNTER_STATE_FILE:
+                    changed = saved != (current["good"], current["scrap"])
+                    if changed or time.monotonic() - last_saved_at >= COUNTER_SAVE_EVERY_SECONDS:
+                        try:
+                            save_counter_state(COUNTER_STATE_FILE, current["good"], current["scrap"], last_seen["seenAtMs"])
+                            saved = (current["good"], current["scrap"])
+                            last_saved_at = time.monotonic()
+                        except OSError as save_exc:
+                            # Never let a full disk stop the counting itself.
+                            if time.monotonic() - last_save_warning_at >= 60:
+                                last_save_warning_at = time.monotonic()
+                                print(f"[s7-bridge] could not save counter state: {save_exc}", file=sys.stderr, flush=True)
                 time.sleep(POLL_INTERVAL_SECONDS)
         except Exception as exc:  # noqa: BLE001 - broad on purpose: any
             # connection problem here means "retry," never "crash the bridge."

@@ -83,6 +83,9 @@ Environment=MQTT_CLIENT_CERT=/etc/mes/mqtt-client/cert.pem
 Environment=MQTT_CLIENT_KEY=/etc/mes/mqtt-client/key.pem
 Environment=BACKEND_HTTP_URL=https://$MES_HOST
 Environment=NODE_EXTRA_CA_CERTS=/etc/ssl/mes-ca.crt
+# Persistent buffer and counter state (survive reboots; /tmp does not).
+StateDirectory=mes-edge
+Environment=BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson
 Restart=on-failure
 RestartSec=2
 User=root

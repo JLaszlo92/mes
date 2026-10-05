@@ -9,6 +9,8 @@ const STATUS_BY_CODE: Record<number, MachineStatusValue> = {
   3: "changeover",
 };
 
+import type { CounterBaseline } from "../counter-baseline.js";
+
 export interface ModbusSignalSourceOptions {
   host: string;
   port?: number;
@@ -17,6 +19,8 @@ export interface ModbusSignalSourceOptions {
   scrapCountRegister?: number;
   statusRegister?: number;
   pollIntervalMs?: number;
+  /** Books parts produced while the agent or the PLC link was down (see counter-baseline.ts). */
+  counterBaseline?: CounterBaseline;
 }
 
 /**
@@ -93,6 +97,19 @@ export class ModbusSignalSource implements SignalSource {
       const scrapCount = result.data[scrapAddr];
       const statusCode = result.data[statusAddr];
 
+      if (
+        this.options.counterBaseline &&
+        this.lastGoodCount === null &&
+        this.lastScrapCount === null &&
+        typeof goodCount === "number" &&
+        typeof scrapCount === "number"
+      ) {
+        // First reading after a start or a lost connection: book the parts made while not observed.
+        const seeded = this.options.counterBaseline.onFirstRead(goodCount, scrapCount);
+        for (let i = 0; i < seeded.good; i++) onReading({ kind: "production_count", result: "good" });
+        for (let i = 0; i < seeded.scrap; i++) onReading({ kind: "production_count", result: "scrap" });
+      }
+
       if (typeof goodCount === "number") {
         if (this.lastGoodCount !== null && goodCount > this.lastGoodCount) {
           for (let i = 0; i < goodCount - this.lastGoodCount; i++) {
@@ -111,6 +128,10 @@ export class ModbusSignalSource implements SignalSource {
         this.lastScrapCount = scrapCount;
       }
 
+      if (typeof goodCount === "number" && typeof scrapCount === "number") {
+        this.options.counterBaseline?.onRead(goodCount, scrapCount);
+      }
+
       if (typeof statusCode === "number" && statusCode !== this.lastStatus) {
         this.lastStatus = statusCode;
         const status = STATUS_BY_CODE[statusCode];
@@ -121,6 +142,11 @@ export class ModbusSignalSource implements SignalSource {
       if (!this.reportedDown) {
         this.reportedDown = true;
         this.lastStatus = null;
+        if (this.options.counterBaseline) {
+          // Re-baseline after the connection is back (see CounterBaseline.onFirstRead).
+          this.lastGoodCount = null;
+          this.lastScrapCount = null;
+        }
         onReading({ kind: "machine_status", status: "down" });
       }
       void this.reconnect();

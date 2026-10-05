@@ -8,6 +8,13 @@ function optionalEnv(name: string): string | undefined {
   return value && value.length > 0 ? value : undefined;
 }
 
+function catchupMinutesFromEnv(raw: string | undefined): number {
+  if (raw === undefined) return 10;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0 || n > 1440) throw new Error("CATCHUP_MAX_MINUTES must be an integer between 0 and 1440");
+  return n;
+}
+
 export const config = {
   backendHttpUrl: process.env.BACKEND_HTTP_URL ?? "http://127.0.0.1:3001",
   edgeNodeToken: optionalEnv("EDGE_NODE_TOKEN"),
@@ -15,6 +22,11 @@ export const config = {
   mqttUrl: process.env.MQTT_URL ?? "mqtt://127.0.0.1:1883",
   machineId: process.env.MACHINE_ID ?? "sim-machine-01",
   bufferFilePath: process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson",
+  // Where the last seen PLC counter values are kept (survives restarts).
+  counterStateDir: process.env.COUNTER_STATE_DIR ?? path.dirname(process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson"),
+  // Longest gap (minutes) whose parts are still booked afterwards; 0 = off.
+  // In registry mode the backend's per-node setting overrides this value.
+  catchupMaxMinutes: catchupMinutesFromEnv(process.env.CATCHUP_MAX_MINUTES),
 
   // "simulated" (default, no hardware/network needed), "s7" (poll a
   // Siemens S7 PLC or its simulator over the network — no wiring, see
