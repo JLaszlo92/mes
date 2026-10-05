@@ -10,3 +10,4 @@ edge-agent-buffer.sqlite-*
 generated/
 __pycache__/
 *.pyc
+sbom-out/
