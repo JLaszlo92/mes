@@ -335,7 +335,7 @@ async function claimEdgeNode(
   const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, clientTimeMs: sentAt }),
+    body: JSON.stringify({ token, clientTimeMs: sentAt, disk: await readDiskUsage(config.bufferFilePath) }),
   });
   if (!res.ok) {
     const errorBody = (await res.json().catch(() => ({}))) as { error?: string };
@@ -375,11 +375,13 @@ async function claimEdgeNode(
   };
 }
 
+import { readDiskUsage } from "./disk-usage.js";
+
 async function sendHeartbeat(token: string, sessionId: string): Promise<void> {
   await fetch(`${config.backendHttpUrl}/api/edge-nodes/heartbeat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now() }),
+    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now(), disk: await readDiskUsage(config.bufferFilePath) }),
   });
 }
 

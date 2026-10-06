@@ -375,6 +375,14 @@ export default function EdgeNodesPanel() {
                 clock: {formatClockOffset(n.clockOffsetMs)}
               </div>
             )}
+            {n.diskUsedPercent != null && n.diskAvailBytes != null && (
+              <div
+                style={{ ...hintStyle, color: n.diskLow ? "#d03b3b" : undefined, fontWeight: n.diskLow ? 600 : undefined }}
+                title="Disk holding the device's event buffer, at its last contact"
+              >
+                disk: {Math.round(n.diskUsedPercent)}% used, {formatGiB(n.diskAvailBytes)} free
+              </div>
+            )}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
                 New token
@@ -471,4 +479,8 @@ function formatClockOffset(ms: number): string {
   if (abs < 7_200_000) return `${Math.round(abs / 60_000)} min ${direction}`;
   if (abs < 172_800_000) return `${Math.round(abs / 3_600_000)} h ${direction}`;
   return `${Math.round(abs / 86_400_000)} days ${direction}`;
+}
+
+function formatGiB(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 }

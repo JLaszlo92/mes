@@ -29,6 +29,10 @@ export interface EdgeNode {
   lastHeartbeatAt: string | null;
   lastSeenAt?: string | null;
   clockOffsetMs?: number | null;
+  /** Disk holding the event buffer (agent v9 and later). */
+  diskUsedPercent?: number | null;
+  diskAvailBytes?: number | null;
+  diskLow?: boolean;
   clockSkewed?: boolean;
   channels: EdgeNodeChannel[];
   settings?: { catchupMaxMinutes: number };

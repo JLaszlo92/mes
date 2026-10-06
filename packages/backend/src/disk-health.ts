@@ -40,7 +40,14 @@ function formatGiB(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GiB`;
 }
 
-export function assessDisks(volumes: readonly DiskVolume[], wasAlerting: boolean, limits: DiskLimits = DEFAULT_DISK_LIMITS): DiskHealth {
+export const DB_DISK_CONSEQUENCE = "A full disk stops the database from writing events — free up space or enlarge the volume.";
+
+export function assessDisks(
+  volumes: readonly DiskVolume[],
+  wasAlerting: boolean,
+  limits: DiskLimits = DEFAULT_DISK_LIMITS,
+  consequence: string = DB_DISK_CONSEQUENCE,
+): DiskHealth {
   const percentLimit = wasAlerting ? limits.clearPercent : limits.raisePercent;
   const freeLimit = wasAlerting ? limits.minFreeBytes * 1.25 : limits.minFreeBytes;
 
@@ -55,6 +62,6 @@ export function assessDisks(volumes: readonly DiskVolume[], wasAlerting: boolean
     .join("; ");
   return {
     healthy: false,
-    message: `Disk space is running low: ${listed}. A full disk stops the database from writing events — free up space or enlarge the volume.`,
+    message: `Disk space is running low: ${listed}. ${consequence}`,
   };
 }

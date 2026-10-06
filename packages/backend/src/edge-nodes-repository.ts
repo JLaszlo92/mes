@@ -2,6 +2,7 @@ import { randomBytes, createHash } from "node:crypto";
 import { pool } from "./db.js";
 import { resolveSettings, type EdgeNodeSettings } from "./edge-node-settings.js";
 import { clockOffsetMs, isClockSkewed, parseStoredOffset } from "./clock-offset.js";
+import { diskView, parseDiskReport } from "./disk-report.js";
 
 export type SignalSourceType = "simulated" | "gpio" | "s7" | "opcua" | "modbus";
 export type StatusMode = "status_bit" | "signal_presence";
@@ -31,6 +32,12 @@ export interface EdgeNode {
   clockOffsetMs?: number | null;
   /** The offset is above the warning limit. */
   clockSkewed?: boolean;
+  /** Disk holding the event buffer, as reported by the agent (v9 and later); null = unknown. */
+  diskUsedBytes?: number | null;
+  diskAvailBytes?: number | null;
+  diskUsedPercent?: number | null;
+  /** The disk is above the warning limit. */
+  diskLow?: boolean;
   isOnline: boolean;
   createdAt: string;
   channels: EdgeNodeChannel[];
@@ -44,6 +51,8 @@ type NodeRow = {
   last_heartbeat_at: string | null;
   last_seen_at?: string | null;
   clock_offset_ms?: string | number | null;
+  disk_used_bytes?: string | number | null;
+  disk_avail_bytes?: string | number | null;
   created_at: string;
   settings?: unknown;
 };
@@ -105,6 +114,7 @@ export async function listEdgeNodes(): Promise<EdgeNode[]> {
     lastSeenAt: row.last_seen_at ?? null,
     clockOffsetMs: parseStoredOffset(row.clock_offset_ms),
     clockSkewed: isClockSkewed(parseStoredOffset(row.clock_offset_ms)),
+    ...diskView(row.disk_used_bytes, row.disk_avail_bytes),
     isOnline: isOnlineFrom(row.last_heartbeat_at),
     createdAt: row.created_at,
     channels: channelsByNode.get(row.id) ?? [],
@@ -230,7 +240,7 @@ export interface ClaimResult {
  * Egy edge-agent folyamat induláskor ezzel jelentkezik be, és megkapja
  * az ÖSSZES hozzá rendelt csatorna (gép) konfigurációját egyben.
  */
-export async function claimEdgeNode(token: string, clientTimeMs?: unknown): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
+export async function claimEdgeNode(token: string, clientTimeMs?: unknown, diskReport?: unknown): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
   const nodeResult = await pool.query<NodeRow>(`SELECT * FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
   const node = nodeResult.rows[0];
   if (!node) throw new InvalidTokenError();
@@ -254,11 +264,16 @@ export async function claimEdgeNode(token: string, clientTimeMs?: unknown): Prom
     await pool.query(`UPDATE edge_nodes SET clock_offset_ms = $2 WHERE id = $1`, [node.id, offset]);
   }
 
+  const disk = parseDiskReport(diskReport);
+  if (disk) {
+    await pool.query(`UPDATE edge_nodes SET disk_used_bytes = $2, disk_avail_bytes = $3 WHERE id = $1`, [node.id, disk.usedBytes, disk.availBytes]);
+  }
+
   const channelsResult = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.edge_node_id = $1`, [node.id]);
   return { sessionId, channels: channelsResult.rows.map(toChannel), settings: resolveSettings(node.settings) };
 }
 
-export async function recordHeartbeat(token: string, sessionId: string, clientTimeMs?: unknown): Promise<void> {
+export async function recordHeartbeat(token: string, sessionId: string, clientTimeMs?: unknown, diskReport?: unknown): Promise<void> {
   const result = await pool.query<{ id: string; current_session_id: string | null }>(
     `SELECT id, current_session_id FROM edge_nodes WHERE token_hash = $1`,
     [hashToken(token)],
@@ -268,7 +283,11 @@ export async function recordHeartbeat(token: string, sessionId: string, clientTi
   if (row.current_session_id !== sessionId) {
     throw new InvalidSessionError();
   }
-  await pool.query(`UPDATE edge_nodes SET last_heartbeat_at = now(), last_seen_at = now(), clock_offset_ms = COALESCE($2::bigint, clock_offset_ms) WHERE id = $1`, [row.id, clockOffsetMs(clientTimeMs, Date.now())]);
+  const disk = parseDiskReport(diskReport);
+  await pool.query(
+    `UPDATE edge_nodes SET last_heartbeat_at = now(), last_seen_at = now(), clock_offset_ms = COALESCE($2::bigint, clock_offset_ms), disk_used_bytes = COALESCE($3::bigint, disk_used_bytes), disk_avail_bytes = COALESCE($4::bigint, disk_avail_bytes) WHERE id = $1`,
+    [row.id, clockOffsetMs(clientTimeMs, Date.now()), disk?.usedBytes ?? null, disk?.availBytes ?? null],
+  );
 }
 
 export function isForeignKeyViolation(err: unknown): boolean {
