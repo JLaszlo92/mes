@@ -16,6 +16,7 @@ import { startRawEventRetentionEvaluator } from "./raw-event-retention-evaluator
 import { startLicenseEvaluator } from "./license-service.js";
 import { startCertHealthEvaluator } from "./cert-health-evaluator.js";
 import { startEdgeClockEvaluator } from "./edge-clock-health-evaluator.js";
+import { startDiskSpaceEvaluator } from "./disk-health-evaluator.js";
 
 async function main(): Promise<void> {
   await runMigrations();
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
   startLicenseEvaluator(app.log);
   startCertHealthEvaluator(app.log);
   startEdgeClockEvaluator(app.log);
+  startDiskSpaceEvaluator(app.log);
 }
 
 main().catch((err) => {
