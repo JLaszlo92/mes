@@ -23,6 +23,18 @@ export const pool = new Pool({
   options: `-c timezone=${config.timezone}`,
 });
 
+// A tétlen (éppen nem használt) kapcsolatok hibáját a pg a pool "error"
+// eseményén jelzi. Ha nincs rá figyelő, a Node-folyamat leáll: egy Postgres
+// újraindítás (57P01) így az egész backendet lelőtte. A pool a következő
+// lekérdezéskor új kapcsolatot nyit, ezért itt elég naplózni.
+let lastPoolErrorLogMs = 0;
+pool.on("error", (err: Error & { code?: string }) => {
+  const now = Date.now();
+  if (now - lastPoolErrorLogMs < 10_000) return;
+  lastPoolErrorLogMs = now;
+  console.error(`postgres pool: idle client error (${err.code ?? "no code"}): ${err.message} - the pool reconnects on the next query`);
+});
+
 /**
  * Az adatbázis ALAPÉRTELMEZETT időzónáját is a gyáréra állítja, ha eltér —
  * így a kézi psql lekérdezések is helyi időt mutatnak. A beállítást a
