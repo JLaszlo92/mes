@@ -1110,6 +1110,15 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   findings doc, "Alert, ingestion guard and log reason"). **Still open:** the
   agent correcting its timestamps with the server time; a guard for timestamps
   far in the past.
+- **Postgres stopped on node-dc tested** (Oct 6, slice 10, 3 min 28 s then
+  2 min 9 s): the first run showed that an unhandled pg Pool error
+  (`57P01` on the stop) crashed the backend, which then looped until Postgres
+  returned; **fixed in `1091e82`** (`pool.on("error")` in `db.ts`). With the
+  fix the backend stays up (same `MainPID`, `NRestarts=0`), the edge acks
+  nothing and buffers (40 / 40 / 34 events), and after the start the data in
+  the database matches the buffer contents exactly, without a backend restart.
+  Not done: a 503 "database unavailable" instead of the plain 500 on the
+  dashboard, a disk-usage alert, a real full-disk test.
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1286,10 +1295,14 @@ rewritten) now edits what used to need the database or a delete and re-add:
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session,
   `systemctl stop` with the broker unreachable by dropped packets (refused
-  connection tested, slice 8), Postgres stopped / disk full on node-dc, network
+  connection tested, slice 8), disk full on node-dc (the Postgres stop was tested, slice 10), network
   partition, an edge clock *behind* the server (the clock ahead was tested, see
   `CHAOS_TEST_FINDINGS.md` slice 9), expired broker certificate.
 
+- **Database outage follow-ups** (Oct 6): answer 503 with a clear message
+  (instead of 500) when the database is unreachable, and show it on the
+  dashboard; an alert on the disk usage of node-dc and node-gate (the edge
+  buffer lives on the node-gate disk; no size limit found in the buffer code).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1

@@ -428,6 +428,48 @@ wait for the final `down` reading (up to 5 s), and `packages/backend/vitest.conf
 gives `DATABASE_URL` a dummy default. `pnpm test`: shared 6, edge-agent 41,
 backend 133 tests, all green (`8e6e532`).
 
+## Slice 10 — Postgres stopped on node-dc (Oct 6, 2026)
+
+Goal: what happens to the backend, the edge buffers and the data when the
+database goes away for about three minutes (`systemctl stop postgresql@17-main`
+on node-dc, the simulator rigs keep producing). A full disk was not provoked
+(if the WAL disk fills up Postgres stops with a PANIC, which is the same
+situation seen from the application).
+
+**Code read before the test:** both failure paths in `mqtt-subscriber.ts` (the
+machine registry lookup and `insertEvent`) return without acking, so the edge
+keeps the event; there was no `pool.on("error")` handler in `db.ts`.
+
+**Run 1 (backend as it was, 17:26:15 UTC, 3 min 28 s):**
+
+| Check | Result |
+|---|---|
+| Backend | Crashed at the moment of the stop: `error: terminating connection due to administrator command` (`57P01`) → `Unhandled 'error' event` on the pg Pool. `Restart=on-failure` kept it in a restart loop (`activating (auto-restart)`, about one attempt a minute, each failing in `runMigrations` with `ECONNREFUSED`); the systemd start limit was not reached |
+| Edge | Nothing lost: buffers grew (30 / 28 / 23 events after about a minute), no acks |
+| Recovery | The backend came back by itself one second after the Postgres start (the next restart attempt) |
+| Data | Events in the first buffered minute: 30 / 28 / 23 in the database, exactly the buffer contents; buffers 0 afterwards; no gap longer than 16 s in the window |
+
+**Finding 9 — an unhandled pool error crashed the backend on every Postgres
+restart.** Any restart of the database (package update, maintenance) took the
+backend down, dropped the dashboard and websocket connections, and the return
+depended on the systemd restart loop (up to about a minute after Postgres was
+back). **Fixed** in `1091e82`: `pool.on("error")` logs (at most every 10 s)
+and the pool reconnects on the next query; unit test `db-pool-error.test.ts`.
+
+**Run 2 (after the fix, 17:33:42 – 17:35:51 UTC, 2 min 9 s):**
+
+| Check | Result |
+|---|---|
+| Backend | Stayed up: `MainPID` and `NRestarts=0` identical before, during and after; log lines `ECONNREFUSED` / `failed to persist event — NOT acking` |
+| API | `GET /api/machines` answered 401 in 5 ms (no hang). The dashboard showed "Error: Internal Server Error" while the database was away |
+| Edge | Buffers grew to 40 / 40 / 34 events (17:35:01) and were empty after the start |
+| Data | 40 / 40 / 34 events in the database in exactly those windows; no gap longer than 12 s since; new events arrived after the start without any backend restart |
+
+Left open from this slice: a plain `500` for the dashboard during the outage
+(a 503 "database unavailable" message would read better), and there is no alert
+on the disk usage of node-dc (nor on the node-gate disk, which holds the edge
+buffer); a full disk itself was not tested.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -438,7 +480,8 @@ backend 133 tests, all green (`8e6e532`).
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
-- Postgres stopped / disk full on node-dc; network partition between the
+- A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
+  inferred from it); network partition between the
   nodes; a clock behind the server (the clock ahead was tested in slice 9; the
   alert covers both directions, the ingestion guard only the future; the
   behind case itself was not run live); an
