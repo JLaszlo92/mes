@@ -466,9 +466,21 @@ and the pool reconnects on the next query; unit test `db-pool-error.test.ts`.
 | Data | 40 / 40 / 34 events in the database in exactly those windows; no gap longer than 12 s since; new events arrived after the start without any backend restart |
 
 Left open from this slice: a plain `500` for the dashboard during the outage
-(a 503 "database unavailable" message would read better), and there is no alert
-on the disk usage of node-dc (nor on the node-gate disk, which holds the edge
-buffer); a full disk itself was not tested.
+(a 503 "database unavailable" message would read better); a full disk itself
+was not tested.
+
+**Disk usage alerts (added after this slice, Oct 6, 2026).** Because the real
+full-disk case is not safe to provoke, two alerts were added to see it coming:
+`disk_space` (node-dc: `/` and the Postgres data directory, checked every 5 min,
+`50a8deb`) and `edge_disk_space` (the disk of every online edge node, which
+holds the event buffer; the agent reports it with claim and heartbeat from
+`edge-agent-v9`, migration 042, `6777626`). Both raise at 85 % used or less than
+2 GiB available and clear at 80 % (and 2.5 GiB), so a value at the limit does
+not flap; the limits can be changed with `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`
+and `DISK_CHECK_PATHS` in the backend environment. Verified live by lowering the
+limit to 30 % and 10 % (no disk was filled): both alerts opened (20:19) and
+resolved after the setting was removed (20:20:52). Reading from the live
+numbers: node-gate has a 14.8 GiB disk, 42 % used, 8.5 GiB free.
 
 ## Not tested yet
 

@@ -204,8 +204,28 @@ stored state from the future as `clock_back` instead of `too_old`. An agent olde
 clock line). **Deploy the backend first** (migration 041; it also accepts the
 older agents).
 
+## Disk of the device (v9)
+
+The event buffer lives on the disk of the edge device and grows while the
+server is unreachable; the code sets no size limit, so a full disk is the real
+limit. From v9 the claim and every heartbeat carry the used and available bytes
+of the file system holding `BUFFER_FILE_PATH` (a failure to read it only leaves
+the figures out). The backend stores them (`disk_used_bytes`,
+`disk_avail_bytes`, migration 042), the Edge nodes page shows "disk: 42% used,
+8.5 GiB free" (red when low) and the system alert `edge_disk_space` opens when
+an online node's disk is above 85 % used or below 2 GiB available (clears at
+80 %). An older agent sends nothing and is not checked. **Deploy the backend
+first** (migration 042); it also accepts the older agents.
+
 ## Release notes
 
+- **edge-agent-v9** (Oct 6, 2026) — the agent reports the disk usage of its
+  buffer directory with the claim and every heartbeat (new
+  `packages/edge-agent/src/disk-usage.ts`, unit-tested, and two lines in
+  `index.ts`). **Deploy the backend first** (migration 042, new alert, Edge
+  nodes page). Deployed on node-gate with `scripts/deploy-edge-agent.sh
+  edge-agent-v9` after checking out the tag; the agent claimed at once and the
+  database showed 6365 MB used / 8755 MB available for `node-gate-sim`.
 - **edge-agent-v8** (Oct 5, 2026) — catch-up: a stored counter state from the
   future (the clock was set back, negative age) is reported with the reason
   `clock_back` instead of `too_old`; the parts are still not booked. Change in

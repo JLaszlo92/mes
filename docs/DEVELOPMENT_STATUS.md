@@ -1118,7 +1118,15 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   nothing and buffers (40 / 40 / 34 events), and after the start the data in
   the database matches the buffer contents exactly, without a backend restart.
   Not done: a 503 "database unavailable" instead of the plain 500 on the
-  dashboard, a disk-usage alert, a real full-disk test.
+  dashboard, a real full-disk test (the disk-usage alerts below are done).
+- **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
+  `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
+  migration 042; the agent sends the disk of its buffer directory with claim and
+  heartbeat, the Edge nodes page shows "disk: 42% used, 8.5 GiB free", red when
+  low). Raise at 85 % used or < 2 GiB free, clear at 80 %; settings
+  `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`, `DISK_CHECK_PATHS`. Verified live by
+  lowering the limit (see the findings doc, slice 10). `pnpm test` is green:
+  shared 6, edge-agent 43, backend 157.
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1301,8 +1309,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
 
 - **Database outage follow-ups** (Oct 6): answer 503 with a clear message
   (instead of 500) when the database is unreachable, and show it on the
-  dashboard; an alert on the disk usage of node-dc and node-gate (the edge
-  buffer lives on the node-gate disk; no size limit found in the buffer code).
+  dashboard. The edge buffer has no size limit in the code (only the disk of
+  the device, now watched by `edge_disk_space`).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1
