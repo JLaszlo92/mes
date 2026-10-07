@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import mqtt, { type MqttClient } from "mqtt";
 import pino from "pino";
 import { ackTopic, eventTopic, safeParseAck, type MachineEvent } from "@mes/shared";
+import { AckBatcher } from "./ack-batcher.js";
+import { RetryTracker } from "./retry-tracker.js";
 import { config } from "./config.js";
 import { FileEventBuffer } from "./buffer.js";
 import { GpioSignalSource } from "./signal-sources/GpioSignalSource.js";
@@ -138,16 +140,22 @@ function runLegacyMode(): void {
     publishBestEffort(event);
   }
 
+  const retryTracker = new RetryTracker();
+  const ackBatcher = new AckBatcher((ids) => buffer.removeMany(ids), (err) => log.error({ err }, "failed to remove acknowledged events from the buffer"));
+
   function retryPending(): void {
+    if (!client.connected) return;
     const pending = buffer.readAll();
-    if (pending.length > 0) log.debug({ count: pending.length }, "retry sweep — republishing unacked events");
-    for (const event of pending) publishBestEffort(event);
+    const batch = retryTracker.select(pending);
+    if (batch.length > 0) log.debug({ pending: pending.length, sending: batch.length }, "retry sweep — republishing unacked events");
+    for (const event of batch) publishBestEffort(event);
   }
 
-  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, clientId: `edge-agent-${config.machineId}` });
+  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, keepalive: 15, connectTimeout: 10_000, clientId: `edge-agent-${config.machineId}` });
 
   client.on("connect", () => {
     log.info({ url: config.mqttUrl }, "connected to broker");
+    retryTracker.reset();
     client.subscribe(myAckTopic, (err) => {
       if (err) log.error({ err }, "failed to subscribe to ack topic");
     });
@@ -166,7 +174,7 @@ function runLegacyMode(): void {
     }
     const result = safeParseAck(raw);
     if (!result.success) return;
-    buffer.remove(result.data.sourceEventId);
+    ackBatcher.add(result.data.sourceEventId);
   });
 
   const retryTimer = setInterval(retryPending, 4000);
@@ -286,8 +294,12 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
     publishBestEffort(event);
   }
 
+  const retryTracker = new RetryTracker();
+  const ackBatcher = new AckBatcher((ids) => buffer.removeMany(ids), (err) => log.error({ err, machineId: ch.machineId }, "failed to remove acknowledged events from the buffer"));
+
   function retryPending(): void {
-    for (const event of buffer.readAll()) publishBestEffort(event);
+    if (!client.connected) return;
+    for (const event of retryTracker.select(buffer.readAll())) publishBestEffort(event);
   }
 
   // The channel may start while the broker is down: subscribe now if connected
@@ -299,6 +311,7 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   };
   if (client.connected) subscribeAcks();
   client.on("connect", subscribeAcks);
+  client.on("connect", () => retryTracker.reset());
   client.on("message", (receivedTopic, payload) => {
     if (receivedTopic !== myAckTopic) return;
     let raw: unknown;
@@ -309,7 +322,7 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
     }
     const result = safeParseAck(raw);
     if (!result.success) return;
-    buffer.remove(result.data.sourceEventId);
+    ackBatcher.add(result.data.sourceEventId);
   });
 
   const retryTimer = setInterval(retryPending, 4000);
@@ -408,7 +421,7 @@ async function runRegistryMode(token: string): Promise<void> {
   nodeSettings.catchupMaxMinutes = settings.catchupMaxMinutes;
   log.info({ channelCount: channels.length, catchupMaxMinutes: settings.catchupMaxMinutes }, "claimed edge node, starting channels");
 
-  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, clientId: `edge-node-${randomUUID()}` });
+  const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, keepalive: 15, connectTimeout: 10_000, clientId: `edge-node-${randomUUID()}` });
   client.on("reconnect", () => log.warn("reconnecting to broker…"));
   client.on("close", () => log.warn("connection to broker closed"));
   client.on("error", (err) => log.error({ err }, "mqtt client error"));

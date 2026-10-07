@@ -1189,6 +1189,15 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`, `DISK_CHECK_PATHS`. Verified live by
   lowering the limit (see the findings doc, slice 10). `pnpm test` is green:
   shared 6, edge-agent 43, backend 157.
+- **Edge nodes' client certificates watched** (Oct 7, `790a1d9`,
+  **edge-agent-v10**, migration 043): the agent reports the expiry of its client
+  certificate with claim and heartbeat, the backend stores it
+  (`edge_nodes.client_cert_expires_at`), the Edge nodes page shows it and the
+  system alert `edge_cert_expiry` opens within 30 days of the expiry
+  (`EDGE_CERT_WARN_DAYS`), checked every 10 minutes, resolves by itself. Verified
+  live with `EDGE_CERT_WARN_DAYS=400` (temporary drop-in, removed): the alert
+  appeared for `node-gate-sim` (360 days) and resolved after the removal.
+  `pnpm test` is green: shared 6, edge-agent 45, backend 176.
 - **Expired broker certificate tested** (Oct 6 to 7, slice 11): the monitor and the
   `cert_health` alert were checked with a shifted date, then with a real
   certificate valid for 12 minutes. After the expiry the backend and the edge
@@ -1198,8 +1207,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   The test exposed that the server CA passphrase had been lost, so the CA was
   replaced (see "CA rollover and certificate renewal"). The moment of expiry
   on open connections was tested later (finding 16): they keep working, only
-  new handshakes fail, nothing is lost. Open: the edge nodes' client
-  certificates are not monitored in the system (finding 17).
+  new handshakes fail, nothing is lost. The edge nodes' client certificates
+  are monitored since edge-agent-v10 (finding 17).
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1389,8 +1398,9 @@ rewritten) now edits what used to need the database or a delete and re-add:
   device CA passphrase in the password manager and on paper (second place) if not
   done yet; delete `~/mes-ca-old` and remove the old root from the macOS keychain
   once the transition is accepted; run `mes-ca.sh ics` again for the new expiry
-  dates and remove the old calendar reminders; watch the edge nodes' client
-  certificates in the system (see slice 11, finding 17).
+  dates and remove the old calendar reminders; the edge nodes' client
+  certificates are watched since v10 (finding 17), the broker's and the others
+  by `mes-cert-check.sh`.
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1

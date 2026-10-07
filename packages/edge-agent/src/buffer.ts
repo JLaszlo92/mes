@@ -48,7 +48,18 @@ export class FileEventBuffer {
    * indexed.
    */
   remove(sourceEventId: string): void {
-    const remaining = this.readAll().filter((e) => e.sourceEventId !== sourceEventId);
+    this.removeMany(new Set([sourceEventId]));
+  }
+
+  /**
+   * Removes several acknowledged events with ONE read and at most one write; the
+   * file is not touched when none of them is in it (a duplicate ack costs nothing).
+   */
+  removeMany(sourceEventIds: ReadonlySet<string>): void {
+    if (sourceEventIds.size === 0) return;
+    const all = this.readAll();
+    const remaining = all.filter((e) => !sourceEventIds.has(e.sourceEventId));
+    if (remaining.length === all.length) return;
     writeFileSync(this.filePath, remaining.map((e) => JSON.stringify(e)).join("\n") + (remaining.length ? "\n" : ""));
   }
 

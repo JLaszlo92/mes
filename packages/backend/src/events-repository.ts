@@ -23,11 +23,15 @@ export async function insertEvent(
   const guarded = guardEventTimestamp(event.timestamp, nowMs);
   const stored = guarded.corrected ? { ...event, timestamp: guarded.timestamp, timestampCorrected: guarded.info } : event;
   try {
-    await pool.query(
+    const result = await pool.query(
       `INSERT INTO events (id, machine_id, type, "timestamp", source_event_id, payload)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT DO NOTHING`,
       [randomUUID(), event.machineId, event.type, guarded.corrected ? guarded.timestamp : event.timestamp, event.sourceEventId, JSON.stringify(stored)],
     );
+    // A conflicting row is skipped by the database: no exception, no error line in the
+    // Postgres log (the edge agent's retries used to cost ~2000 of them per outage).
+    if (result?.rowCount === 0) return "duplicate";
     if (guarded.corrected) onCorrected?.(guarded.info);
     return "inserted";
   } catch (err) {

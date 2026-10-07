@@ -611,14 +611,25 @@ earlier slices (up to 16 s); no baseline for this exact window was measured.
     TLS listener is 8884 (mutual TLS, the client certificates are checked
     against the device CA); the logs of the broker go to
     `/var/log/mosquitto/mosquitto.log` with epoch timestamps, not to the journal.
-17. **Open: the edge nodes' own client certificates are not watched in the
-    system.** `mes-cert-check.sh` on node-dc covers the broker, nginx, Postgres,
-    both roots and the backend's device certificate. The certificate of
-    node-gate (`/etc/mes/mqtt-client/cert.pem`, valid to Oct 2, 2027) is covered
-    only by `mes-ca.sh status` and the calendar reminders on the admin laptop.
-    An expired client certificate stops that node, with the same effect as above
-    (buffered, no loss). A check that every edge agent could report its own
-    certificate's expiry (like the disk report) would close this.
+17. **The edge nodes' own client certificates were not watched in the system;
+    now they are (edge-agent-v10, `790a1d9`, migration 043, Oct 7).**
+    `mes-cert-check.sh` on node-dc covers the broker, nginx, Postgres, both
+    roots and the backend's device certificate, but the certificate of node-gate
+    (`/etc/mes/mqtt-client/cert.pem`, valid to Oct 2, 2027) was covered only by
+    `mes-ca.sh status` and the calendar reminders on the admin laptop. An
+    expired client certificate stops that node (new handshakes fail, see 13 and
+    16: buffered, no loss). Fix: from v10 the agent reads the expiry of the
+    certificate it loaded and sends it with the claim and every heartbeat; the
+    backend stores it (`edge_nodes.client_cert_expires_at`), the Edge nodes page
+    shows it and the system alert `edge_cert_expiry` opens when any node's
+    certificate expires within 30 days (`EDGE_CERT_WARN_DAYS`) or has expired,
+    checked at start and every 10 minutes, and resolves by itself. Verified
+    live: after the agent start the database showed `2027-10-02 07:54:40+02` for
+    `node-gate-sim`; with `EDGE_CERT_WARN_DAYS=400` (temporary systemd drop-in)
+    the backend log said `... node-gate-sim (expires in 360 days)` within 8 s of
+    the restart, the alert appeared on the dashboard, and removing the drop-in
+    resolved it (`edge node client certificates are valid again`). Still not
+    done: a real expiry of a client certificate on a running node.
 
 ## Not tested yet
 
@@ -635,5 +646,6 @@ earlier slices (up to 16 s); no baseline for this exact window was measured.
   nodes; a clock behind the server (the clock ahead was tested in slice 9; the
   alert covers both directions, the ingestion guard only the future; the
   behind case itself was not run live).
-- The expiry of the edge nodes' client certificates (finding 17; the broker
-  certificate expiring on open connections was tested, finding 16).
+- A real expiry of an edge node's client certificate (it is monitored since
+  v10, finding 17; the stop itself is inferred from the broker case, findings
+  13 and 16).

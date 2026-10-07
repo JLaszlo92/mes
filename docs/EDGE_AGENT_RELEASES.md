@@ -217,8 +217,32 @@ an online node's disk is above 85 % used or below 2 GiB available (clears at
 80 %). An older agent sends nothing and is not checked. **Deploy the backend
 first** (migration 042); it also accepts the older agents.
 
+## Client certificate of the device (v10)
+
+An expired client certificate stops the node at its next handshake (buffered, no
+loss; chaos findings 13, 16, 17), and nothing in the system watched it. From v10
+the claim and every heartbeat carry the expiry of the certificate the agent loaded
+(`MQTT_CLIENT_CERT`; a failure to read it only leaves the field out). The backend
+stores it (`edge_nodes.client_cert_expires_at`, migration 043), the Edge nodes
+page shows it and the system alert `edge_cert_expiry` opens when any node's
+certificate expires within 30 days (`EDGE_CERT_WARN_DAYS`, 1 to 3650) or has
+expired. The check runs at start and every 10 minutes and the alert resolves by
+itself once every reported certificate is further away; a renewed certificate is
+reported when the agent starts with it. An older agent sends nothing and is not
+checked. **Deploy the backend first** (migration 043); it also accepts the older
+agents.
+
 ## Release notes
 
+- **edge-agent-v10** (Oct 7, 2026) — the agent reports the expiry of its client
+  certificate with the claim and every heartbeat (new
+  `packages/edge-agent/src/client-cert.ts`, unit-tested, and the claim/heartbeat
+  calls in `index.ts`). **Deploy the backend first** (migration 043, new alert,
+  Edge nodes page). Deployed on node-gate (`~/mes`) with
+  `scripts/deploy-edge-agent.sh edge-agent-v10` after checking out the tag; the
+  agent claimed at once and the database showed `2027-10-02 07:54:40+02` for
+  `node-gate-sim`. Live alert check with `EDGE_CERT_WARN_DAYS=400` as a
+  temporary drop-in on node-dc, removed afterwards.
 - **edge-agent-v9** (Oct 6, 2026) — the agent reports the disk usage of its
   buffer directory with the claim and every heartbeat (new
   `packages/edge-agent/src/disk-usage.ts`, unit-tested, and two lines in
