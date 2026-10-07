@@ -33,6 +33,10 @@ export interface EdgeNode {
   diskUsedPercent?: number | null;
   diskAvailBytes?: number | null;
   diskLow?: boolean;
+  /** Expiry of the device's MQTT client certificate (agent v10 and later). */
+  clientCertExpiresAt?: string | null;
+  clientCertDaysLeft?: number | null;
+  clientCertExpiring?: boolean;
   clockSkewed?: boolean;
   channels: EdgeNodeChannel[];
   settings?: { catchupMaxMinutes: number };

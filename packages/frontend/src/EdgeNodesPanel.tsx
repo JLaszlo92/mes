@@ -383,6 +383,14 @@ export default function EdgeNodesPanel() {
                 disk: {Math.round(n.diskUsedPercent)}% used, {formatGiB(n.diskAvailBytes)} free
               </div>
             )}
+            {n.clientCertExpiresAt && n.clientCertDaysLeft != null && (
+              <div
+                style={{ ...hintStyle, color: n.clientCertExpiring ? "#d03b3b" : undefined, fontWeight: n.clientCertExpiring ? 600 : undefined }}
+                title={`Client certificate of the device (MQTT), valid until ${new Date(n.clientCertExpiresAt).toLocaleDateString()}`}
+              >
+                certificate: {formatCertLeft(n.clientCertDaysLeft)}
+              </div>
+            )}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
               <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
                 New token
@@ -483,4 +491,10 @@ function formatClockOffset(ms: number): string {
 
 function formatGiB(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+}
+
+function formatCertLeft(days: number): string {
+  if (days < 0) return `expired ${-days} day${days === -1 ? "" : "s"} ago`;
+  if (days === 0) return "expires today";
+  return `valid for ${days} day${days === 1 ? "" : "s"}`;
 }

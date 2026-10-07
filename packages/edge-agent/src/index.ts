@@ -335,7 +335,7 @@ async function claimEdgeNode(
   const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/claim`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, clientTimeMs: sentAt, disk: await readDiskUsage(config.bufferFilePath) }),
+    body: JSON.stringify({ token, clientTimeMs: sentAt, disk: await readDiskUsage(config.bufferFilePath), clientCert: await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT) }),
   });
   if (!res.ok) {
     const errorBody = (await res.json().catch(() => ({}))) as { error?: string };
@@ -376,12 +376,13 @@ async function claimEdgeNode(
 }
 
 import { readDiskUsage } from "./disk-usage.js";
+import { readClientCertExpiryOnce } from "./client-cert.js";
 
 async function sendHeartbeat(token: string, sessionId: string): Promise<void> {
   await fetch(`${config.backendHttpUrl}/api/edge-nodes/heartbeat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now(), disk: await readDiskUsage(config.bufferFilePath) }),
+    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now(), disk: await readDiskUsage(config.bufferFilePath), clientCert: await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT) }),
   });
 }
 
