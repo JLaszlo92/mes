@@ -1,7 +1,7 @@
 # Chaos Testing Findings — M8
 
-**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 9)
-**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit. Slice 8: stopping the agent while the broker is down. Slice 9: clock skew of the edge node (+15 minutes).
+**Date:** September 21, 2026 (slice 1), October 5, 2026 (slices 2 to 9), October 6, 2026 (slice 10), October 6 to 7, 2026 (slice 11)
+**Scope:** Slice 1: outage testing of the four signal sources (GPIO, S7, OPC-UA, Modbus), per ROADMAP M8 ("offline-resilience chaos testing"). Slice 2: outages of the transport and of the edge agent itself. Slice 3: re-test of the edge agent after `edge-agent-v5` (catch-up, lease release, `kill -9` with a non-empty buffer). Slice 4: `edge-agent-v6` — start of the agent while the broker is down. Slice 5: reboot of the edge node (node-gate) with the broker down and a non-empty buffer. Slice 6: hard stop of the edge node container. Slice 7: a gap longer than the standard 10 minute catch-up limit. Slice 8: stopping the agent while the broker is down. Slice 9: clock skew of the edge node (+15 minutes). Slice 10: Postgres stopped on node-dc. Slice 11: expired broker certificate.
 
 ## Method
 
@@ -482,6 +482,126 @@ limit to 30 % and 10 % (no disk was filled): both alerts opened (20:19) and
 resolved after the setting was removed (20:20:52). Reading from the live
 numbers: node-gate has a 14.8 GiB disk, 42 % used, 8.5 GiB free.
 
+## Slice 11 — expired broker certificate (Oct 6 to 7, 2026)
+
+Question: what happens when the Mosquitto server certificate expires? Does the
+monitor warn in time, what do the backend and the edge agent do, is any data
+lost, and does the system come back without a restart of the agent?
+
+**Part A — the monitor with a shifted date (Oct 6, node-dc).**
+`MES_CERT_CHECK_NOW=<epoch> mes-cert-check.sh` evaluates the real certificate
+files as of another date (the check writes the result to `job_status` like the
+daily run).
+
+| Date given | Result |
+|---|---|
+| 2027-09-15 | `expires in 16 day(s)` for the broker, nginx and Postgres certificates and `17` for the backend device certificate, exit 1 |
+| 2027-11-01 | `EXPIRED on ...` for the same four, exit 1 |
+| real run afterwards | `OK: 7 certificates`, state restored |
+
+The `cert_health` alert did not show up in the first minutes because the
+evaluator only runs every 10 minutes (`CHECK_INTERVAL_MS`). With the failed
+result in place it was raised 3 minutes after the check (21:00:52 local time)
+and resolved at the first evaluator run after the real state was restored
+(21:20:52), without any manual step.
+
+**Detour — the server CA passphrase was lost.** The real test needs a
+certificate that is signed by the server CA and valid for only a few minutes
+(`make-short-cert.py`, kept next to `mes-ca.sh` on the admin laptop; it signs
+with the CA key and writes only to `issued/<name>`). The passphrase of
+`~/mes-ca/root.key` (created Oct 1) was not known any more: both `openssl pkey`
+and the script failed with `bad decrypt`, while the device CA's passphrase
+worked. The key file and the certificate were consistent (same date, the
+broker certificate verified against the root), so it was not a damaged file.
+Nothing can be done about a forgotten passphrase, and without it no server
+certificate can be issued or renewed. Because the CA was only five days old and
+the certificates were due to be re-issued for a real DNS name anyway, the CA was
+replaced (see "CA rollover" in `DEVELOPMENT_STATUS.md`): new root Oct 7 11:48 UTC,
+fingerprint `49:91:D9:...`, certificates for the broker, nginx and Postgres
+re-issued and installed without an outage of the trust chain (a two-root trust
+file first, the swap second, the new root alone at the end). Both roots have the
+same subject name; OpenSSL and Node chose the right one by key identifier.
+
+**Part B — real expiry (Oct 7, UTC times).** A certificate valid from 12:04:43
+to 12:21:43 (signed by the new CA) replaced the broker certificate at 12:11;
+after expiry the broker was restarted so that every client has to do a new
+handshake.
+
+| Time | Observation |
+|---|---|
+| 12:11 | Broker restarted with the short certificate: backend and edge agent reconnected within 2 s, data flowing, `NRestarts=0` |
+| 12:11 to 12:13 | Monitor runs before the expiry: `mosquitto-server: expires in 0 day(s)`, exit 1; the `cert_health` alert was raised at 12:15:46 |
+| 12:21:43 | Certificate expires; the established connections were not watched at this moment |
+| 12:22:04 | Broker restarted. Backend: `mqtt subscriber reconnecting…`, `certificate has expired`, `connection closed`, repeating every 2 s. Edge agent: the same. The backend did not crash (`MainPID` and `NRestarts=0` unchanged), `mes-backend`, nginx and Postgres stayed `active` |
+| 12:22 | Monitor: `mosquitto-server: EXPIRED on Oct 7 12:21:43 2026 GMT`, exit 1 |
+| 12:22:58 | Edge buffers 27 / 27 / 17 events (modbus / opcua / s7), oldest 12:22:05 to 12:22:08 |
+| 12:24:07 | Edge buffers 61 / 62 / 40 events |
+| about 12:24 | Original certificate and key copied back (`cp -a` from a checked backup), broker restarted. The edge agent reconnected at 12:24:25 **without a restart of the agent**; buffers 0 / 0 / 0 within seconds |
+| 12:25:46 | The `cert_health` alert resolved by itself after the next evaluator run |
+
+Data check. Events in the database inside the three buffer windows (from the
+first to the last buffered timestamp of the 12:24:07 snapshot): modbus 61,
+opcua 62, s7 40 — exactly the buffer contents, no loss, no duplicate. The longest
+gap between two events in 12:20 to 12:27 UTC was 2.0 s (modbus), 12.0 s (opcua)
+and 15.9 s (s7), which is the same range as the machines' normal pauses in the
+earlier slices (up to 16 s); no baseline for this exact window was measured.
+
+### Findings
+
+12. **A forgotten CA passphrase cannot be recovered, and nothing in the process
+    prevented it.** The server CA had been created five days earlier and its
+    passphrase was kept nowhere. Consequence: the CA had to be replaced
+    (cheap now, expensive after the pilot starts: every edge node and every
+    tablet would need the new root). Rule added: before `mes-ca.sh init` the
+    passphrase goes into the password manager and onto paper in a second place;
+    the same for the device CA. Details in `DEVELOPMENT_STATUS.md`.
+13. **An expired broker certificate stops every client at its next
+    handshake, but costs no data.** Both the backend and the edge agent keep
+    retrying every 2 s, the backend stays up, the edge buffers the events on
+    disk and replays them after the certificate is fixed, without restarting
+    any agent. The outage lasts as long as the certificate is wrong; with the
+    monitor's early warning it is avoidable.
+14. **The early warning works end to end.** The monitor reports the problem
+    (16 days before expiry in part A) and the evaluator turns it into an alert
+    within 10 minutes; it resolves by itself when the certificate is renewed.
+    The message shows the wording of the last evaluator run, so in a short test
+    it still said `expires in 0 day(s)` although the certificate had already
+    expired by the time it was restored.
+15. **A restore command emptied the certificate files and took the broker down
+    for about 50 seconds (Oct 7, 11:59:32 to 12:00:20 UTC).** A restore line
+    (`cat backup/cert.pem > /etc/mosquitto/certs/cert.pem`) was run before the
+    backup existed: the shell truncates the target before `cat` fails on the
+    missing source. The broker could not start and nginx's configuration test failed, so
+    its reload did not happen. The backup taken afterwards copied the already
+    empty files, so it was useless; the original certificates were still on the
+    admin laptop. Recovery: the already
+    prepared new certificate and key were installed and the broker restarted;
+    the edge agent reconnected on its own at 12:00:20 and nothing was lost. As a
+    side effect this was a second, accidental broker outage (about 50 s,
+    refused connections) with the same recovery behaviour as slice 2. Method
+    rules: a backup is checked (`test -s`) before anything is overwritten; a
+    restore or install is chained with `&&` after that check; `cp` instead of a
+    redirect for restores (it stops on a missing source); a key and certificate
+    pair check with `diff <(…) <(…)` also "passes" when both files are missing
+    (two empty outputs), so test the files first; and run server commands on
+    the right host (node-dc, not node-gate).
+16. **Not observed: what an already established connection does at the moment
+    of expiry.** The broker was restarted 21 s after the expiry, which forced
+    new handshakes. Mosquitto presents its certificate at the handshake, so
+    open connections most likely keep working until the next reconnect (a
+    network blip, a broker restart, an agent restart) — in which case an expired
+    certificate would first show up at an unrelated, unplanned moment. The
+    monitor warns well before that. Verifying it needs a second short-lived
+    certificate and a wait without a restart.
+17. **Open: the edge nodes' own client certificates are not watched in the
+    system.** `mes-cert-check.sh` on node-dc covers the broker, nginx, Postgres,
+    both roots and the backend's device certificate. The certificate of
+    node-gate (`/etc/mes/mqtt-client/cert.pem`, valid to Oct 2, 2027) is covered
+    only by `mes-ca.sh status` and the calendar reminders on the admin laptop.
+    An expired client certificate stops that node, with the same effect as above
+    (buffered, no loss). A check that every edge agent could report its own
+    certificate's expiry (like the disk report) would close this.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -496,5 +616,7 @@ numbers: node-gate has a 14.8 GiB disk, 42 % used, 8.5 GiB free.
   inferred from it); network partition between the
   nodes; a clock behind the server (the clock ahead was tested in slice 9; the
   alert covers both directions, the ingestion guard only the future; the
-  behind case itself was not run live); an
-  expired broker certificate.
+  behind case itself was not run live).
+- A broker certificate that expires while connections are already open (slice 11
+  restarted the broker 21 s after the expiry, so the moment of expiry itself
+  was not seen), and the expiry of the edge nodes' client certificates.

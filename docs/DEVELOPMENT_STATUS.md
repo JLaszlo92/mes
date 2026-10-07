@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 5, 2026
+**Last updated:** October 7, 2026
 
 ## Where things stand
 
@@ -1000,6 +1000,68 @@ is in `ops/backup/README.md`.
 - When a certificate is renewed, nothing needs to be told to the monitor: the
   next daily run reads the new file and the alert resolves by itself.
 
+## CA rollover and certificate renewal — Oct 7
+
+**What happened.** The passphrase of the server CA key (`~/mes-ca/root.key`,
+created Oct 1) was lost (see `CHAOS_TEST_FINDINGS.md` slice 11, finding 12). A
+new server CA was created on the admin laptop on Oct 7 (11:48 UTC, valid until
+Oct 4, 2036, same subject `O=MES Pilot, CN=MES Pilot Root CA`, SHA-256
+fingerprint `49:91:D9:16:...:4D:6F:1C`; the old one was `69:FE:0F:54:...:EA:33:43`).
+The old directory was renamed `~/mes-ca-old` (its key cannot be opened; delete
+it after the transition). The device CA (`~/mes-device-ca`) was not touched, so
+no device certificate, ACL entry or MQTT client setting changed.
+
+**State now.** Server certificates, all issued Oct 7 11:51 UTC and valid until
+Oct 7, 2027: `mosquitto` (SAN `DNS:mes.pilot.internal, IP:192.168.60.141`),
+`proxy` (same SAN) and `postgres` (`DNS:localhost, IP:127.0.0.1,
+DNS:mes.pilot.internal`). Installed at `/etc/mosquitto/certs/{cert,key}.pem`,
+`/etc/nginx/certs/{cert,key}.pem` and `/etc/postgresql/17/main/certs/{cert,key}.pem`.
+`/etc/ssl/mes-ca.crt` on node-dc and node-gate and `/etc/mosquitto/certs/ca.crt`
+hold only the new root. The admin laptop's macOS system keychain trusts the new
+root (`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain ~/mes-ca/root.crt`);
+the old root can be removed from it. `mes-ca.sh status` and the node-dc monitor
+show the new dates.
+
+**Procedure used (no outage of the trust chain)** — reuse it for any change of
+root; the same steps without 1 and 4 renew only a server certificate:
+
+1. Trust both roots first. On node-dc and node-gate append the new `root.crt` to
+   `/etc/ssl/mes-ca.crt` (keep a `cp -a` copy), then restart `mes-backend` and
+   `mes-edge-node`: `NODE_EXTRA_CA_CERTS` and `MQTT_CA_FILE` are read only at
+   start, and a PEM file with two certificates works. Check that data still
+   flows.
+2. Issue the server certificates on the admin laptop (`mes-ca.sh issue mosquitto ...`,
+   `proxy`, `postgres`, with the SANs of the old ones; read them from the old
+   certificate with `openssl x509 -noout -ext subjectAltName`), copy them to a
+   staging directory on node-dc.
+3. Per service: back up the live files with `cp -a` and check the backup with
+   `test -s`; check that certificate and key belong together; install with
+   `cat new > live` (the live file keeps its owner and mode: broker key
+   `root:mosquitto 0640`, nginx files `0600`, Postgres files owned by `postgres`,
+   key `0600`); then `systemctl restart mosquitto`, `nginx -t && systemctl reload nginx`,
+   `pg_ctlcluster 17 main reload`. Check from outside: `openssl s_client` against
+   8884 and 443 with `-CAfile` of the new root and `-verify_hostname`, the
+   events' age, `NRestarts`. The backend reaches Postgres with
+   `sslmode=verify-full` and no `sslrootcert`, so it trusts the Postgres
+   certificate through `NODE_EXTRA_CA_CERTS`.
+4. Reduce the trust files to the new root alone, restart the backend and the
+   edge agent again, run `systemctl start mes-cert-check.service`, and delete
+   the staged private keys.
+5. On every other client that trusts the old root (laptops, later the terminal
+   tablets) install the new one before step 3, or the browser warns.
+
+**Short-lived test certificate.** `make-short-cert.py` (admin laptop,
+`~/mes-ca-tools`, not in the repository) issues a server certificate that is
+valid for a few minutes, for testing an expiry. It needs the CA passphrase and
+writes only to `~/mes-ca/issued/mosquitto-short`; delete that directory and the
+copy on the server afterwards.
+
+**CA passphrase rule.** Store the passphrase of each CA key in the password
+manager **and** on paper in a second place before running `mes-ca.sh init` or
+`init-device`. A CA key without its passphrase cannot issue or renew anything,
+and replacing a CA after the pilot has started means touching every edge node
+and every terminal.
+
 ## Edge agent v4: no silent legacy mode, Oct 2
 
 - `edge-agent-v4` (commit `cc54438`, tests `5a9c36c`): without
@@ -1127,6 +1189,16 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`, `DISK_CHECK_PATHS`. Verified live by
   lowering the limit (see the findings doc, slice 10). `pnpm test` is green:
   shared 6, edge-agent 43, backend 157.
+- **Expired broker certificate tested** (Oct 6 to 7, slice 11): the monitor and the
+  `cert_health` alert were checked with a shifted date, then with a real
+  certificate valid for 12 minutes. After the expiry the backend and the edge
+  agent retry every 2 s with `certificate has expired`, the backend stays up, the
+  edge buffers (61 / 62 / 40 events) and, once the original certificate is back,
+  replays them without an agent restart; database = buffer contents exactly.
+  The test exposed that the server CA passphrase had been lost, so the CA was
+  replaced (see "CA rollover and certificate renewal"). Open: the moment of
+  expiry on an open connection was not observed; the edge nodes' client
+  certificates are not monitored in the system.
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1305,12 +1377,20 @@ rewritten) now edits what used to need the database or a delete and re-add:
   `systemctl stop` with the broker unreachable by dropped packets (refused
   connection tested, slice 8), disk full on node-dc (the Postgres stop was tested, slice 10), network
   partition, an edge clock *behind* the server (the clock ahead was tested, see
-  `CHAOS_TEST_FINDINGS.md` slice 9), expired broker certificate.
+  `CHAOS_TEST_FINDINGS.md` slice 9). The expired broker certificate was tested on
+  Oct 6 to 7 (slice 11).
 
 - **Database outage follow-ups** (Oct 6): answer 503 with a clear message
   (instead of 500) when the database is unreachable, and show it on the
   dashboard. The edge buffer has no size limit in the code (only the disk of
   the device, now watched by `edge_disk_space`).
+- **Certificates and CA** (Oct 7): store the new server CA passphrase and the
+  device CA passphrase in the password manager and on paper (second place) if not
+  done yet; delete `~/mes-ca-old` and remove the old root from the macOS keychain
+  once the transition is accepted; run `mes-ca.sh ics` again for the new expiry
+  dates and remove the old calendar reminders; watch the edge nodes' client
+  certificates in the system (see slice 11, finding 17); decide whether to test an
+  established connection across the expiry (finding 16).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1
