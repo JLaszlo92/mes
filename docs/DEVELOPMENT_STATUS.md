@@ -1196,9 +1196,10 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   edge buffers (61 / 62 / 40 events) and, once the original certificate is back,
   replays them without an agent restart; database = buffer contents exactly.
   The test exposed that the server CA passphrase had been lost, so the CA was
-  replaced (see "CA rollover and certificate renewal"). Open: the moment of
-  expiry on an open connection was not observed; the edge nodes' client
-  certificates are not monitored in the system.
+  replaced (see "CA rollover and certificate renewal"). The moment of expiry
+  on open connections was tested later (finding 16): they keep working, only
+  new handshakes fail, nothing is lost. Open: the edge nodes' client
+  certificates are not monitored in the system (finding 17).
 - **`systemctl stop` with the broker down tested** (Oct 5, slice 8): 0.018 s,
   unit state `inactive`, lease released (HTTP to the backend), next start
   claimed at once and caught up the 75 s gap.
@@ -1389,8 +1390,7 @@ rewritten) now edits what used to need the database or a delete and re-add:
   done yet; delete `~/mes-ca-old` and remove the old root from the macOS keychain
   once the transition is accepted; run `mes-ca.sh ics` again for the new expiry
   dates and remove the old calendar reminders; watch the edge nodes' client
-  certificates in the system (see slice 11, finding 17); decide whether to test an
-  established connection across the expiry (finding 16).
+  certificates in the system (see slice 11, finding 17).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1

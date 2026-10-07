@@ -585,14 +585,32 @@ earlier slices (up to 16 s); no baseline for this exact window was measured.
     pair check with `diff <(…) <(…)` also "passes" when both files are missing
     (two empty outputs), so test the files first; and run server commands on
     the right host (node-dc, not node-gate).
-16. **Not observed: what an already established connection does at the moment
-    of expiry.** The broker was restarted 21 s after the expiry, which forced
-    new handshakes. Mosquitto presents its certificate at the handshake, so
-    open connections most likely keep working until the next reconnect (a
-    network blip, a broker restart, an agent restart) — in which case an expired
-    certificate would first show up at an unrelated, unplanned moment. The
-    monitor warns well before that. Verifying it needs a second short-lived
-    certificate and a wait without a restart.
+16. **An established connection survives the expiry; only new handshakes fail
+    (Oct 7, 12:45:20 UTC, tested with a second certificate valid for 17
+    minutes).** The broker was restarted once with the short certificate
+    (12:34 UTC), then nothing was restarted until after the expiry. The data age
+    of the three machines stayed at 0 to 4 s across 12:45:20 (a 5 s and a 10 s
+    sample before it are within the normal pauses), no `closed/reconnect/
+    expired` line appeared in the backend or edge log, and the edge buffers
+    stayed at 0: the open connections were not touched. A new handshake after
+    the expiry failed at once (`openssl s_client`: `verify error:num=10:
+    certificate has expired`, `notAfter=Oct 7 12:45:20 2026 GMT`), and so did
+    the first reconnect of a restarted edge agent (every 2 s `certificate has
+    expired`, broker log `unexpected eof while reading` / `Protocol error`,
+    the client closes the handshake itself); the edge buffered meanwhile.
+    After the good certificate was restored (`cp -a` from the checked backup,
+    one broker restart) the edge reconnected without help and the buffers went
+    back to 0 within a minute. Data: in the 12:44 to 12:53 window the longest
+    gap between two events was 8 s (modbus), 14 s (opcua) and 19 s (s7), with
+    two edge restarts (12:48:48 and about 12:49:50) and about two minutes of
+    refused connections inside it, so the buffered events came back with their
+    original timestamps. Practical meaning: an expired broker certificate does
+    not stop the plant at the moment of expiry. It shows up later, at the first
+    unplanned reconnect (network blip, broker or agent restart), which makes
+    the early warning of the monitor the only reliable signal. The port of the
+    TLS listener is 8884 (mutual TLS, the client certificates are checked
+    against the device CA); the logs of the broker go to
+    `/var/log/mosquitto/mosquitto.log` with epoch timestamps, not to the journal.
 17. **Open: the edge nodes' own client certificates are not watched in the
     system.** `mes-cert-check.sh` on node-dc covers the broker, nginx, Postgres,
     both roots and the backend's device certificate. The certificate of
@@ -617,6 +635,5 @@ earlier slices (up to 16 s); no baseline for this exact window was measured.
   nodes; a clock behind the server (the clock ahead was tested in slice 9; the
   alert covers both directions, the ingestion guard only the future; the
   behind case itself was not run live).
-- A broker certificate that expires while connections are already open (slice 11
-  restarted the broker 21 s after the expiry, so the moment of expiry itself
-  was not seen), and the expiry of the edge nodes' client certificates.
+- The expiry of the edge nodes' client certificates (finding 17; the broker
+  certificate expiring on open connections was tested, finding 16).
