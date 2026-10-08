@@ -1196,6 +1196,13 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   the size of the step after a clock step, no correction on an offline start. `pnpm test`
   is green: shared 6, edge-agent 95, backend 194; Python 25 (19 + 6 new; on node-dc
   `test_s7_bridge.py` still fails on the missing `snap7`).
+- **Resent future-stamped event no longer stored twice** (Oct 8, `d22b332`, backend
+  only, migration 044, chaos finding 32, slice 16): the unique index is
+  `(source_event_id, "timestamp")` and the guard replaces a future timestamp with the receive
+  time, so a resend after a lost ack did not conflict. Now the ids of corrected events are kept
+  in `event_timestamp_corrections` and `insertEvent` (still one statement) skips them. Verified
+  on the live hypertable in a rolled-back transaction. 5 new tests; `pnpm test` is green:
+  shared 6, edge-agent 95, backend 199.
 - **Postgres stopped on node-dc tested** (Oct 6, slice 10, 3 min 28 s then
   2 min 9 s): the first run showed that an unhandled pg Pool error
   (`57P01` on the stop) crashed the backend, which then looped until Postgres
@@ -1468,10 +1475,9 @@ rewritten) now edits what used to need the database or a delete and re-add:
 - **Test-data cleanup also for the clock tests**: slice 9 and 15 left shifted event
   streams (`created_at - timestamp` over 200 s), events with `payload ? 'timestampCorrected'`
   and from the v14 test 20 events stamped 30 s ahead (`created_at - timestamp` under -20 s).
-- **Resend of a future-stamped event**: check it before the pilot. The unique index
-  includes the timestamp, and an event stamped in the future is stored with the
-  receive time, so a resend after a lost ack may not be recognised as a duplicate
-  (see slice 12).
+- **Event timestamp corrections table** (chaos finding 32, fixed): the table
+  `event_timestamp_corrections` only grows with corrected events; add a cleanup of old
+  rows if it ever matters.
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1

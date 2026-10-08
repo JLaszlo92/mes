@@ -721,7 +721,7 @@ Observation for later (not changed): the unique index is on
 `(source_event_id, timestamp)`, and an event stamped in the future is stored with the
 receive time (slice 9). A resend of such an event after a lost ack gets a different
 timestamp and is therefore not recognised as a duplicate. Worth a test before the
-pilot.
+pilot. (Confirmed and fixed in slice 16, finding 32.)
 
 ## Slice 13 — `systemctl stop` with dropped packets, start without network (Oct 8, 2026)
 
@@ -929,6 +929,38 @@ batcher is flushed on stop.
 - The test left 20 events stamped 30 s ahead and the earlier shifted streams of slices 9
   and 15 in the database; the pilot data cleanup finds them with `created_at - timestamp`
   over 200 s or under -20 s and with `payload ? 'timestampCorrected'`.
+
+## Slice 16 — resend of an event stamped in the future (Oct 8, 2026)
+
+Found by reading the code (the open item of slice 12, "a resend of such an event after a lost ack
+gets a different ..."), confirmed against the schema, fixed and verified on the database.
+
+32. **A resent event that the guard had corrected was stored twice.** The unique index of
+    `events` is `(source_event_id, "timestamp")` (sql/027, needed because `timestamp`
+    is the hypertable partition column) and the ingestion guard replaces the timestamp of an
+    event stamped more than 60 s in the future with the receive time. The resend after a
+    lost ack carries the original timestamp: the guard turns it into another receive time (or,
+    once the original is less than 60 s ahead, leaves it), so the row never conflicts with the
+    stored one. A duplicate production count would have been the result. The window is small
+    since the agent corrects its clock (v13, v14): a clock step over 60 s inside the ≤30 s
+    detection lag, or a start without the backend, with a lost ack on top.
+
+**Fix** (backend only, `d22b332`, migration 044): the table `event_timestamp_corrections`
+(`source_event_id` primary key) lists the events whose timestamp was corrected. `insertEvent` is
+still one statement: it inserts the event only if its id is not listed, still with `ON CONFLICT
+DO NOTHING`, and in the same statement lists the id when the event was corrected (data-modifying
+CTE, atomic). A resend, whenever it arrives and with whatever timestamp, writes no row and is
+reported as a duplicate; the correction is reported once. 5 new tests; `pnpm test` is green:
+shared 6, edge-agent 95, backend 199.
+
+**Verified** on the live database (hypertable `events`) in a transaction that was rolled back: the
+event stamped now, listed as corrected -> 1 row written; the same id with a stamp 2 minutes later,
+listed as corrected -> 0 rows; with a stamp 3 minutes later, not listed as corrected -> 0 rows;
+`count(*)` for the id = 1. (The statement was also checked on a plain PostgreSQL 16 with the same
+column types and untyped parameters, as the driver sends them.) By the definition of the index the old
+statement writes three rows for the same sequence (the old statement was not run on the live
+database).
+The table grows only by corrected events; old rows can be deleted (no automatic cleanup yet).
 
 ## Not tested yet
 
