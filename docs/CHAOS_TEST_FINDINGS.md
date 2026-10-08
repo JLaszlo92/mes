@@ -1141,7 +1141,9 @@ claim 14:13:50, restore 14:15:37.
     17 good parts of a gap of about 12 s were lost because the state looked like it came from the future. With the
     clock wrong and no backend the device cannot tell this apart from a clock that stepped back.
 
-Not changed yet. Options: (a) accept and document (the case needs both a wrong clock and no backend at the start;
+**Decision (Oct 8): (a), accepted for now.** The test data (all measuring points are purged before the pilot anyway) is found by
+`created_at - timestamp > 200 s` in the window 14:08 to 14:16 UTC, like the clock tests of slices 9 and 15. To be revisited on the
+real pilot hardware (RTC, NTP, boot order of the switch). Options considered: (a) accept and document (the case needs both a wrong clock and no backend at the start;
 the alert `edge_clock_skew` appears with the first heartbeat); (b) mark the events of the unmeasured period in the
 payload (`clockUncorrected`) so they can be found and corrected later with the offset the heartbeat reports; (c)
 re-stamp the unsent events in the buffer by the measured offset after the first claim (touches the buffer, the

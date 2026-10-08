@@ -1247,8 +1247,9 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
 - **Wrong clock and no network at the start tested** (Oct 8, slice 22, findings 37 and 38): events recorded
   before the first measurement of the offset keep the wrong stamp (about 400 events 5 minutes early, two
   streams in one interval and none in the real one) and the catch-up of the restart books nothing (17 parts).
-  Open decision: accept and document, mark the events (`clockUncorrected`) or re-stamp the buffer after the
-  first claim.
+  Decision: accepted for now (documented); revisit on the real pilot hardware (RTC, NTP, switch boot
+  order). Options left: mark the events (`clockUncorrected`) or re-stamp the buffer after the first claim.
+  The test events are covered by the pilot data cleanup (`created_at - timestamp > 200 s`).
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and
