@@ -54,7 +54,8 @@ it is published and removed only when the backend's application-level ack
 arrives. So the buffer is the exact list of unacknowledged events:
 `ops/chaos/buf-snap.sh` (edge node) prints its size and time span per
 machine; `ops/chaos/chaos-svc.sh` (node-dc) stops a service for N seconds;
-`ops/chaos/chaos-roles.sh` (node-dc) checks the 403 of the role guard (slice 20).
+`ops/chaos/chaos-roles.sh` (node-dc) checks the 403 of the role guard (slice 20);
+`ops/chaos/chaos-clock-offline.sh` (node-gate) starts the agent with a wrong clock and no network (slice 22).
 After the service is back, the database must contain exactly the buffered
 events (same machine, `timestamp` within the buffered span), the buffer must
 be empty, and no unexplained gap may appear in the event timeline.
@@ -1108,6 +1109,45 @@ to 90 s, so the restarted agent gets a real 409):
 Both runs of the first column were meant as the v16 test, but the node still ran v15 (the `git pull` on node-gate failed on
 the detached HEAD, so the build came from the old source). They are kept as the baseline.
 
+## Slice 22 — wrong clock and no network at the start (Oct 8, 2026)
+
+Question: what does an edge node do with a wrong clock when it starts without the backend (no measurement of
+the offset, v12 start from the cache), and what lands in the database when the network comes back?
+
+**Method.** `ops/chaos/chaos-clock-offline.sh` on node-gate (edge-agent-v16): stop the agent (graceful), cut
+tcp 443 and 8884 to node-dc with an nft table, set the clock of the agent process 5 minutes **behind**
+(libfaketime, `FAKETIME=-5m`), start; 5 min 7 s later the network back (clock still wrong); 2 min later the
+normal clock (stop, remove the drop-in, start). Times (UTC): start 14:08:23, network back 14:13:30,
+claim 14:13:50, restore 14:15:37.
+
+| Observation | Result |
+|---|---|
+| Start | The claim ran into its 10 s timeout, the agent started from the cached configuration without a lease |
+| Catch-up at the start | All three machines: state "from the future" (`clock_back`, gap -287 s); the parts produced while the agent was stopped (about 12 s) were **not booked**: S7 4, Modbus 7, OPC-UA 6, **17 good parts** |
+| After the network came back | The background claim succeeded 20 s later: `The clock of this device is 300 s behind the server's; event timestamps are corrected`, offset -300 002 ms, `lease adopted`; the buffer drained |
+| Database, events of the offline window | **About 400 events** (production counts and status changes of the three rigs) were stored with timestamps **5 minutes before** the real moment: `created_at - timestamp` up to 595 s (300 s of the clock plus the 295 s in the buffer). They are stamped 14:03 to 14:08, arrived at 14:13 |
+| Events after the claim | Correct (lag about 0) |
+| Restore | Normal claim, no `clock_back`, no wrong booking |
+
+37. **Events recorded before the first measurement keep the wrong stamp.** The offset is known only after the
+    first successful claim (the documented v12 to v14 limit), and the events already in the buffer are not
+    re-stamped. Effect, measured: the interval 14:03:35 to 14:08:23 now holds **two** streams (the real one, stored at the
+    time, and the offline one 5 minutes late), while 14:08:35 to 14:13:50, where the machines really ran offline,
+    has none. Anything computed by the timestamp doubles in the first interval and is empty in the second: production per
+    minute or hour, the status timeline, downtime evaluation. The totals of a shift stay right (the events
+    are all there) unless the shifted window crosses a shift or day boundary. The counter values themselves are
+    not affected, only their time. Size: the length of the offline period times the size of the clock error.
+38. **The catch-up of a restart with a wrong clock books nothing** (already known from slice 9, now with numbers):
+    17 good parts of a gap of about 12 s were lost because the state looked like it came from the future. With the
+    clock wrong and no backend the device cannot tell this apart from a clock that stepped back.
+
+Not changed yet. Options: (a) accept and document (the case needs both a wrong clock and no backend at the start;
+the alert `edge_clock_skew` appears with the first heartbeat); (b) mark the events of the unmeasured period in the
+payload (`clockUncorrected`) so they can be found and corrected later with the offset the heartbeat reports; (c)
+re-stamp the unsent events in the buffer by the measured offset after the first claim (touches the buffer, the
+ack batcher and the deduplication key `(source_event_id, timestamp)`; wrong if the clock was stepped during the
+period, for example by NTP).
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -1117,8 +1157,7 @@ the detached HEAD, so the build came from the old source). They are kept as the 
   `/api/work-order-assignments`, the edge node channel and settings routes and the
   work order routes open to `operator`); the role guard itself is the same function everywhere.
 - A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
-  inferred from it); the clock of a device that has no network while it is wrong
-  (slice 15 had the backend reachable, so the agent could measure the offset).
+  inferred from it).
 - A real expiry of an edge node's client certificate (it is monitored since
   v10, finding 17; the stop itself is inferred from the broker case, findings
   13 and 16).
