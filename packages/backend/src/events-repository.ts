@@ -13,6 +13,12 @@ export type InsertResult = "inserted" | "duplicate";
  * (edge-agent/src/index.ts) can legitimately retry an event that already
  * made it through before a connection dropped mid-flush, and a duplicate
  * insert here is the expected, harmless outcome of that — not an error.
+ *
+ * The unique index is (source_event_id, "timestamp"), and the ingestion guard replaces the
+ * timestamp of an event stamped far in the future with the receive time. A resend of such an
+ * event therefore carries a different timestamp than the stored row and would not conflict.
+ * The ids of corrected events are kept in event_timestamp_corrections (sql/044), written in the
+ * same statement as the event, and an event whose id is listed there is skipped.
  */
 export async function insertEvent(
   event: MachineEvent,
@@ -24,10 +30,19 @@ export async function insertEvent(
   const stored = guarded.corrected ? { ...event, timestamp: guarded.timestamp, timestampCorrected: guarded.info } : event;
   try {
     const result = await pool.query(
-      `INSERT INTO events (id, machine_id, type, "timestamp", source_event_id, payload)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT DO NOTHING`,
-      [randomUUID(), event.machineId, event.type, guarded.corrected ? guarded.timestamp : event.timestamp, event.sourceEventId, JSON.stringify(stored)],
+      `WITH ins AS (
+         INSERT INTO events (id, machine_id, type, "timestamp", source_event_id, payload)
+         SELECT $1::text, $2::text, $3::text, $4::timestamptz, $5::text, $6::jsonb
+         WHERE NOT EXISTS (SELECT 1 FROM event_timestamp_corrections WHERE source_event_id = $5::text)
+         ON CONFLICT DO NOTHING
+         RETURNING source_event_id
+       ), marker AS (
+         INSERT INTO event_timestamp_corrections (source_event_id)
+         SELECT source_event_id FROM ins WHERE $7::boolean
+         ON CONFLICT DO NOTHING
+       )
+       SELECT 1 FROM ins`,
+      [randomUUID(), event.machineId, event.type, guarded.corrected ? guarded.timestamp : event.timestamp, event.sourceEventId, JSON.stringify(stored), guarded.corrected],
     );
     // A conflicting row is skipped by the database: no exception, no error line in the
     // Postgres log (the edge agent's retries used to cost ~2000 of them per outage).
