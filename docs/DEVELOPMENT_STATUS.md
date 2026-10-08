@@ -1128,7 +1128,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   why `shared` is built first. Backend
   first when a release needs a new endpoint (v5 did; v6 does not).
 - **Chaos tooling**: `ops/chaos/buf-snap.sh` (buffer size and time span per
-  machine), `ops/chaos/chaos-svc.sh` (stop a service for N seconds). A DB
+  machine), `ops/chaos/chaos-svc.sh` (stop a service for N seconds),
+  `ops/chaos/chaos-roles.sh` (403 per role with temporary users, removed on exit). A DB
   comparison after a test needs both a lower and an upper time bound per
   machine (the `seenAtMs` of the counter files before and after).
 - Onboarding (`ops/onboarding/install-on-node.sh`) now generates units with
@@ -1206,8 +1207,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
 - **Settings API tested with a real session** (Oct 8, slice 17): login with MFA, 401 without
   or with a bad token, 400 for every invalid value and body, 404 for an unknown node, 200 for a
   valid change, the audit row `edge_node_settings_updated` with the actor, and the agent's claim
-  cache picks the new value up at the next start. Nothing to fix. Not done live: the 403 of a
-  role below manager.
+  cache picks the new value up at the next start. Nothing to fix. The 403 of the lower roles
+  was tested in slice 20.
 - **Lost lease handled by the agent** (Oct 8, `37f1f51`, **edge-agent-v15**, chaos finding 33,
   slice 18): `sendHeartbeat` swallowed every non-2xx answer, so an agent whose lease was taken
   over kept publishing silently while the node looked offline. Now a refused heartbeat (4xx except
@@ -1235,6 +1236,10 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   **Deploying the frontend is two steps**: `pnpm --filter @mes/frontend build`, then
   `cp -a ~/mes/packages/frontend/dist/. /var/www/mes/` (nginx serves `/var/www/mes`; the first banner
   test ran the old bundle because the copy was missed).
+- **Role guard tested with real sessions** (Oct 8, slice 20): 12 routes x the roles below admin, all
+  forbidden combinations 403, allowed GETs 200, 401 for no / garbage / deactivated user / expired
+  session; 0 failures. Routes whose method is not obvious from the source were left out of the
+  script (listed in `CHAOS_TEST_FINDINGS.md`, "Not tested yet").
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and

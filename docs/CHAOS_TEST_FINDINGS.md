@@ -53,7 +53,8 @@ simulated machines producing about 0.5 events/s each.
 it is published and removed only when the backend's application-level ack
 arrives. So the buffer is the exact list of unacknowledged events:
 `ops/chaos/buf-snap.sh` (edge node) prints its size and time span per
-machine; `ops/chaos/chaos-svc.sh` (node-dc) stops a service for N seconds.
+machine; `ops/chaos/chaos-svc.sh` (node-dc) stops a service for N seconds;
+`ops/chaos/chaos-roles.sh` (node-dc) checks the 403 of the role guard (slice 20).
 After the service is back, the database must contain exactly the buffered
 events (same machine, `timestamp` within the buffered span), the buffer must
 be empty, and no unexplained gap may appear in the event timeline.
@@ -1067,12 +1068,34 @@ wrong.
     `cp -a ~/mes/packages/frontend/dist/. /var/www/mes/`. Old `index-*.js` files accumulate in
     `/var/www/mes/assets` (eight at the time); harmless, can be cleaned by hand.
 
+## Slice 20 — 403 for roles that are not allowed (Oct 8, 2026)
+
+**Method.** `ops/chaos/chaos-roles.sh` (node-dc, as root) inserts temporary users `chaos-*@emlid.test`
+with a session directly in the database (token stored as `sha256(token)` like `sessions-repository.ts`,
+no password, so no login is possible) and deletes them on exit (`trap EXIT`; sessions follow by
+`ON DELETE CASCADE`). Through nginx it calls 12 routes with `operator`, `supervisor`, `maintenance`
+and `manager`: a role that is not in the route's `requireRole` list must get exactly 403; a role that is
+allowed must not get 403 or 401 (checked on GET routes only, mutating routes with an allowed role are not
+exercised so that no production data changes). The mutating requests of a forbidden role carry the body `{}`.
+
+Routes: `GET /api/audit-log`, `/api/audit-log/actions`, `POST /api/license/reload` (admin only);
+`GET /api/alert-rules`, `/api/edge-nodes`, `/api/shift-patterns`, `/api/calendars`,
+`POST /api/machine-registry`, `/api/machine-registry/bulk`, `/api/work-orders`, `/api/work-orders/bulk`
+(admin, manager); `GET /api/users/assignable` (maintenance, supervisor, manager, admin).
+
+**Result: 0 failures.** All forbidden combinations (40) answered 403, the allowed GETs answered 200, and a
+request with no token, a garbage token, the token of a deactivated user (`is_active = false`) and an expired
+session answered 401. The 403 body is `{"statusCode":403,"error":"Forbidden","message":"insufficient role"}`,
+with no internal detail. No findings; the temporary users were removed.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
-- The settings API with a role that is not allowed (`operator` and below should get
-  403): slice 17 had only an admin session; the role check is covered by unit tests.
+- The role check on the routes whose method or path the slice 20 script does not list
+  (for example `/api/status-definitions`, `/api/preventive-schedules`,
+  `/api/work-order-assignments`, the edge node channel and settings routes and the
+  work order routes open to `operator`); the role guard itself is the same function everywhere.
 - A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
   inferred from it); the clock of a device that has no network while it is wrong
   (slice 15 had the backend reachable, so the agent could measure the offset).
