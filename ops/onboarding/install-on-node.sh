@@ -89,6 +89,8 @@ StateDirectory=mes-edge
 Environment=BUFFER_FILE_PATH=/var/lib/mes-edge/buffer.ndjson
 Restart=on-failure
 RestartSec=2
+# exit code 78 = configuration error (EXIT_CONFIG): it cannot fix itself, so do not restart in a loop
+RestartPreventExitStatus=78
 User=root
 
 [Install]

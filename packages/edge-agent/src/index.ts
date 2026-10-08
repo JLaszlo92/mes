@@ -20,6 +20,7 @@ import { join as joinPath } from "node:path";
 import { CounterBaseline } from "./counter-baseline.js";
 import { ClaimCache, type CachedClaim } from "./claim-cache.js";
 import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
+import { claimWaitingOutRejection } from "./initial-claim.js";
 import { classifyHeartbeatFailure, HeartbeatHttpError } from "./heartbeat-failure.js";
 import { CorrectedClock, clockCorrectionNotice, measureAhead } from "./corrected-clock.js";
 import { writeClockOffsetFile } from "./clock-offset-file.js";
@@ -474,7 +475,16 @@ async function runRegistryMode(token: string): Promise<void> {
 
   let claimed: ClaimData | null = null;
   try {
-    claimed = await claimEdgeNode(token);
+    // A rejection (409: the lease of a crashed instance of this node is still fresh; 401, ...) is waited out with a backoff
+    // instead of ending the process, so systemd does not restart the agent every few seconds (chaos finding 34).
+    claimed = await claimWaitingOutRejection({
+      claim: () => claimEdgeNode(token),
+      onRejected: (err, nextInMs) =>
+        log.warn(
+          { err, nextInSeconds: Math.round(nextInMs / 1000) },
+          "the backend rejected the claim — no channel is started; asking again (the lease of a crashed instance of this node expires after 90 s)",
+        ),
+    });
   } catch (err) {
     // Only "the backend cannot be reached" allows an offline start. An answer of "no" (invalid token,
     // node removed, lease held by another instance) must not be bypassed.
