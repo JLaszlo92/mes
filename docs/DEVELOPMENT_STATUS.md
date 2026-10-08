@@ -1208,6 +1208,17 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   valid change, the audit row `edge_node_settings_updated` with the actor, and the agent's claim
   cache picks the new value up at the next start. Nothing to fix. Not done live: the 403 of a
   role below manager.
+- **Lost lease handled by the agent** (Oct 8, `37f1f51`, **edge-agent-v15**, chaos finding 33,
+  slice 18): `sendHeartbeat` swallowed every non-2xx answer, so an agent whose lease was taken
+  over kept publishing silently while the node looked offline. Now a refused heartbeat (4xx except
+  408 and 429) logs and starts a background claim (the v12 mechanism, `startLeaseClaim`) with the
+  channels running; a free lease is adopted without a restart, a lease that stays refused for 150 s
+  stops the agent. New `heartbeat-failure.ts` (`HeartbeatHttpError`, `classifyHeartbeatFailure`),
+  14 tests. Verified live: lease replaced once -> adopted after 89 s, same process; lease held by a
+  live second instance (simulated) -> the agent stopped after ~186 s and claimed again 3 s after
+  the foreign lease expired. The refusal paths of v12 (invalid token, 409 at start) were checked in
+  the same slice: no start from the cache. `pnpm test` is green: shared 6, edge-agent 109,
+  backend 199. No backend change, no migration.
 - **Postgres stopped on node-dc tested** (Oct 6, slice 10, 3 min 28 s then
   2 min 9 s): the first run showed that an unhandled pg Pool error
   (`57P01` on the stop) crashed the backend, which then looped until Postgres
@@ -1472,11 +1483,13 @@ rewritten) now edits what used to need the database or a delete and re-add:
   dates and remove the old calendar reminders; the edge nodes' client
   certificates are watched since v10 (finding 17), the broker's and the others
   by `mes-cert-check.sh`.
-- **Edge agent offline start** (chaos finding 21, fixed in v12): still to try live
-  are the refusal paths (a lease held by another instance for longer than 150 s, an
-  invalid token) and a real reboot of the device without network. The cache only
-  exists after the first claim with v12 on each node, so a new node needs one start
-  with the backend reachable.
+- **Edge agent offline start** (chaos finding 21, fixed in v12): the refusal paths were
+  tried live in slice 18 (invalid token, lease held, 150 s give-up); still to try is a real
+  reboot of the device without network. The cache only exists after the first claim with
+  v12 on each node, so a new node needs one start with the backend reachable.
+- **Restart cycle on a refused claim** (chaos finding 34): an invalid token or a foreign
+  lease makes the unit restart the agent every 4.5 s. Consider a longer `RestartSec` for
+  exit code 1 or an in-process backoff before the exit.
 - **Test-data cleanup also for the clock tests**: slice 9 and 15 left shifted event
   streams (`created_at - timestamp` over 200 s), events with `payload ? 'timestampCorrected'`
   and from the v14 test 20 events stamped 30 s ahead (`created_at - timestamp` under -20 s).

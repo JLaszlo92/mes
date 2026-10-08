@@ -295,7 +295,30 @@ Limits: after a clock step the new offset is known only at the next heartbeat (a
 still clips large future stamps); a start without the backend (v12) has no measurement and
 no correction until the first successful claim. Keep NTP/chrony running anyway.
 
+## Lost lease (v15)
+
+Until v14 a heartbeat that the backend refused (HTTP 409: the session is not the node's current
+one, another instance claimed it; 401, 404, 400: the token or session is no longer valid) was
+swallowed: the agent kept running without a lease and without a log line (chaos finding 33).
+From v15 the agent logs `the backend no longer accepts this node's lease … claiming again`,
+keeps the channels running (events stay buffered on disk) and claims again in the background
+after 5, 10, 20, 40 s and then every 60 s, as for a start without the backend (v12). A free lease
+(the usual case: it expires 90 s after the last accepted heartbeat) is adopted without a restart
+(`claimed edge node again after the lease was lost — lease adopted`). If the backend keeps
+refusing for 150 s, another instance owns the node: the agent stops its channels and exits 1
+(the buffer stays on disk; the unit restarts it every few seconds until the claim succeeds, as in
+a start with an invalid token). A heartbeat that fails for a network reason, a 5xx, a 408 or a 429
+stays transient and is retried at the next tick (now logged). No backend change, no migration.
+
 ## Release notes
+
+- **edge-agent-v15** (Oct 8, 2026, `37f1f51`) — claims again when the heartbeat shows the lease
+  was lost, stops after 150 s of refusal (new `heartbeat-failure.ts`, 14 unit tests;
+  `sendHeartbeat` throws `HeartbeatHttpError`, `startLeaseClaim` in `index.ts` shared with the
+  offline start). No backend change. Deployed on node-gate with
+  `scripts/deploy-edge-agent.sh edge-agent-v15` after checking out the tag; the node claimed at
+  once. Verified: lease replaced once -> adopted after 89 s without a restart; lease held by a
+  simulated live instance -> stop after about 186 s, claim 3 s after the foreign lease expired.
 
 - **edge-agent-v14** (Oct 8, 2026) — live clock correction without a channel restart:
   `clock-offset-file.ts`, `python/clock_offset.py` (6 tests), `CorrectedClock` simplified

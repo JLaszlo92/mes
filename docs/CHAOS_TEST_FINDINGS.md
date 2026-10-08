@@ -823,8 +823,8 @@ partition the channels kept counting and the events went to the disk buffer.
     lease adoption can take up to about 70 s after the network is back (60 s backoff
     cap plus the 10 s claim timeout); events are not affected, only the Edge nodes
     page shows the node without a session meanwhile.
-24. **Not covered by the live run:** the 150 s give-up rule (a lease that stays
-    rejected) and the 4xx refusal at start are covered by unit tests only; in this run
+24. **Not covered by the live run (since tested, slice 18):** the 150 s give-up rule (a lease that stays
+    rejected) and the 4xx refusal at start were covered by unit tests only; in this run
     the old session was already stale and the first answered claim succeeded. The
     status code the backend sends for "lease held" was not checked; every 4xx is treated
     as a rejection. Without a lease two devices reading the same machines would still
@@ -985,6 +985,41 @@ setting `catchupMaxMinutes` (10 before and after).
 No finding: the route behaved as the unit tests describe. Not tested live: a role that is not
 allowed (403). A setting changed here reaches the agent at its next claim, that is at its next
 start (as documented for v5); there is no push to a running agent.
+
+## Slice 18 — refused claims and a lost lease (Oct 8, 2026)
+
+**Method.** `node-gate-sim` on the live backend, without touching the real token: the token is made
+invalid by prefixing the stored hash with `zz` (and restored), another instance is simulated by a
+`psql` loop on node-dc that writes a foreign `current_session_id` and a fresh `last_heartbeat_at`
+every 20 s. The lease is stale after 90 s without a heartbeat (`HEARTBEAT_STALE_SECONDS`).
+
+| Test | Result |
+|---|---|
+| Start with an invalid token (edge-agent-v14) | The claim answers 401 `invalid token`, the agent does **not** start from the cache, logs `ClaimHttpError` at error level and exits 1; systemd restarts it after 2 s: 10 restarts in 44 s (about 4.5 s per cycle, 2 to 2.6 s CPU each). After the hash was restored the agent claimed within 2 s, unattended |
+| Start while the lease is held (v14) | The claim answers **409** `another instance of this edge node is already active` (`DuplicateSessionError`), no start from the cache, the same restart cycle. After the last foreign heartbeat the agent claimed at +90 s |
+| Lease replaced while the agent runs (v14) | Heartbeat answer 409; the agent logged **nothing**, kept running and publishing, and the node became offline for the dashboard (finding 33) |
+| Lease replaced once while the agent runs (v15) | Detected 14 s later (`status: 409`, warn), background claims refused at +5, +15, +35 s, **adopted at +89 s** (`claimed edge node again after the lease was lost — lease adopted`); same process (`MainPID` and `NRestarts` unchanged), channels never stopped |
+| Lease held by a live second instance (v15, simulated for 4 minutes) | Claims refused for ~186 s after the first refusal, then `the backend keeps rejecting the claim` and `shutting down…`, exit 1 (150 s grace, the attempts fall at +10, +30, +70, +130, +190 s). Restart cycle of about 4.6 s (21 restarts in 97 s) while the foreign lease was fresh; the agent claimed **3 s** after the lease became stale (12:49:23) without intervention |
+
+33. **A running agent did not notice that it had lost its lease.** `sendHeartbeat` turned every
+    non-2xx answer into "no measurement": a 409 (another instance has the session, or the backend
+    forgot it) was neither logged nor handled. The node showed as offline (and, after 3 minutes,
+    raised `edge_node_offline`) although it kept publishing, and a second device holding the same
+    token (the spare edge hardware) would have read the same machines in parallel without any
+    limit: event ids are random per event, so the database cannot deduplicate them. Fixed in
+    **edge-agent-v15**: a refused heartbeat (4xx except 408 and 429) starts a background claim (the
+    v12 mechanism) with the channels still running; if the claim succeeds the lease is adopted
+    without a restart, if the backend keeps refusing for 150 s the agent stops. 5xx, timeouts and
+    network errors stay transient, now logged. At most about 150 s of parallel operation in the
+    real conflict case.
+34. **Observation, not changed: the restart cycle on a refused claim.** An invalid token or a lease held
+    by someone else makes the agent exit and the unit restart it every 4.5 s (a claim, 2 s of CPU and an
+    error line each time) for as long as the condition lasts: 13 claims per minute on the backend and
+    a busy edge node. The behaviour is correct (nothing is published without a lease) but noisy; a
+    longer `RestartSec` for exit code 1 or an in-process wait with the 5 to 60 s backoff before the exit
+    would reduce it. Open, low priority.
+
+The dashboard alert `edge_node_offline` during the 4 minute lease test was not recorded.
 
 ## Not tested yet
 
