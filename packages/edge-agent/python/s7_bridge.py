@@ -55,6 +55,15 @@ RECONNECT_DELAY_SECONDS = float(os.environ.get("RECONNECT_DELAY_SECONDS", 3.0))
 # Catch-up of parts produced while this bridge could not see the PLC (see catchup.py).
 COUNTER_STATE_FILE = os.environ.get("COUNTER_STATE_FILE", "")
 CATCHUP_MAX_AGE_SECONDS = float(os.environ.get("CATCHUP_MAX_AGE_SECONDS", 600))
+# Milliseconds the agent measured to add to this device's clock (0 = the clock is fine or unknown).
+CLOCK_OFFSET_MS = int(float(os.environ.get("CLOCK_OFFSET_MS", 0)))
+
+
+def now_ms() -> int:
+    """Wall-clock milliseconds corrected by the offset the agent measured against the server."""
+    return int(time.time() * 1000) + CLOCK_OFFSET_MS
+
+
 COUNTER_SAVE_EVERY_SECONDS = 5.0
 
 
@@ -125,7 +134,7 @@ def main() -> None:
                     # since a synthetic "down" was emitted in between.
                     emit({"kind": "machine_status", "status": "running" if current["running"] else "down"})
                     # Book the parts made while we could not see the PLC (within the allowed gap).
-                    plan = plan_catchup(last_seen, current, int(time.time() * 1000), int(CATCHUP_MAX_AGE_SECONDS * 1000))
+                    plan = plan_catchup(last_seen, current, now_ms(), int(CATCHUP_MAX_AGE_SECONDS * 1000))
                     for _ in range(plan["emit"]["good"]):
                         emit({"kind": "production_count", "result": "good"})
                     for _ in range(plan["emit"]["scrap"]):
@@ -139,7 +148,7 @@ def main() -> None:
                     for event in diff_events(previous, current):
                         emit(event)
                 previous = current
-                last_seen = {"good": current["good"], "scrap": current["scrap"], "seenAtMs": int(time.time() * 1000)}
+                last_seen = {"good": current["good"], "scrap": current["scrap"], "seenAtMs": now_ms()}
                 if COUNTER_STATE_FILE:
                     changed = saved != (current["good"], current["scrap"])
                     if changed or time.monotonic() - last_saved_at >= COUNTER_SAVE_EVERY_SECONDS:

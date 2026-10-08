@@ -20,6 +20,7 @@ import { join as joinPath } from "node:path";
 import { CounterBaseline } from "./counter-baseline.js";
 import { ClaimCache, type CachedClaim } from "./claim-cache.js";
 import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
+import { CorrectedClock, clockCorrectionNotice, measureAhead, shouldRestartChannels } from "./corrected-clock.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -33,6 +34,10 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 // environment value is the fallback (legacy mode, older backends).
 const nodeSettings = { catchupMaxMinutes: config.catchupMaxMinutes };
 
+// Corrected wall clock (see corrected-clock.ts): in registry mode the offset against the server is
+// measured with the claim and every heartbeat; in legacy mode it stays 0 (the raw device clock).
+const clock = new CorrectedClock();
+
 function counterStateFile(machineId: string): string {
   return joinPath(config.counterStateDir, `counters.${machineId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 }
@@ -42,6 +47,7 @@ function counterBaselineFor(machineId: string): CounterBaseline {
     machineId,
     filePath: counterStateFile(machineId),
     maxAgeMs: nodeSettings.catchupMaxMinutes * 60_000,
+    now: () => clock.now(),
     log: { info: (obj, msg) => log.info(obj, msg), warn: (obj, msg) => log.warn(obj, msg) },
   });
 }
@@ -50,6 +56,7 @@ function s7CatchupEnv(machineId: string): Record<string, string> {
   return {
     COUNTER_STATE_FILE: counterStateFile(machineId),
     CATCHUP_MAX_AGE_SECONDS: String(nodeSettings.catchupMaxMinutes * 60),
+    CLOCK_OFFSET_MS: String(clock.offset),
   };
 }
 
@@ -118,7 +125,7 @@ function runLegacyMode(): void {
   const myAckTopic = ackTopic(config.machineId);
 
   function toMachineEvent(reading: SignalReading): MachineEvent {
-    const envelope = { machineId: config.machineId, timestamp: new Date().toISOString(), sourceEventId: randomUUID() };
+    const envelope = { machineId: config.machineId, timestamp: clock.nowIso(), sourceEventId: randomUUID() };
     switch (reading.kind) {
       case "production_count":
         return { ...envelope, type: "production_count", result: reading.result, scrapReasonCode: reading.scrapReasonCode };
@@ -272,7 +279,7 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   const myAckTopic = ackTopic(ch.machineId);
 
   function toMachineEvent(reading: SignalReading): MachineEvent {
-    const envelope = { machineId: ch.machineId, timestamp: new Date().toISOString(), sourceEventId: randomUUID() };
+    const envelope = { machineId: ch.machineId, timestamp: clock.nowIso(), sourceEventId: randomUUID() };
     switch (reading.kind) {
       case "production_count":
         return { ...envelope, type: "production_count", result: reading.result, scrapReasonCode: reading.scrapReasonCode };
@@ -394,12 +401,21 @@ async function claimEdgeNode(
 import { readDiskUsage } from "./disk-usage.js";
 import { readClientCertExpiryOnce } from "./client-cert.js";
 
-async function sendHeartbeat(token: string, sessionId: string): Promise<void> {
-  await fetch(`${config.backendHttpUrl}/api/edge-nodes/heartbeat`, {
+/** Sends the heartbeat; returns how far the device clock is ahead of the server's (negative = behind), or null if unknown. */
+async function sendHeartbeat(token: string, sessionId: string): Promise<number | null> {
+  const disk = await readDiskUsage(config.bufferFilePath);
+  const clientCert = await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT);
+  const sentAt = Date.now(); // the RAW device time: the backend derives the clock offset and its alert from it
+  const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/heartbeat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, sessionId, clientTimeMs: Date.now(), disk: await readDiskUsage(config.bufferFilePath), clientCert: await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT) }),
+    body: JSON.stringify({ token, sessionId, clientTimeMs: sentAt, disk, clientCert }),
+    signal: AbortSignal.timeout(CLAIM_TIMEOUT_MS),
   });
+  const receivedAt = Date.now();
+  if (!res.ok) return null;
+  const body = (await res.json().catch(() => null)) as { serverTimeMs?: unknown } | null;
+  return measureAhead(sentAt, receivedAt, body?.serverTimeMs);
 }
 
 /** Gives the instance lease back on a clean shutdown, so the next start does not wait for the 90 s heartbeat timeout. */
@@ -458,8 +474,11 @@ async function runRegistryMode(token: string): Promise<void> {
   if (claimed) {
     sessionId = claimed.sessionId;
     channels = claimed.channels;
-    const skew = clockSkewWarning(claimed.clockAheadMs);
-    if (skew) log.error({ clockAheadMs: claimed.clockAheadMs }, skew);
+    // Measured before any channel starts, so the very first event already carries the corrected time.
+    clock.update(claimed.clockAheadMs);
+    if (claimed.clockAheadMs !== null && clockSkewWarning(claimed.clockAheadMs)) {
+      log.warn({ clockAheadMs: claimed.clockAheadMs, correctionMs: clock.offset }, clockCorrectionNotice(claimed.clockAheadMs));
+    }
     nodeSettings.catchupMaxMinutes = claimed.settings.catchupMaxMinutes;
     log.info({ channelCount: channels.length, catchupMaxMinutes: claimed.settings.catchupMaxMinutes }, "claimed edge node, starting channels");
     await saveClaimCache(token, claimed);
@@ -476,12 +495,35 @@ async function runRegistryMode(token: string): Promise<void> {
 
   let runtimes = channels.map((ch) => setupChannel(client, ch));
 
+  // The correction the channels (the S7 bridge process learns it only at its start) run with.
+  let channelsClockOffset = clock.offset;
+  let lastChannelRestartAt: number | null = null;
+
+  function restartChannels(reason: string): void {
+    log.warn({ reason, channelCount: channels.length, clockCorrectionMs: clock.offset }, "restarting channels");
+    for (const r of runtimes) r.stop();
+    runtimes = channels.map((ch) => setupChannel(client, ch));
+    channelsClockOffset = clock.offset;
+    lastChannelRestartAt = Date.now();
+  }
+
+  /** Applies a clock measurement from a heartbeat; the channels are restarted when the S7 bridge's correction is out of date. */
+  function applyMeasuredClock(aheadMs: number | null): void {
+    const change = clock.update(aheadMs);
+    if (change.changed) log.warn({ aheadMs, fromMs: change.previous, toMs: change.current }, "timestamp correction changed");
+    if (shouldRestartChannels(channelsClockOffset, clock.offset, lastChannelRestartAt, Date.now())) {
+      restartChannels("the clock correction changed");
+    }
+  }
+
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   function startHeartbeat(): void {
     if (heartbeatTimer) return;
     heartbeatTimer = setInterval(() => {
       if (!sessionId) return;
-      sendHeartbeat(token, sessionId).catch((err) => log.warn({ err }, "heartbeat failed — will retry next tick"));
+      sendHeartbeat(token, sessionId)
+        .then(applyMeasuredClock)
+        .catch((err) => log.warn({ err }, "heartbeat failed — will retry next tick"));
     }, 30000);
   }
   if (sessionId) startHeartbeat();
@@ -507,14 +549,18 @@ async function runRegistryMode(token: string): Promise<void> {
       onAttemptFailed: (kind, err, nextInMs) =>
         log.warn({ err, kind, nextInSeconds: Math.round(nextInMs / 1000) }, "background claim failed — still running from the cached configuration"),
       onClaimed: async (c) => {
-        const skew = clockSkewWarning(c.clockAheadMs);
-        if (skew) log.error({ clockAheadMs: c.clockAheadMs }, skew);
+        if (c.clockAheadMs !== null && clockSkewWarning(c.clockAheadMs)) {
+          log.warn({ clockAheadMs: c.clockAheadMs }, clockCorrectionNotice(c.clockAheadMs));
+        }
+        clock.update(c.clockAheadMs);
         nodeSettings.catchupMaxMinutes = c.settings.catchupMaxMinutes;
-        if (!sameChannels(channels, c.channels)) {
-          log.warn({ before: channels.length, after: c.channels.length }, "channel configuration changed while the node was offline — restarting channels");
-          for (const r of runtimes) r.stop();
+        const configChanged = !sameChannels(channels, c.channels);
+        if (configChanged) {
+          log.warn({ before: channels.length, after: c.channels.length }, "channel configuration changed while the node was offline");
           channels = c.channels;
-          runtimes = channels.map((ch) => setupChannel(client, ch));
+        }
+        if (configChanged || shouldRestartChannels(channelsClockOffset, clock.offset, null, Date.now())) {
+          restartChannels(configChanged ? "the channel configuration changed while offline" : "the clock correction changed");
         }
         sessionId = c.sessionId;
         startHeartbeat();

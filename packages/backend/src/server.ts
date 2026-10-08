@@ -1224,7 +1224,7 @@ app.delete<{ Params: { id: string } }>(
       }
       try {
         await recordHeartbeat(token, sessionId, request.body.clientTimeMs, request.body.disk, request.body.clientCert);
-        return { success: true };
+        return { success: true, serverTimeMs: Date.now() };
       } catch (err) {
         if (err instanceof InvalidSessionError) {
           reply.code(409);
