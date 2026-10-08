@@ -466,8 +466,8 @@ and the pool reconnects on the next query; unit test `db-pool-error.test.ts`.
 | Data | 40 / 40 / 34 events in the database in exactly those windows; no gap longer than 12 s since; new events arrived after the start without any backend restart |
 
 Left open from this slice: a plain `500` for the dashboard during the outage
-(a 503 "database unavailable" message would read better); a full disk itself
-was not tested.
+(a 503 "database unavailable" message would read better; done in slice 19);
+a full disk itself was not tested.
 
 **Disk usage alerts (added after this slice, Oct 6, 2026).** Because the real
 full-disk case is not safe to provoke, two alerts were added to see it coming:
@@ -1020,6 +1020,52 @@ every 20 s. The lease is stale after 90 s without a heartbeat (`HEARTBEAT_STALE_
     would reduce it. Open, low priority.
 
 The dashboard alert `edge_node_offline` during the 4 minute lease test was not recorded.
+
+## Slice 19 — 503 and a banner while the database is unavailable (Oct 8, 2026)
+
+Follow-up of slice 10 (the dashboard showed "Internal Server Error" while Postgres was away).
+
+**Change.**
+- Backend (commit `c8400f9`, `database-unavailable.ts`): an error handler, registered directly after
+  `Fastify()` so that the encapsulated plugins inherit it, answers `503` with
+  `{ code: "database_unavailable", … }` and `Retry-After: 5` when the database cannot be reached;
+  any other error goes on to the default handler. The warning in the log is rate limited.
+- `GET /health?db=1` (commit `f60bb93`, `database-health.ts`) runs `SELECT 1` with a 2 s timeout and
+  answers 503 `database_unavailable` on failure. The plain `/health` stays a pure liveness check
+  (200 while the process is up), so a monitor that only needs "is the backend alive" is not tripped
+  by a database outage.
+- Dashboard (commit `f60bb93`): `apiFetch` passes every answer of our own backend to
+  `database-status.ts`; a 503 with that code shows the banner "Database unavailable" below the top
+  bar. While it is shown the banner asks `/health?db=1` every 5 s. When the database is back it
+  turns into "The database is available again. Reload the page to refresh the data." with
+  Reload and Dismiss.
+
+**Live test.** `systemctl stop postgresql`, 15 s, `systemctl start postgresql`, dashboard open on
+Alerts, logged in.
+
+| What | Result |
+|---|---|
+| `GET /health?db=1` during the outage | `503`, `retry-after: 5` |
+| `GET /health` during the outage | `200` |
+| Dashboard | banner "Database unavailable." appeared, the panel showed its own "database unavailable" line; the page made `/health?db=1` requests; after the start the banner turned into "The database is available again" with Reload and Dismiss; the user stayed logged in |
+| Backend log | two "database unavailable" lines in 5 minutes (rate limited) |
+
+Every authenticated request answers 503 during the outage, also one with a bad token: the session is
+looked up in the database, so the backend cannot tell a bad token from a good one. This is
+consistent and documented; the first expectation (`/api/machines` still answering 200 or 401) was
+wrong.
+
+### Findings
+
+35. **Fixed: the plain 500 on a database outage.** Now 503 with `Retry-After`, plus the banner above.
+36. **Process finding, not a code bug: the first banner test ran the old frontend.** The build
+    (`pnpm --filter @mes/frontend build`) writes to `packages/frontend/dist`, but nginx serves
+    `/var/www/mes`; the copy step was missed after the build, and the browser kept running
+    `index-DsOmNQzk.js`. The test had shown the panel's own error line, not the banner. The cause was
+    found by comparing `[...document.scripts].map(s => s.src)` in the browser console with the
+    `index-*.js` name in `dist/assets`. Deploy step (also in `DEVELOPMENT_STATUS.md`):
+    `cp -a ~/mes/packages/frontend/dist/. /var/www/mes/`. Old `index-*.js` files accumulate in
+    `/var/www/mes/assets` (eight at the time); harmless, can be cleaned by hand.
 
 ## Not tested yet
 

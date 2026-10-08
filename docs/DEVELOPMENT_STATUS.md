@@ -1226,8 +1226,15 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   fix the backend stays up (same `MainPID`, `NRestarts=0`), the edge acks
   nothing and buffers (40 / 40 / 34 events), and after the start the data in
   the database matches the buffer contents exactly, without a backend restart.
-  Not done: a 503 "database unavailable" instead of the plain 500 on the
-  dashboard, a real full-disk test (the disk-usage alerts below are done).
+  Done later (Oct 8, slice 19): a 503 "database unavailable" instead of the plain 500, and a
+  dashboard banner. Not done: a real full-disk test (the disk-usage alerts below are done).
+- **503 and a banner for a database outage** (Oct 8, slice 19): the backend answers 503
+  `database_unavailable` with `Retry-After: 5` (`c8400f9`), `GET /health?db=1` checks the database
+  (the plain `/health` stays liveness only), and the dashboard shows a banner and, after the
+  recovery, a "reload the page" notice (`f60bb93`). Tested live with `systemctl stop postgresql`.
+  **Deploying the frontend is two steps**: `pnpm --filter @mes/frontend build`, then
+  `cp -a ~/mes/packages/frontend/dist/. /var/www/mes/` (nginx serves `/var/www/mes`; the first banner
+  test ran the old bundle because the copy was missed).
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and
@@ -1472,10 +1479,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
   ahead and behind were tested, slices 9 and 15, and the correction, v13 and v14). The expired broker certificate was tested on
   Oct 6 to 7 (slice 11).
 
-- **Database outage follow-ups** (Oct 6): answer 503 with a clear message
-  (instead of 500) when the database is unreachable, and show it on the
-  dashboard. The edge buffer has no size limit in the code (only the disk of
-  the device, now watched by `edge_disk_space`).
+- **Database outage** (Oct 6, done Oct 8): the 503 and the banner are in. The edge buffer has no size
+  limit in the code (only the disk of the device, now watched by `edge_disk_space`).
 - **Certificates and CA** (Oct 7): store the new server CA passphrase and the
   device CA passphrase in the password manager and on paper (second place) if not
   done yet; delete `~/mes-ca-old` and remove the old root from the macOS keychain
