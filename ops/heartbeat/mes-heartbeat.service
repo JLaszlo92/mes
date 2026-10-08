@@ -1,0 +1,17 @@
+[Unit]
+Description=MES node-dc heartbeat (external dead-man's switch)
+After=network-online.target mes-backend.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/default/mes-heartbeat
+ExecStart=/usr/local/bin/mes-heartbeat.sh
+TimeoutStartSec=45
+# Least privilege: the unit reads the secret file as root through EnvironmentFile, the script needs nothing.
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
