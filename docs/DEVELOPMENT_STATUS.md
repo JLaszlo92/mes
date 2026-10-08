@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 8, 2026
+**Last updated:** October 8, 2026 (late evening)
 
 ## Where things stand
 
@@ -1279,6 +1279,28 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   resolved 11 s after the trigger was removed, the buffered events arrived (186 in one minute, 2 min 11 s late);
   `GET /health?db=1` answered 503 `ingestion_failing` on the running server for the whole blocked period (second run).
   No banner (the alert shows in the alerts panel). Details in the findings doc, slice 23 follow-up.
+- **Agent restart button and automatic pickup of changed settings** (Oct 8, `22dc0d3`, **edge-agent-v19**,
+  migration 046): a change of a node's channels or settings no longer waits for the next agent start. Every heartbeat
+  answer carries `configRevision` (first 16 hex characters of the SHA-256 of the canonical JSON of the channel fields the
+  agent uses and the node settings; `edge-node-revision.ts`) and `restartRequested` (`edge_nodes.restart_requested_at`).
+  The agent compares the revision with the one of its claim (`restart-decision.ts`): a different revision on two
+  consecutive heartbeats and at least 60 s uptime, or a restart request and at least 20 s uptime, makes it release the
+  lease and exit with code 75; the unit (`Restart=on-failure`) starts it again and the claim clears the request. New route
+  `POST /api/edge-nodes/:id/restart` (admin/manager, audit `edge_node_restart_requested`), a **Restart agent** button with a
+  confirmation on the node card (only for an online node). `recordHeartbeat` stays at the same number of queries; the
+  channel lookup is in a lazy `answer()` used only by the route. **Deploy the backend first** (an older backend sends no
+  revision and the agent then never restarts by itself). Verified live: the button restarted the agent in ~60 s
+  (`reason: a restart was requested from the dashboard`, exit 75, systemd restart after 2 s, channels up 4 s later),
+  a changed catch-up limit restarted it (`the channel or node configuration was changed in the dashboard`) and the new
+  claim showed the new value; no restart loop afterwards. A restart is a short gap, the catch-up books the parts made
+  meanwhile. `pnpm test`: shared 10, edge-agent 132, backend 251.
+- **External heartbeat for node-dc** (Oct 8, `039c02c`, `ops/heartbeat/`): `mes-heartbeat.timer` (every 60 s) runs
+  `mes-heartbeat.sh`, which pings an external dead-man's-switch URL (for example Healthchecks.io) only when the local
+  `/health?db=1` answers 200, so a dead host, a dead database and an ingestion that cannot store all stop the pings.
+  The secret URL lives only in `/etc/default/mes-heartbeat` (mode 600); the service runs as a `DynamicUser`. Set the check
+  period to 1 minute and the grace time to 3 to 5 minutes. Installed with `ops/heartbeat/install.sh`; 13 script tests
+  (`test-heartbeat.sh`). Still to confirm: the real alarm (stop the timer, wait for the notification, check the recovery).
+  See `ops/heartbeat/README.md`.
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and
@@ -1384,9 +1406,9 @@ rewritten) now edits what used to need the database or a delete and re-add:
   another machine. `POST /api/edge-nodes/:id/channels` uses the same
   validation now (before, any JSON was stored and a bad address showed up
   only in the agent log); existing channels are not touched.
-- **A change is applied when the agent next starts** (it reads its channels
-  from the `claim` response) - the screen says so. Not built: a restart
-  button, or the agent noticing a change through the heartbeat.
+- **A change is applied when the agent restarts.** Until Oct 8 that meant a manual
+  restart; since edge-agent-v19 the agent notices the change through the heartbeat and restarts itself, and the
+  node card has a **Restart agent** button (see "Agent restart button" above).
 - Tests: `edge-node-channel-input.test.ts`, `edge-node-channel-routes.test.ts`
   (and the mock in `edge-node-routes.test.ts`). The panel itself was checked
   with a throw-away DOM test (jsdom + testing-library: shows the connection,
@@ -1506,9 +1528,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
   critical); optionally a dashboard banner for `ingestion_failing`; the `ingestion_failing` test with the real full
   disk instead of the trigger. The alert and `/health?db=1` are done (`60c57d5`, `33305f7`).
 
-- **Edge agent follow-ups** (Oct 5): an agent restart
-  button / automatic pickup of changed channel settings (today a change is
-  applied when the agent next starts);
+- **Edge agent follow-ups** (Oct 5): the restart button and the automatic pickup of changed
+  channel settings are done (edge-agent-v19);
   `packages/frontend/tsconfig.tsbuildinfo` is tracked in git
   (run `git checkout` on it before commits, or untrack it); run the tests with
   `pnpm test` in the repository (vitest is already a devDependency of the three
@@ -1548,8 +1569,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
 - **Event timestamp corrections table** (chaos finding 32, fixed): the table
   `event_timestamp_corrections` only grows with corrected events; add a cleanup of old
   rows if it ever matters.
-- **External heartbeat** for node-dc itself (backup alerting can't fire
-  if the host is down) — decide before the pilot whether it's needed.
+- **External heartbeat** for node-dc itself: done Oct 8 (`ops/heartbeat/`, see above); still to confirm the real
+  alarm and recovery once.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1
   shows `retentionDays: 90, dryRun: false`. Confirm that was intended (the
   default is dry run, meant to be reviewed first) and check `audit_log`

@@ -142,7 +142,7 @@ Log lines to look for (`journalctl -u mes-edge-node | grep catch-up`):
 **Per-node setting.** `catchupMaxMinutes` is stored per edge node in
 `edge_nodes.settings` (migration 039; missing keys fall back to the defaults
 in `edge-node-settings.ts`) and delivered in the response to `claim`, so a
-change takes effect when the agent next starts. API (admin/manager, audited
+change takes effect when the agent next starts (from v19 the agent restarts itself, see "Restart request and changed configuration"). API (admin/manager, audited
 as `edge_node_settings_updated`, restricted when the license is expired like
 other configuration):
 
@@ -347,7 +347,34 @@ FROM events WHERE type = 'data_gap' ORDER BY timestamp DESC;
 
 Not covered: the GPIO bridge has no catch-up. No alert or dashboard view uses the event yet.
 
+## Restart request and changed configuration (v19)
+
+Until v18 a change of the channels or the node settings in Admin -> Edge nodes was applied only when the agent next
+started. From v19 the agent restarts itself. Every heartbeat answer carries `configRevision` (a hash of the channel
+fields the agent uses and the node settings) and `restartRequested`. The agent remembers the revision of its claim:
+
+- a different revision on **two consecutive heartbeats** and at least 60 s since the start: the agent logs
+  `restarting the agent` (`the channel or node configuration was changed in the dashboard`);
+- a restart request from the **Restart agent** button (`POST /api/edge-nodes/:id/restart`, admin/manager, audited
+  `edge_node_restart_requested`) and at least 20 s since the start: `a restart was requested from the dashboard`.
+
+Then it shuts down as for a SIGTERM (the lease is released) and exits with **code 75**; the unit restarts it after 2 s
+(`Restart=on-failure`; 75 is not in `RestartPreventExitStatus`) and the new claim clears the request and takes the new
+configuration. Expect about 5 to 10 s of no collection and the usual catch-up of the parts made meanwhile. After an offline
+start (no claim yet) there is no revision, so the agent restarts only for an explicit request. An older backend sends no
+revision: the agent then never restarts by itself. **Deploy the backend first** (migration 046). The journal shows
+`exited, status=75/TEMPFAIL` and `restart counter is at N`; that is expected, not a failure.
+
+Look at the restarts: `journalctl -u mes-edge-node --since "1 hour ago" | grep -E "restarting the agent|claimed edge node"`.
+
 ## Release notes
+
+- **edge-agent-v19** (Oct 8, 2026, `22dc0d3`) — restart on a request or a changed configuration (new `restart-decision.ts`,
+  12 tests; changes in `index.ts`). Backend: migration 046, `edge-node-revision.ts`, heartbeat answer, restart route,
+  button in the Edge nodes page. **Deploy the backend first.** Deployed on node-gate with
+  `scripts/deploy-edge-agent.sh edge-agent-v19` (the tag is created and pushed on node-dc: node-gate has no write access to
+  GitHub). Verified live: the button (restart after ~60 s of uptime), a changed catch-up limit (picked up automatically,
+  new value in the next claim), no restart loop. `pnpm test`: shared 10, edge-agent 132, backend 251.
 
 - **edge-agent-v18** (Oct 8, 2026, `7825e7b`) — the S7 bridge reports a dropped gap too: `dropped_gap()` in
   `python/catchup.py`, a `data_gap` line on the bridge's stdout, strict parsing in `ProcessBridgeSignalSource`.
