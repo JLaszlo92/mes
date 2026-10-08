@@ -7,6 +7,7 @@ import {
   InvalidTokenError,
   isForeignKeyViolation,
   releaseSession,
+  requestRestart,
   updateChannel,
   updateEdgeNodeSettings,
 } from "./edge-nodes-repository.js";
@@ -73,6 +74,25 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
         ipAddress: request.ip,
       });
       return settings;
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/api/edge-nodes/:id/restart",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      if (!(await requestRestart(request.params.id))) {
+        reply.code(404);
+        return { error: "unknown edge node" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        actorEmail: request.user?.email,
+        action: "edge_node_restart_requested",
+        target: request.params.id,
+        ipAddress: request.ip,
+      });
+      return { success: true };
     },
   );
 

@@ -22,6 +22,7 @@ import { ClaimCache, type CachedClaim } from "./claim-cache.js";
 import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
 import { claimWaitingOutRejection } from "./initial-claim.js";
 import { classifyHeartbeatFailure, HeartbeatHttpError } from "./heartbeat-failure.js";
+import { RESTART_EXIT_CODE, RestartDecider, type HeartbeatInfo } from "./restart-decision.js";
 import { CorrectedClock, clockCorrectionNotice, measureAhead } from "./corrected-clock.js";
 import { writeClockOffsetFile } from "./clock-offset-file.js";
 
@@ -36,6 +37,8 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 // Per-node settings. In registry mode the backend delivers them on claim; the
 // environment value is the fallback (legacy mode, older backends).
 const nodeSettings = { catchupMaxMinutes: config.catchupMaxMinutes };
+/** Revision of the channels and settings this process runs on (the claim's answer); null after an offline start until a claim succeeds. */
+let claimedRevision: string | null = null;
 
 // Corrected wall clock (see corrected-clock.ts): in registry mode the offset against the server is
 // measured with the claim and every heartbeat; in legacy mode it stays 0 (the raw device clock).
@@ -380,7 +383,7 @@ import { clockAheadMs, clockSkewWarning } from "./clock-check.js";
 
 async function claimEdgeNode(
   token: string,
-): Promise<{ sessionId: string; channels: ChannelConfig[]; settings: { catchupMaxMinutes: number }; clockAheadMs: number | null }> {
+): Promise<{ sessionId: string; channels: ChannelConfig[]; settings: { catchupMaxMinutes: number }; clockAheadMs: number | null; configRevision: string | null }> {
   const sentAt = Date.now();
   const res = await fetch(`${config.backendHttpUrl}/api/edge-nodes/claim`, {
     method: "POST",
@@ -396,6 +399,7 @@ async function claimEdgeNode(
     sessionId: string;
     settings?: { catchupMaxMinutes?: number };
     serverTimeMs?: number;
+    configRevision?: unknown;
     channels: Array<{
       machineId: string | null;
       signalSource: ChannelConfig["signalSource"];
@@ -408,6 +412,7 @@ async function claimEdgeNode(
   const wanted = body.settings?.catchupMaxMinutes;
   return {
     sessionId: body.sessionId,
+    configRevision: typeof body.configRevision === "string" ? body.configRevision : null,
     clockAheadMs: typeof body.serverTimeMs === "number" ? clockAheadMs(sentAt, Date.now(), body.serverTimeMs) : null,
     settings: {
       catchupMaxMinutes:
@@ -430,7 +435,7 @@ import { readDiskUsage } from "./disk-usage.js";
 import { readClientCertExpiryOnce } from "./client-cert.js";
 
 /** Sends the heartbeat; returns how far the device clock is ahead of the server's (negative = behind), or null if unknown. */
-async function sendHeartbeat(token: string, sessionId: string): Promise<number | null> {
+async function sendHeartbeat(token: string, sessionId: string): Promise<HeartbeatInfo & { aheadMs: number | null }> {
   const disk = await readDiskUsage(config.bufferFilePath);
   const clientCert = await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT);
   const sentAt = Date.now(); // the RAW device time: the backend derives the clock offset and its alert from it
@@ -442,8 +447,12 @@ async function sendHeartbeat(token: string, sessionId: string): Promise<number |
   });
   const receivedAt = Date.now();
   if (!res.ok) throw new HeartbeatHttpError(res.status, `the backend answered the heartbeat with HTTP ${res.status}`);
-  const body = (await res.json().catch(() => null)) as { serverTimeMs?: unknown } | null;
-  return measureAhead(sentAt, receivedAt, body?.serverTimeMs);
+  const body = (await res.json().catch(() => null)) as { serverTimeMs?: unknown; configRevision?: unknown; restartRequested?: unknown } | null;
+  return {
+    aheadMs: measureAhead(sentAt, receivedAt, body?.serverTimeMs),
+    configRevision: typeof body?.configRevision === "string" ? body.configRevision : null,
+    restartRequested: body?.restartRequested === true,
+  };
 }
 
 /** Gives the instance lease back on a clean shutdown, so the next start does not wait for the 90 s heartbeat timeout. */
@@ -517,6 +526,7 @@ async function runRegistryMode(token: string): Promise<void> {
       log.warn({ clockAheadMs: claimed.clockAheadMs, correctionMs: clock.offset }, clockCorrectionNotice(claimed.clockAheadMs));
     }
     nodeSettings.catchupMaxMinutes = claimed.settings.catchupMaxMinutes;
+    claimedRevision = claimed.configRevision;
     log.info({ channelCount: channels.length, catchupMaxMinutes: claimed.settings.catchupMaxMinutes }, "claimed edge node, starting channels");
     await saveClaimCache(token, claimed);
   }
@@ -555,7 +565,10 @@ async function runRegistryMode(token: string): Promise<void> {
     heartbeatTimer = setInterval(() => {
       if (!sessionId) return;
       sendHeartbeat(token, sessionId)
-        .then(applyMeasuredClock)
+        .then((beat) => {
+          applyMeasuredClock(beat.aheadMs);
+          considerRestart(beat);
+        })
         .catch((err) => {
           if (classifyHeartbeatFailure(err) === "lease_lost") {
             leaseLost((err as HeartbeatHttpError).status);
@@ -580,6 +593,16 @@ async function runRegistryMode(token: string): Promise<void> {
     setTimeout(() => process.exit(exitCode), 5000); // client.end() may never call back while offline
     const released = sessionId ? releaseSession(token, sessionId) : Promise.resolve();
     void released.finally(() => client.end(false, {}, () => process.exit(exitCode)));
+  }
+
+  /** A restart request from the dashboard, or a changed channel / node configuration (restart-decision.ts): hand the lease back and exit; the unit starts the agent again. */
+  const restartDecider = new RestartDecider();
+  function considerRestart(beat: HeartbeatInfo): void {
+    if (stopping) return;
+    const reason = restartDecider.decide(claimedRevision, beat);
+    if (!reason) return;
+    log.warn({ reason, exitCode: RESTART_EXIT_CODE }, "restarting the agent");
+    shutdown(RESTART_EXIT_CODE);
   }
 
   let leaseRecovery = false;
@@ -612,6 +635,7 @@ async function runRegistryMode(token: string): Promise<void> {
         }
         if (clock.update(c.clockAheadMs).changed) await publishClockOffset();
         nodeSettings.catchupMaxMinutes = c.settings.catchupMaxMinutes;
+        claimedRevision = c.configRevision;
         const configChanged = !sameChannels(channels, c.channels);
         if (configChanged) {
           log.warn({ before: channels.length, after: c.channels.length }, "channel configuration changed while the node was offline");

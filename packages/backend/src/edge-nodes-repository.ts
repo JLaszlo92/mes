@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from "node:crypto";
 import { pool } from "./db.js";
 import { resolveSettings, type EdgeNodeSettings } from "./edge-node-settings.js";
+import { configRevision } from "./edge-node-revision.js";
 import { clockOffsetMs, isClockSkewed, parseStoredOffset } from "./clock-offset.js";
 import { diskView, parseDiskReport } from "./disk-report.js";
 import { clientCertView, parseClientCertReport } from "./client-cert-report.js";
@@ -254,7 +255,7 @@ async function storeClientCert(nodeId: string, expiresAt: Date | null): Promise<
   await pool.query(`UPDATE edge_nodes SET client_cert_expires_at = $2 WHERE id = $1 AND client_cert_expires_at IS DISTINCT FROM $2::timestamptz`, [nodeId, expiresAt]);
 }
 
-export async function claimEdgeNode(token: string, clientTimeMs?: unknown, diskReport?: unknown, clientCert?: unknown): Promise<ClaimResult & { settings: EdgeNodeSettings }> {
+export async function claimEdgeNode(token: string, clientTimeMs?: unknown, diskReport?: unknown, clientCert?: unknown): Promise<ClaimResult & { settings: EdgeNodeSettings; configRevision: string }> {
   const nodeResult = await pool.query<NodeRow>(`SELECT * FROM edge_nodes WHERE token_hash = $1`, [hashToken(token)]);
   const node = nodeResult.rows[0];
   if (!node) throw new InvalidTokenError();
@@ -268,7 +269,7 @@ export async function claimEdgeNode(token: string, clientTimeMs?: unknown, diskR
   }
 
   const sessionId = randomBytes(16).toString("hex");
-  await pool.query(`UPDATE edge_nodes SET current_session_id = $2, last_heartbeat_at = now(), last_seen_at = now() WHERE id = $1`, [
+  await pool.query(`UPDATE edge_nodes SET current_session_id = $2, last_heartbeat_at = now(), last_seen_at = now(), restart_requested_at = NULL WHERE id = $1`, [
     node.id,
     sessionId,
   ]);
@@ -286,12 +287,14 @@ export async function claimEdgeNode(token: string, clientTimeMs?: unknown, diskR
   await storeClientCert(node.id, parseClientCertReport(clientCert));
 
   const channelsResult = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.edge_node_id = $1`, [node.id]);
-  return { sessionId, channels: channelsResult.rows.map(toChannel), settings: resolveSettings(node.settings) };
+  const channels = channelsResult.rows.map(toChannel);
+  const settings = resolveSettings(node.settings);
+  return { sessionId, channels, settings, configRevision: configRevision(channels, settings) };
 }
 
-export async function recordHeartbeat(token: string, sessionId: string, clientTimeMs?: unknown, diskReport?: unknown, clientCert?: unknown): Promise<void> {
-  const result = await pool.query<{ id: string; current_session_id: string | null }>(
-    `SELECT id, current_session_id FROM edge_nodes WHERE token_hash = $1`,
+export async function recordHeartbeat(token: string, sessionId: string, clientTimeMs?: unknown, diskReport?: unknown, clientCert?: unknown): Promise<HeartbeatResult> {
+  const result = await pool.query<{ id: string; current_session_id: string | null; settings: unknown; restart_requested_at: string | null }>(
+    `SELECT id, current_session_id, settings, restart_requested_at FROM edge_nodes WHERE token_hash = $1`,
     [hashToken(token)],
   );
   const row = result.rows[0];
@@ -305,6 +308,18 @@ export async function recordHeartbeat(token: string, sessionId: string, clientTi
     [row.id, clockOffsetMs(clientTimeMs, Date.now()), disk?.usedBytes ?? null, disk?.availBytes ?? null],
   );
   await storeClientCert(row.id, parseClientCertReport(clientCert));
+  // What the agent should run on: a different revision than its claim's, or a restart request, makes it restart itself.
+  // The channel lookup is lazy: only the heartbeat route asks for the answer.
+  return {
+    restartRequested: row.restart_requested_at != null,
+    answer: async () => {
+      const channelsResult = await pool.query<ChannelRow>(`${CHANNEL_SELECT} WHERE enc.edge_node_id = $1`, [row.id]);
+      return {
+        configRevision: configRevision(channelsResult.rows.map(toChannel), resolveSettings(row.settings)),
+        restartRequested: row.restart_requested_at != null,
+      };
+    },
+  };
 }
 
 export function isForeignKeyViolation(err: unknown): boolean {
@@ -344,4 +359,16 @@ export async function releaseSession(token: string, sessionId: string): Promise<
     [hashToken(token), sessionId],
   );
   return result.rowCount === 1 ? "released" : "not_current";
+}
+
+export interface HeartbeatResult {
+  restartRequested: boolean;
+  /** What the agent should run on, for the heartbeat answer (one more query). */
+  answer: () => Promise<{ configRevision: string; restartRequested: boolean }>;
+}
+
+/** "Restart agent" in the dashboard: the agent sees the flag in its next heartbeat answer; its next claim clears it. False if the node does not exist. */
+export async function requestRestart(id: string): Promise<boolean> {
+  const result = await pool.query(`UPDATE edge_nodes SET restart_requested_at = now() WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
 }

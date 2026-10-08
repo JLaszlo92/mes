@@ -1239,8 +1239,9 @@ app.delete<{ Params: { id: string } }>(
         return { error: "token and sessionId are required" };
       }
       try {
-        await recordHeartbeat(token, sessionId, request.body.clientTimeMs, request.body.disk, request.body.clientCert);
-        return { success: true, serverTimeMs: Date.now() };
+        const beat = await recordHeartbeat(token, sessionId, request.body.clientTimeMs, request.body.disk, request.body.clientCert);
+        const answer = await beat.answer();
+        return { success: true, serverTimeMs: Date.now(), configRevision: answer.configRevision, restartRequested: answer.restartRequested };
       } catch (err) {
         if (err instanceof InvalidSessionError) {
           reply.code(409);

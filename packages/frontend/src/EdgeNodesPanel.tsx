@@ -142,6 +142,60 @@ function ChannelFormFields(props: {
   );
 }
 
+/** "Restart agent": asks the agent to restart itself (it sees the request in its next heartbeat answer, within about 30 s). */
+function RestartButton(props: { node: EdgeNode }) {
+  const { node } = props;
+  const [state, setState] = useState<"idle" | "confirm" | "busy" | "sent">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state !== "sent") return;
+    const timer = setTimeout(() => setState("idle"), 45_000);
+    return () => clearTimeout(timer);
+  }, [state]);
+
+  async function send() {
+    setState("busy");
+    setError(null);
+    try {
+      await call(`/api/edge-nodes/${encodeURIComponent(node.id)}/restart`, "POST");
+      setState("sent");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setState("idle");
+    }
+  }
+
+  if (state === "sent") {
+    return <span style={{ ...hintStyle, alignSelf: "center" }}>Restart requested: the agent restarts within about 30 seconds.</span>;
+  }
+  if (state === "confirm" || state === "busy") {
+    return (
+      <>
+        <button style={dangerButtonStyle} disabled={state === "busy"} onClick={send}>
+          Confirm restart
+        </button>
+        <button style={secondaryButtonStyle} disabled={state === "busy"} onClick={() => setState("idle")}>
+          Cancel
+        </button>
+      </>
+    );
+  }
+  return (
+    <>
+      <button
+        style={{ ...secondaryButtonStyle, opacity: node.isOnline ? 1 : 0.5 }}
+        disabled={!node.isOnline}
+        title={node.isOnline ? "Restart the agent of this node (a short gap; the catch-up books the parts made meanwhile)" : "The node is offline"}
+        onClick={() => setState("confirm")}
+      >
+        Restart agent
+      </button>
+      {error && <span style={{ fontSize: 12, color: "#d03b3b", alignSelf: "center" }}>{error}</span>}
+    </>
+  );
+}
+
 function NodeSettings(props: { node: EdgeNode; onSaved: () => void }) {
   const { node, onSaved } = props;
   const saved = node.settings?.catchupMaxMinutes ?? 10;
@@ -158,7 +212,7 @@ function NodeSettings(props: { node: EdgeNode; onSaved: () => void }) {
       await call(`/api/edge-nodes/${encodeURIComponent(node.id)}/settings`, "PATCH", {
         catchupMaxMinutes: toNumber(minutes),
       });
-      setMessage({ ok: true, text: "Saved. The edge node applies it the next time its agent starts." });
+      setMessage({ ok: true, text: "Saved. The edge node restarts itself within about a minute to apply it." });
       onSaved();
     } catch (err) {
       setMessage({ ok: false, text: err instanceof Error ? err.message : String(err) });
@@ -329,7 +383,8 @@ export default function EdgeNodesPanel() {
       <h2 style={{ fontSize: 16 }}>Edge nodes</h2>
       <p style={hintStyle}>
         An edge node is a physical device with its own token, and can serve any number of machines (channels).
-        Channel and node settings are applied when the node's agent starts, so restart the agent after a change.
+        A change of the channels or of the node settings is picked up by the agent within about a minute: it restarts itself once
+        (a short gap, the catch-up books the parts made meanwhile). "Restart agent" restarts it at once.
       </p>
 
       {newToken && (
@@ -392,6 +447,7 @@ export default function EdgeNodesPanel() {
               </div>
             )}
             <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+              <RestartButton node={n} />
               <button style={secondaryButtonStyle} onClick={() => regenerateToken(n)}>
                 New token
               </button>
@@ -426,7 +482,7 @@ export default function EdgeNodesPanel() {
                     <button type="button" style={secondaryButtonStyle} onClick={() => setEditingChannel(null)}>
                       Cancel
                     </button>
-                    <span style={hintStyle}>Applied when the node's agent restarts. The protocol cannot be changed; add a new channel instead.</span>
+                    <span style={hintStyle}>Applied by an automatic agent restart within about a minute. The protocol cannot be changed; add a new channel instead.</span>
                   </div>
                 </form>
               ) : (
