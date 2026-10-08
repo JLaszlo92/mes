@@ -18,6 +18,8 @@ import { ProductionGate } from "./signal-sources/ProductionGate.js";
 import { decideStartMode, legacyFlagFromEnv, EXIT_CONFIG } from "./start-mode.js";
 import { join as joinPath } from "node:path";
 import { CounterBaseline } from "./counter-baseline.js";
+import { ClaimCache, type CachedClaim } from "./claim-cache.js";
+import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -349,10 +351,11 @@ async function claimEdgeNode(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token, clientTimeMs: sentAt, disk: await readDiskUsage(config.bufferFilePath), clientCert: await readClientCertExpiryOnce(process.env.MQTT_CLIENT_CERT) }),
+    signal: AbortSignal.timeout(CLAIM_TIMEOUT_MS),
   });
   if (!res.ok) {
     const errorBody = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(errorBody.error ?? `claim failed: ${res.status}`);
+    throw new ClaimHttpError(res.status, errorBody.error ?? `claim failed: ${res.status}`);
   }
   const body = (await res.json()) as {
     sessionId: string;
@@ -414,12 +417,53 @@ async function releaseSession(token: string, sessionId: string): Promise<void> {
   }
 }
 
+type ClaimData = Awaited<ReturnType<typeof claimEdgeNode>>;
+
+const claimCache = new ClaimCache(config.claimCachePath, config.claimCacheMaxAgeMs);
+
+/** Keeps the last claimed configuration on the device; a failed write only costs the ability to start offline. */
+async function saveClaimCache(token: string, claimed: ClaimData): Promise<void> {
+  try {
+    await claimCache.save(token, { channels: claimed.channels as unknown as CachedClaim["channels"], settings: claimed.settings });
+  } catch (err) {
+    log.warn({ err }, "could not save the claim cache — an offline start will not be possible until it can be written");
+  }
+}
+
 async function runRegistryMode(token: string): Promise<void> {
-  const { sessionId, channels, settings, clockAheadMs: ahead } = await claimEdgeNode(token);
-  const skew = clockSkewWarning(ahead);
-  if (skew) log.error({ clockAheadMs: ahead }, skew);
-  nodeSettings.catchupMaxMinutes = settings.catchupMaxMinutes;
-  log.info({ channelCount: channels.length, catchupMaxMinutes: settings.catchupMaxMinutes }, "claimed edge node, starting channels");
+  let sessionId: string | null = null; // null = running without a lease (offline start)
+  let channels: ChannelConfig[] = [];
+  let startedOffline = false;
+
+  let claimed: ClaimData | null = null;
+  try {
+    claimed = await claimEdgeNode(token);
+  } catch (err) {
+    // Only "the backend cannot be reached" allows an offline start. An answer of "no" (invalid token,
+    // node removed, lease held by another instance) must not be bypassed.
+    if (classifyClaimFailure(err) !== "unreachable") throw err;
+    const cached = await claimCache.load(token);
+    if (!cached.ok) {
+      log.error({ err, reason: cached.reason }, "backend unreachable and no usable cached configuration — cannot start");
+      throw err;
+    }
+    startedOffline = true;
+    channels = cached.value.channels as unknown as ChannelConfig[];
+    nodeSettings.catchupMaxMinutes = cached.value.settings.catchupMaxMinutes;
+    log.warn(
+      { err, channelCount: channels.length, cacheAgeSeconds: Math.round((Date.now() - cached.savedAtMs) / 1000) },
+      "backend unreachable — starting channels from the cached configuration WITHOUT a lease; will keep trying to claim",
+    );
+  }
+  if (claimed) {
+    sessionId = claimed.sessionId;
+    channels = claimed.channels;
+    const skew = clockSkewWarning(claimed.clockAheadMs);
+    if (skew) log.error({ clockAheadMs: claimed.clockAheadMs }, skew);
+    nodeSettings.catchupMaxMinutes = claimed.settings.catchupMaxMinutes;
+    log.info({ channelCount: channels.length, catchupMaxMinutes: claimed.settings.catchupMaxMinutes }, "claimed edge node, starting channels");
+    await saveClaimCache(token, claimed);
+  }
 
   const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, keepalive: 15, connectTimeout: 10_000, clientId: `edge-node-${randomUUID()}` });
   client.on("reconnect", () => log.warn("reconnecting to broker…"));
@@ -430,21 +474,62 @@ async function runRegistryMode(token: string): Promise<void> {
   // The channels start at once: every event is written to the disk buffer first
   // and published when (and as soon as) the broker is connected.
 
-  const runtimes = channels.map((ch) => setupChannel(client, ch));
+  let runtimes = channels.map((ch) => setupChannel(client, ch));
 
-  const heartbeatTimer = setInterval(() => {
-    sendHeartbeat(token, sessionId).catch((err) => log.warn({ err }, "heartbeat failed — will retry next tick"));
-  }, 30000);
-
-  function shutdown(): void {
-    log.info("shutting down…");
-    for (const r of runtimes) r.stop();
-    clearInterval(heartbeatTimer);
-    setTimeout(() => process.exit(0), 5000); // client.end() may never call back while offline
-    void releaseSession(token, sessionId).finally(() => client.end(false, {}, () => process.exit(0)));
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  function startHeartbeat(): void {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+      if (!sessionId) return;
+      sendHeartbeat(token, sessionId).catch((err) => log.warn({ err }, "heartbeat failed — will retry next tick"));
+    }, 30000);
   }
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  if (sessionId) startHeartbeat();
+
+  let backgroundClaim: { stop: () => void } | null = null;
+  let stopping = false;
+
+  function shutdown(exitCode: number): void {
+    if (stopping) return;
+    stopping = true;
+    log.info("shutting down…");
+    backgroundClaim?.stop();
+    for (const r of runtimes) r.stop();
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    setTimeout(() => process.exit(exitCode), 5000); // client.end() may never call back while offline
+    const released = sessionId ? releaseSession(token, sessionId) : Promise.resolve();
+    void released.finally(() => client.end(false, {}, () => process.exit(exitCode)));
+  }
+
+  if (startedOffline) {
+    backgroundClaim = startBackgroundClaim<ClaimData>({
+      claim: () => claimEdgeNode(token),
+      onAttemptFailed: (kind, err, nextInMs) =>
+        log.warn({ err, kind, nextInSeconds: Math.round(nextInMs / 1000) }, "background claim failed — still running from the cached configuration"),
+      onClaimed: async (c) => {
+        const skew = clockSkewWarning(c.clockAheadMs);
+        if (skew) log.error({ clockAheadMs: c.clockAheadMs }, skew);
+        nodeSettings.catchupMaxMinutes = c.settings.catchupMaxMinutes;
+        if (!sameChannels(channels, c.channels)) {
+          log.warn({ before: channels.length, after: c.channels.length }, "channel configuration changed while the node was offline — restarting channels");
+          for (const r of runtimes) r.stop();
+          channels = c.channels;
+          runtimes = channels.map((ch) => setupChannel(client, ch));
+        }
+        sessionId = c.sessionId;
+        startHeartbeat();
+        log.info({ channelCount: channels.length }, "claimed edge node after an offline start — lease adopted");
+        await saveClaimCache(token, c);
+      },
+      onGiveUp: (reason) => {
+        log.error({ reason }, "the backend does not give this node its lease — stopping channels (another instance probably owns the node); buffered events stay on disk");
+        shutdown(1);
+      },
+    });
+  }
+
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
 }
 
 // ============================================================

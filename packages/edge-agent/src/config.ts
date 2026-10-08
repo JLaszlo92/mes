@@ -15,6 +15,14 @@ function catchupMinutesFromEnv(raw: string | undefined): number {
   return n;
 }
 
+/** CLAIM_CACHE_MAX_AGE_HOURS: how old the cached channel configuration may be for an offline start (default 168 = 7 days, 0 = no limit). */
+function claimCacheMaxAgeMsFromEnv(raw: string | undefined): number {
+  if (raw === undefined) return 168 * 3_600_000;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error("CLAIM_CACHE_MAX_AGE_HOURS must be a number >= 0");
+  return Math.round(n * 3_600_000);
+}
+
 export const config = {
   backendHttpUrl: process.env.BACKEND_HTTP_URL ?? "http://127.0.0.1:3001",
   edgeNodeToken: optionalEnv("EDGE_NODE_TOKEN"),
@@ -27,6 +35,9 @@ export const config = {
   // Longest gap (minutes) whose parts are still booked afterwards; 0 = off.
   // In registry mode the backend's per-node setting overrides this value.
   catchupMaxMinutes: catchupMinutesFromEnv(process.env.CATCHUP_MAX_MINUTES),
+  // Last claimed channel configuration (registry mode); lets the agent start while the backend is unreachable.
+  claimCachePath: process.env.CLAIM_CACHE_PATH ?? path.join(path.dirname(process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson"), "claim-cache.json"),
+  claimCacheMaxAgeMs: claimCacheMaxAgeMsFromEnv(process.env.CLAIM_CACHE_MAX_AGE_HOURS),
 
   // "simulated" (default, no hardware/network needed), "s7" (poll a
   // Siemens S7 PLC or its simulator over the network — no wiring, see
