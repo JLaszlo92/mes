@@ -8,6 +8,7 @@ import { getMachine } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
 import { DATABASE_UNAVAILABLE_BODY, RETRY_AFTER_SECONDS, registerDatabaseUnavailableHandler } from "./database-unavailable.js";
 import { databaseHealthy } from "./database-health.js";
+import { INGESTION_FAILING_BODY, ingestionHealth } from "./ingestion-health.js";
 import { deleteSession } from "./sessions-repository.js";
 import { recordAuditEvent, listAuditLog, listAuditActions } from "./audit-repository.js";
 import { parseIdList, parseInstant, parsePaging } from "./paging.js";
@@ -180,7 +181,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   // /health stays a pure liveness check; /health?db=1 also asks the database (the dashboard banner polls it during an outage).
   app.get<{ Querystring: { db?: string } }>("/health", async (request, reply) => {
     if (request.query.db === undefined) return { status: "ok" };
-    if (await databaseHealthy()) return { status: "ok", database: "ok" };
+    if (await databaseHealthy()) {
+      // The database answers, but it may be unable to write (full disk): then the events cannot be stored (chaos slice 23).
+      if (!ingestionHealth.status().failing) return { status: "ok", database: "ok" };
+      reply.code(503).header("Retry-After", String(RETRY_AFTER_SECONDS));
+      return INGESTION_FAILING_BODY;
+    }
     reply.code(503).header("Retry-After", String(RETRY_AFTER_SECONDS));
     return DATABASE_UNAVAILABLE_BODY;
   });

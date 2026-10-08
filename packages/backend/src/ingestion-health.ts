@@ -10,6 +10,9 @@
  */
 export const INGESTION_ALERT_TYPE = "ingestion_failing";
 
+/** Body of GET /health?db=1 while events cannot be stored. /health is public, so no internals (the reason is in the alert). */
+export const INGESTION_FAILING_BODY = { statusCode: 503, error: "Service Unavailable", code: "ingestion_failing", message: "Events cannot be stored" } as const;
+
 export interface IngestionLimits {
   /** A streak needs at least this many failures in a row ... */
   minFailures: number;
