@@ -42,7 +42,7 @@ import time
 
 from snap7.util import get_bool, get_dint
 
-from catchup import describe_plan, load_counter_state, plan_catchup, save_counter_state
+from catchup import describe_plan, dropped_gap, load_counter_state, plan_catchup, save_counter_state
 from clock_offset import ClockOffset
 
 PLC_IP = os.environ.get("PLC_IP", "127.0.0.1")
@@ -142,6 +142,10 @@ def main() -> None:
                         emit({"kind": "production_count", "result": "good"})
                     for _ in range(plan["emit"]["scrap"]):
                         emit({"kind": "production_count", "result": "scrap"})
+                    gap = dropped_gap(plan)
+                    if gap:
+                        # Parts that were NOT booked: report them as a data_gap event, not only in the log.
+                        emit({"kind": "data_gap", **gap})
                     message = describe_plan(plan)
                     if message:
                         print(f"[s7-bridge] {message}", file=sys.stderr, flush=True)

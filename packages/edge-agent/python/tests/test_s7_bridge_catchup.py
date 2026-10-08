@@ -121,6 +121,28 @@ class S7CatchupTest(unittest.TestCase):
             self.assertEqual(parts(events, "good"), 0)
             self.assertIn("NOT booked", err)
 
+    def test_dropped_gap_is_reported_as_a_data_gap_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_state(tmp, 100, 10, 20 * 60)
+            events, _ = run_bridge([frame(True, 135, 11)], path)
+            gaps = [e for e in events if e.get("kind") == "data_gap"]
+            self.assertEqual(len(gaps), 1)
+            self.assertEqual(gaps[0]["reason"], "too_old")
+            self.assertEqual((gaps[0]["lostGood"], gaps[0]["lostScrap"]), (35, 1))
+            self.assertAlmostEqual(gaps[0]["gapSeconds"], 20 * 60, delta=10)
+
+    def test_booked_gap_has_no_data_gap_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self.write_state(tmp, 100, 10, 70)
+            events, _ = run_bridge([frame(True, 135, 11)], path)
+            self.assertEqual([e for e in events if e.get("kind") == "data_gap"], [])
+
+    def test_catchup_switched_off_reports_disabled(self):
+        events, _ = run_bridge([frame(True, 10, 0), ConnectionError("plc gone"), frame(True, 14, 1)], max_age_s="0")
+        gaps = [e for e in events if e.get("kind") == "data_gap"]
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual((gaps[0]["reason"], gaps[0]["lostGood"], gaps[0]["lostScrap"]), ("disabled", 4, 1))
+
     def test_first_ever_start_has_no_burst(self):
         with tempfile.TemporaryDirectory() as tmp:
             events, _ = run_bridge([frame(True, 5000, 40)], os.path.join(tmp, "new.json"))

@@ -92,3 +92,20 @@ def describe_plan(plan):
     if note == "first_start":
         return "catch-up: no earlier counter values known; starting from the current ones"
     return None
+
+
+def dropped_gap(plan):
+    """The gap to report as a data_gap event for a plan whose parts were NOT booked; None when nothing was lost.
+    Mirror of droppedGapOf in src/catchup.ts."""
+    if plan["note"] not in ("too_old", "clock_back", "too_large", "disabled"):
+        return None
+    lost = plan["lost"]
+    if lost["good"] == 0 and lost["scrap"] == 0:
+        return None
+    age_ms = plan["age_ms"]
+    return {
+        "reason": plan["note"],
+        "gapSeconds": None if age_ms is None else round(age_ms / 1000),
+        "lostGood": lost["good"],
+        "lostScrap": lost["scrap"],
+    }

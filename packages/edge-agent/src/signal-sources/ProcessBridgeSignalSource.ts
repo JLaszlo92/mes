@@ -126,6 +126,18 @@ export class ProcessBridgeSignalSource implements SignalSource {
       return { kind: "machine_status", status: obj.status as MachineStatusValue };
     }
 
+    // Parts the bridge could not book (see python/catchup.py dropped_gap); strictly checked, the event goes to the backend.
+    if (
+      obj.kind === "data_gap" &&
+      typeof obj.reason === "string" &&
+      obj.reason.length > 0 &&
+      (obj.gapSeconds === null || (typeof obj.gapSeconds === "number" && Number.isInteger(obj.gapSeconds))) &&
+      typeof obj.lostGood === "number" && Number.isInteger(obj.lostGood) && obj.lostGood >= 0 &&
+      typeof obj.lostScrap === "number" && Number.isInteger(obj.lostScrap) && obj.lostScrap >= 0
+    ) {
+      return { kind: "data_gap", reason: obj.reason, gapSeconds: obj.gapSeconds as number | null, lostGood: obj.lostGood, lostScrap: obj.lostScrap };
+    }
+
     console.warn(`[${this.name}-bridge] unrecognized line ignored: ${trimmed}`);
     return null;
   }
