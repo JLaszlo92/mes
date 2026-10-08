@@ -6,6 +6,7 @@ import { stateStore } from "./state.js";
 import { getShiftSummary } from "./shift-summary-repository.js";
 import { getMachine } from "./machines-repository.js";
 import authPlugin, { requireRole } from "./auth-plugin.js";
+import { registerDatabaseUnavailableHandler } from "./database-unavailable.js";
 import { deleteSession } from "./sessions-repository.js";
 import { recordAuditEvent, listAuditLog, listAuditActions } from "./audit-repository.js";
 import { parseIdList, parseInstant, parsePaging } from "./paging.js";
@@ -158,6 +159,8 @@ import maintenanceRoutes from "./maintenance-routes.js";
 
 export async function buildServer(): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, trustProxy: process.env.TRUST_PROXY || false });
+  // Before every plugin: a plugin context takes its parent's error handler when it is created.
+  registerDatabaseUnavailableHandler(app, process.env.DATABASE_URL);
 
   const corsOrigins = (process.env.CORS_ORIGINS ?? "").split(",").map((o) => o.trim()).filter(Boolean);
   await app.register(cors, { origin: corsOrigins.length > 0 ? corsOrigins : false });
