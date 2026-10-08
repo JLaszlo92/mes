@@ -20,6 +20,7 @@ import { join as joinPath } from "node:path";
 import { CounterBaseline } from "./counter-baseline.js";
 import { ClaimCache, type CachedClaim } from "./claim-cache.js";
 import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
+import { classifyHeartbeatFailure, HeartbeatHttpError } from "./heartbeat-failure.js";
 import { CorrectedClock, clockCorrectionNotice, measureAhead } from "./corrected-clock.js";
 import { writeClockOffsetFile } from "./clock-offset-file.js";
 
@@ -433,7 +434,7 @@ async function sendHeartbeat(token: string, sessionId: string): Promise<number |
     signal: AbortSignal.timeout(CLAIM_TIMEOUT_MS),
   });
   const receivedAt = Date.now();
-  if (!res.ok) return null;
+  if (!res.ok) throw new HeartbeatHttpError(res.status, `the backend answered the heartbeat with HTTP ${res.status}`);
   const body = (await res.json().catch(() => null)) as { serverTimeMs?: unknown } | null;
   return measureAhead(sentAt, receivedAt, body?.serverTimeMs);
 }
@@ -539,7 +540,13 @@ async function runRegistryMode(token: string): Promise<void> {
       if (!sessionId) return;
       sendHeartbeat(token, sessionId)
         .then(applyMeasuredClock)
-        .catch((err) => log.warn({ err }, "heartbeat failed — will retry next tick"));
+        .catch((err) => {
+          if (classifyHeartbeatFailure(err) === "lease_lost") {
+            leaseLost((err as HeartbeatHttpError).status);
+            return;
+          }
+          log.warn({ err }, "heartbeat failed — will retry next tick");
+        });
     }, 30000);
   }
   if (sessionId) startHeartbeat();
@@ -559,11 +566,30 @@ async function runRegistryMode(token: string): Promise<void> {
     void released.finally(() => client.end(false, {}, () => process.exit(exitCode)));
   }
 
-  if (startedOffline) {
+  let leaseRecovery = false;
+
+  /**
+   * The backend no longer accepts this node's session (HTTP 409: another instance claimed the node, or it
+   * forgot the session; 401/404/400: the token is no longer valid). The channels keep running (events stay
+   * buffered on disk), the agent claims again in the background; if the backend keeps refusing for 150 s
+   * the node belongs to another instance and the agent stops (startLeaseClaim, onGiveUp).
+   */
+  function leaseLost(status: number): void {
+    if (leaseRecovery || stopping) return;
+    leaseRecovery = true;
+    sessionId = null;
+    log.warn(
+      { status },
+      "the backend no longer accepts this node's lease (another instance claimed the node, or the token is not valid any more) — claiming again; the channels keep running and the events stay buffered",
+    );
+    startLeaseClaim("still running; the lease is held by someone else or is not free yet", "claimed edge node again after the lease was lost — lease adopted");
+  }
+
+  function startLeaseClaim(why: string, adopted: string): void {
     backgroundClaim = startBackgroundClaim<ClaimData>({
       claim: () => claimEdgeNode(token),
       onAttemptFailed: (kind, err, nextInMs) =>
-        log.warn({ err, kind, nextInSeconds: Math.round(nextInMs / 1000) }, "background claim failed — still running from the cached configuration"),
+        log.warn({ err, kind, nextInSeconds: Math.round(nextInMs / 1000) }, `background claim failed — ${why}`),
       onClaimed: async (c) => {
         if (c.clockAheadMs !== null && clockSkewWarning(c.clockAheadMs)) {
           log.warn({ clockAheadMs: c.clockAheadMs }, clockCorrectionNotice(c.clockAheadMs));
@@ -577,8 +603,9 @@ async function runRegistryMode(token: string): Promise<void> {
         }
         if (configChanged) restartChannels("the channel configuration changed while offline");
         sessionId = c.sessionId;
+        leaseRecovery = false;
         startHeartbeat();
-        log.info({ channelCount: channels.length }, "claimed edge node after an offline start — lease adopted");
+        log.info({ channelCount: channels.length }, adopted);
         await saveClaimCache(token, c);
       },
       onGiveUp: (reason) => {
@@ -587,6 +614,8 @@ async function runRegistryMode(token: string): Promise<void> {
       },
     });
   }
+
+  if (startedOffline) startLeaseClaim("still running from the cached configuration", "claimed edge node after an offline start — lease adopted");
 
   process.on("SIGINT", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
