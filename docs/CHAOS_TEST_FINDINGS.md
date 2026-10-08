@@ -1193,6 +1193,9 @@ had to be repeated for the "no alert below 85%" step; the numbers above are the 
     dashboard should also ask the backend's own counter); (b) `/health?db=1` and the 503 handler also for the
     Postgres error classes 53100 (`disk_full`) and 25006 (`read_only_sql_transaction`); (c) a second, higher disk
     threshold (for example 95% critical).
+    **Status (Oct 8):** (a) done and verified live, and the `/health?db=1` part of (b) done (see "Follow-up: the
+    `ingestion_failing` alert" below). Still open: 53100 / 25006 in the 503 handler of the other routes (they still
+    answer 500 on a full disk) and (c).
 40. **The root reserve of ext4 does not protect inside the LXC container.** The check for the reserved blocks needs
     `CAP_SYS_RESOURCE` in the host's user namespace; the root of the container does not have it. At 100% a root shell
     could not write either (an editor on the node reported `ENOSPC`, journald and the shell history are also at risk), only
@@ -1208,6 +1211,40 @@ Backup script (`mes-backup.sh`, read, not run on the full disk): writes to `.par
 the failure in `job_status`; the local pruning runs only after a successful upload, so a failed run never deletes the
 good dumps. If the status row cannot be written either (the database cannot write), the backend's "no successful backup
 for 26 hours" check is the fallback.
+
+### Follow-up: the `ingestion_failing` alert (Oct 8, 2026, commits `60c57d5` and `33305f7`)
+
+**What it does.** `mqtt-subscriber.ts` reports every stored event (new or duplicate), every failed insert and every
+failed machine lookup to an in-memory tracker (`ingestion-health.ts`). A streak of at least 5 failures spread over at
+least 30 s (`INGESTION_FAIL_COUNT`, `INGESTION_FAIL_SECONDS`) is "failing"; one stored event ends it; with no failure for
+2 minutes (for example the edge nodes stopped sending) the state is unknown, not failing. Messages that fail the schema and
+events of unknown machines do not count. An evaluator (`ingestion-health-evaluator.ts`, every 15 s) raises the system alert
+`ingestion_failing` ("Event storage" on the dashboard) with the time and the last error, and resolves it at the first healthy
+check; if the alert cannot be written (full disk) it logs a warning and tries again, and an alert left open by a previous
+run is resolved at the first healthy tick after a start. `GET /health?db=1` answers 503 `ingestion_failing`
+(`Retry-After: 5`, no internals in the body, the reason is in the alert) while the database answers but the events
+cannot be stored. Plain `/health` and the `database_unavailable` answer are unchanged. No banner was built: the alert
+shows in the alerts panel.
+
+**Live test** (node-dc, `BEFORE INSERT` trigger on `events` raising SQLSTATE 53100 `No space left on device`, removed
+by a trap; this stands in for the full disk of slice 23 and is repeatable without risk):
+
+| Time (UTC) | Event |
+|---|---|
+| 18:59:11 | trigger created |
+| 18:59:49 | alert raised: `Events cannot be stored since 2026-10-08 18:59 UTC (last error: 53100: chaos: could not extend file: No space left on device)` (38 s) |
+| 18:59:11 to 19:01:08 | 633 `failed to persist event` log lines in the 3 minute window (the edge nodes retry) |
+| 19:01:08 | trigger dropped (`trigger_maradt` = 0) |
+| 19:01:19 | alert resolved (11 s later); the message stayed the same for the whole streak |
+
+Events by minute of `created_at`: 18:57: 75, 18:58: 72, 18:59: 16, **19:00: 0**, **19:01: 186 (largest delay 2 min 11 s)**,
+19:02: 52. The hole at 19:00 is filled by the buffered events at 19:01 (16 + 186 = 202 against about 220 at the normal rate
+for three minutes); the comparison by `sourceEventId` against the edge buffer was not made.
+
+Limits: `GET /health?db=1` was **200** in the live runs. The 503 answer is verified by a unit test of the route logic
+(238 backend tests pass), not yet seen on the running server during a trigger test. The alert was tested with the
+trigger, not with the real full disk (slice 23 repeated). The first two attempts of the test did nothing (`sudo` is not
+installed on node-dc, `runuser -u postgres --` is the way); the trigger was never created in them.
 
 ## Not tested yet
 

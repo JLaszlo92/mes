@@ -134,8 +134,10 @@ nodes if the host is trusted.
 
 Measured in chaos slice 23 (Oct 8, 2026). The database stays up and refuses the writes with an SQL error; the
 backend does not acknowledge the events, so **the edge nodes buffer them and nothing is lost**; the dashboard shows
-no banner, `GET /health?db=1` stays 200 and the Postgres log goes silent. The `disk_space` alert (85%) is the early
-warning; at 100% it may not be possible to write the alert itself. The ext4 reserve for root does **not** work inside
+no banner, and the Postgres log goes silent. Two alerts warn: `disk_space` (85%, early) and `ingestion_failing`
+("Event storage", after 5 failed stores over 30 s; `GET /health?db=1` then answers 503 `ingestion_failing`). At 100% the
+alert itself may not be writable, so ask `curl -s -w ' %{http_code}\n' http://localhost:3001/health?db=1` on the host as
+well. The ext4 reserve for root does **not** work inside
 the LXC container, so at 100% even a root shell and editors can fail.
 
 1. Free space at once, safest first: `journalctl --vacuum-size=50M`, `apt clean`, then the oldest dumps in
