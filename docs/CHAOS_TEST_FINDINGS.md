@@ -334,7 +334,7 @@ ran with the clock 15 minutes ahead from 18:31:55 UTC (restart) to 18:34:36
    current status is "the event with the latest timestamp" (five places, see
    above), for as long as the skew lasts and until real time passes the
    future-dated events. A clock behind the server does the symmetric damage
-   (new events are older than the existing ones; not tested).
+   (new events are older than the existing ones; confirmed in slice 15).
 10. **A clock step in either direction makes the catch-up drop its gap**
     (forward: the gap looks too old; backward: the stored state is in the
     future). Nothing is booked wrongly, but the parts of the gap are lost and
@@ -831,6 +831,105 @@ partition the channels kept counting and the events went to the disk buffer.
     double count until the first background claim is answered, which is the accepted
     risk of option A.
 
+## Slice 15 — clock of the edge node behind the server (Oct 8, 2026)
+
+**Method.** As in slice 9: only the clock of the agent process was shifted, with
+`libfaketime` (`FAKETIME=-5m`, `DONT_FAKE_MONOTONIC=1`) in a temporary systemd drop-in on
+`mes-edge-node` (node-gate). Restart with the shifted clock at 05:46:33 UTC, restart
+without the drop-in at 05:49:45 (3 min 12 s). Broker and backend were up. The `LD_PRELOAD`
+and `FAKETIME` variables were gone from the process after the restore (checked).
+
+| Observation | Result |
+|---|---|
+| Detection | The agent logged at error level "The clock of this device is 300 s behind the server's" (`clockAheadMs -300051`); `edge_nodes.clock_offset_ms = -300126`; the alert `edge_clock_skew` appeared on the dashboard ("node-gate-sim (5 min behind) ... can hide real status changes") and was gone from the active alerts after the restore |
+| Ingestion | All events of the period are stored with the shifted timestamp: `created_at - timestamp` = 300 s for every event (240 events, 240 distinct ids, stamped 07:41:36 to 07:44:44 local time). The ingestion guard only looks at the future, nothing is corrected or marked |
+| Catch-up at the start (clock behind) | `clock_back` live for the first time: the stored state is 295 to 296 s in the future, the parts of the (real, a few seconds long) restart gap were **not booked**: S7 1 good, Modbus 1 good, OPC UA 2 good. Nothing was booked wrongly |
+| Catch-up at the restore | Gap 304 to 306 s (the stored state carries the shifted time): 2 good per machine booked from the counters; this is the counter difference since the stored baseline, no duplication seen (events 240 = 240 distinct) |
+| Status shown by the "latest timestamp" views | The new events are older than the real events already stored (up to 07:46:33), so for the whole 3 min 12 s the newest status by timestamp stays the last one from before the test. Of the 4 real `down` periods in the window (Modbus 07:47:30, OPC UA 07:49:03, S7 07:47:17 and 07:48:27, about 8 to 10 s each) **all 4 were hidden**: at the arrival of each `down` event the view still said `running`. A view by timestamp returns to normal with the first event stamped with the real time (07:49:48) |
+| Mixed streams | The period 07:41:36 to 07:44:44 now holds two event streams, the real one from the first run and the shifted one: a timeline of that period shows both. Test data, to be removed with the pilot data cleanup (`created_at - timestamp > 200 s` finds it) |
+
+### Findings
+
+25. **The detection chain works in both directions.** Agent log, offset on the Edge nodes
+    page, alert and its self-resolution behaved as for a clock ahead (slice 9); the
+    alert text is right for "behind".
+26. **A clock behind the server hides real status changes, as predicted in finding 9.**
+    All four real `down` periods in the window were invisible to every view that takes
+    the status with the latest timestamp; production events are booked in the minutes
+    of the past (a shift boundary would be crossed by a large skew). The alert is the
+    only protection; the data are wrong while it lasts and afterwards.
+27. **The `clock_back` rule is confirmed live.** At the start with a shifted clock the
+    parts of the restart gap are dropped, not booked wrongly (finding 10, backward case).
+    This costs a few parts per restart while the clock is wrong.
+28. **A guard for old timestamps at the backend cannot work.** A delayed event is not a
+    wrong one: after an outage the agent delivers buffered events that are legitimately
+    minutes or hours old (slices 2 to 8, 11, 12), so "stamped long before the receive
+    time" cannot be told from a wrong clock. The fix has to be in the agent: it already
+    measures its offset at the claim (`serverTimeMs`) and could stamp events and
+    compute the catch-up age with the corrected clock, re-measuring on the heartbeat
+    (fix 4 of the slice 9 list). Decided on Oct 8 and implemented in edge-agent-v13 and v14 (follow-up below).
+    Without a measurement (a start without the backend, finding 21) no correction is
+    possible, which is another reason to keep the time-sync dependency of the unit
+    (v7).
+
+### Follow-up: the agent corrects its timestamps (edge-agent-v13 and v14, Oct 8, 2026)
+
+Decision for finding 28: option A, agent-side correction. The claim and every heartbeat
+response carry the server time (`serverTimeMs`); the agent measures its offset (round
+trip over 5 s is rejected; a difference under 2 s is ignored, changes under 0.5 s are
+treated as jitter) and stamps events, the counter baseline and the catch-up age with the
+corrected clock. Durations and timers are not touched. The heartbeat still sends the
+**raw** device time, so `clock_offset_ms` and the `edge_clock_skew` alert keep working.
+
+**v13 verified live** (clock −5 min at the start): `created_at - timestamp` about 0 for
+598 events (5 more in the 20 s bucket), no `down` period hidden (34 status changes, the
+view by timestamp showed each new status; slice 15 without correction hid all 4), no
+`clock_back` at the start, alert and offset preserved (raw heartbeat −300 006 ms).
+
+29. **v13 broke the parts of a clock step: the correction restarted the channels.**
+    A step of the device clock during the run (−5 min to −4:30) was detected by the
+    heartbeat (300 051 to 270 005 ms), but applying it restarted the channels. After the
+    restart the stored state carried the old correction, the catch-up reported
+    `clock_back` and the parts of the gap were not booked. Cause: the S7 Python bridge
+    got the offset only through its environment at the start.
+30. **Every channel restart leaked listeners.** `setupChannel` added its reset and
+    message listeners to the MQTT client and never removed them; after a few restarts
+    Node logged `MaxListenersExceededWarning`. Existing bug, made visible by finding 29.
+31. **Procedure artifact, not a product defect.** Deleting `/run/faketime.rc` under a
+    running process makes libfaketime fall back to the real time, which produced a
+    +266 s stamped state in one test. The restore order is: stop the service, remove the
+    drop-in and the file, `daemon-reload`, start.
+
+**v14** (fixes 29 and 30): the offset is published to the S7 bridge through a file
+(`CLOCK_OFFSET_FILE`, written atomically, re-read by `clock_offset.py` at most once a
+second), so a change of the correction needs **no restart**; the channels restart only for a
+changed configuration. The listeners are named and removed in `stop()`, and the ack
+batcher is flushed on stop.
+
+**v14 verified live** (node-gate, −5 min at the start, step to −270 s after 78 s, restore):
+
+| Observation | Result |
+|---|---|
+| Start with −5 min | `clock of this device is 300 s behind … timestamps are corrected`; `clock-offset` file `300053`; channels started once |
+| Step to −270 s | `timestamp correction changed 300053 → 270004`, file `270004`, **no** `restarting channels` |
+| Restore (stop, remove, start) | no correction line, file `0`, no `LD_PRELOAD` / `FAKETIME` in the process |
+| Journal, 12 min | 0 matches for `restarting channels`, `MaxListeners`, `clock_back` |
+| Database, 09:22 to 09:28 | 452 events with `created_at - timestamp` about 0, 20 events 30 s **ahead**; 0 rows with `timestampCorrected`; the status by latest timestamp equals the latest arrived status for all three machines |
+| Dashboard | the clock alert appeared during the test and was gone after the restore |
+
+**Known limitations (accepted).**
+- After a clock step the agent learns the new offset only at the next heartbeat (at most
+  30 s). Events in that window are off by the size of the step: 20 events were 30 s ahead
+  in the test, below the 60 s ingestion guard. A step over 60 s forward is clipped by the
+  guard (stored with the receive time, marked); a step backward is hidden in the same way as
+  before for at most 30 s.
+- Without contact to the backend (start from the cached configuration, finding 21) there
+  is no measurement and no correction; the alert and the time-sync dependency of the unit
+  remain the protection. The correction starts with the first successful claim.
+- The test left 20 events stamped 30 s ahead and the earlier shifted streams of slices 9
+  and 15 in the database; the pilot data cleanup finds them with `created_at - timestamp`
+  over 200 s or under -20 s and with `payload ? 'timestampCorrected'`.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -839,9 +938,8 @@ partition the channels kept counting and the events went to the disk buffer.
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
 - A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
-  inferred from it); a clock behind the server (the clock ahead was tested in slice 9; the
-  alert covers both directions, the ingestion guard only the future; the
-  behind case itself was not run live).
+  inferred from it); the clock of a device that has no network while it is wrong
+  (slice 15 had the backend reachable, so the agent could measure the offset).
 - A real expiry of an edge node's client certificate (it is monitored since
   v10, finding 17; the stop itself is inferred from the broker case, findings
   13 and 16).

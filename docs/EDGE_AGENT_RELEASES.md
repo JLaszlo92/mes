@@ -194,8 +194,8 @@ hide real status changes (chaos slice 9). From v7:
         > /etc/systemd/system/mes-edge-node.service.d/time-sync.conf
       systemctl daemon-reload
 
-The agent does not correct its clock or its timestamps; v7 only makes a wrong
-clock visible. The backend, which needs no agent release, adds two protections
+The agent does not correct its clock or its timestamps in v7 to v12 (from v13 it
+corrects its timestamps, see below); v7 only makes a wrong clock visible. The backend, which needs no agent release, adds two protections
 on top: the system alert `edge_clock_skew` (online node, more than 30 s off in
 either direction, resolves by itself) and an ingestion guard (an event stamped
 more than 60 s in the future is stored with the receive time and keeps the
@@ -270,7 +270,46 @@ the background claim for 150 s the agent stops its channels and exits (the buffe
 stays on disk). **A node needs one start with the backend reachable after the update**
 to create the cache. No backend change, no migration.
 
+## Timestamp correction (v13, v14)
+
+From v13 the agent measures how far its clock is off the server's and stamps with the
+corrected time, so a wrong device clock no longer corrupts the data (chaos slice 15,
+findings 25 to 31). The claim and every heartbeat response carry the server time
+(`serverTimeMs`); the agent computes the offset from it (a round trip over 5 s is
+discarded; an offset under 2 s is ignored; a change under 0.5 s is treated as jitter).
+Event timestamps, the counter baseline and the catch-up age use the corrected clock;
+durations and timers do not. The heartbeat still sends the raw device time, so the
+Edge nodes page, `clock_offset_ms` and the `edge_clock_skew` alert are unchanged, and the
+log keeps the line "The clock of this device is N s behind the server's; event timestamps
+are corrected with the measured offset. Fix the time synchronisation anyway."
+
+The S7 Python bridge has its own clock. From v14 the agent writes the current offset to
+a file (`CLOCK_OFFSET_FILE`, set automatically next to the buffer: `clock-offset`, written
+atomically) and the bridge re-reads it at most once a second; a changed offset needs no
+restart. The channels restart only when the configuration changes. **Deploy the backend
+first** (heartbeat answer with `serverTimeMs`; an agent older than v13 ignores it). No
+migration.
+
+Limits: after a clock step the new offset is known only at the next heartbeat (at most
+30 s; events in that window are off by the size of the step; the 60 s ingestion guard
+still clips large future stamps); a start without the backend (v12) has no measurement and
+no correction until the first successful claim. Keep NTP/chrony running anyway.
+
 ## Release notes
+
+- **edge-agent-v14** (Oct 8, 2026) — live clock correction without a channel restart:
+  `clock-offset-file.ts`, `python/clock_offset.py` (6 tests), `CorrectedClock` simplified
+  (no restart on a change), listeners of `setupChannel` removed in `stop()`, ack batcher
+  flushed on stop; changes in `index.ts`, `config.ts`, `s7_bridge.py`. No backend change
+  since v13. Verified on node-gate: offset file 300053, then 270004 after a clock step, then
+  0 after the restore; 0 matches for `restarting channels`, `clock_back`,
+  `MaxListenersExceededWarning`; stamps within 0 s of the arrival, 20 events 30 s ahead in the
+  detection window after the step. `pnpm test`: shared 6, edge-agent 95, backend 194.
+- **edge-agent-v13** (Oct 8, 2026, `2f64596`) — timestamps corrected with the server time
+  (new `corrected-clock.ts`), `serverTimeMs` in the claim and heartbeat responses
+  (backend `server.ts`). **Deploy the backend first.** Superseded by v14 because a change
+  of the correction during the run restarted the channels (dropped parts) and leaked
+  listeners; do not stay on v13.
 
 - **edge-agent-v12** (Oct 8, 2026) — start from the cached channel configuration when
   the backend is unreachable, background claim with lease adoption (new

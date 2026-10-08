@@ -1169,9 +1169,33 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   (`689caaa`); catch-up log reason `clock_back` instead of `too_old` for a
   state from the future, TS and Python (`d2d6c27`, **edge-agent-v8**, deployed
   on node-gate). Alert and guard verified live with a +2 min clock (see the
-  findings doc, "Alert, ingestion guard and log reason"). **Still open:** the
-  agent correcting its timestamps with the server time; a guard for timestamps
-  far in the past.
+  findings doc, "Alert, ingestion guard and log reason"). Agent-side timestamp
+  correction followed in v13 and v14 (see below); a backend guard for timestamps far in
+  the past was ruled out in slice 15, because buffered events are legitimately old.
+- **Clock behind the server tested** (Oct 8, slice 15, libfaketime -5 min for
+  3 min 12 s): alert, offset and agent log work in this direction too; all four
+  real `down` periods in the window were hidden from the views that take the
+  latest timestamp; `clock_back` was provoked live for the first time (4 parts of
+  the restart gap not booked, none booked wrongly). Fixed by the agent-side
+  timestamp correction (v13 and v14, next bullet).
+- **Edge agent corrects its timestamps with the server time** (Oct 8, `2f64596`
+  **edge-agent-v13**, then **edge-agent-v14**; chaos findings 25 to 31, slice 15): the
+  claim and every heartbeat response carry `serverTimeMs` (backend heartbeat route now
+  answers `{ success: true, serverTimeMs }`; deploy the backend first); the agent measures
+  its offset and stamps events, the counter baseline and the catch-up age with the
+  corrected clock (`corrected-clock.ts`; differences under 2 s ignored, changes under
+  0.5 s are jitter, round trip over 5 s rejected). The heartbeat still sends the raw device
+  time, so the clock offset on the Edge nodes page and the `edge_clock_skew` alert are
+  unchanged. v13 verified live (stamps 0 s behind instead of 300 s, no hidden `down`) but a
+  clock step restarted the channels (dropped parts via `clock_back`) and each restart
+  leaked MQTT listeners. v14 publishes the offset to the S7 bridge through a file
+  (`CLOCK_OFFSET_FILE`, `clock-offset-file.ts`, `python/clock_offset.py`), restarts the
+  channels only for a changed configuration, removes the listeners on stop and flushes
+  the acks. v14 verified live: offset 300053, then 270004 after a step, then 0; no
+  restart, no `clock_back`, no listener warning. Known limits: up to 30 s of stamps off by
+  the size of the step after a clock step, no correction on an offline start. `pnpm test`
+  is green: shared 6, edge-agent 95, backend 194; Python 25 (19 + 6 new; on node-dc
+  `test_s7_bridge.py` still fails on the missing `snap7`).
 - **Postgres stopped on node-dc tested** (Oct 6, slice 10, 3 min 28 s then
   2 min 9 s): the first run showed that an unhandled pg Pool error
   (`57P01` on the stop) crashed the backend, which then looped until Postgres
@@ -1421,8 +1445,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session,
   `systemctl stop` with the broker unreachable by dropped packets (refused
   connection tested, slice 8), disk full on node-dc (the Postgres stop was tested, slice 10), network
-  partition, an edge clock *behind* the server (the clock ahead was tested, see
-  `CHAOS_TEST_FINDINGS.md` slice 9). The expired broker certificate was tested on
+  partition, the clock of a device that has no network while it is wrong (the clocks
+  ahead and behind were tested, slices 9 and 15, and the correction, v13 and v14). The expired broker certificate was tested on
   Oct 6 to 7 (slice 11).
 
 - **Database outage follow-ups** (Oct 6): answer 503 with a clear message
@@ -1441,6 +1465,9 @@ rewritten) now edits what used to need the database or a delete and re-add:
   invalid token) and a real reboot of the device without network. The cache only
   exists after the first claim with v12 on each node, so a new node needs one start
   with the backend reachable.
+- **Test-data cleanup also for the clock tests**: slice 9 and 15 left shifted event
+  streams (`created_at - timestamp` over 200 s), events with `payload ? 'timestampCorrected'`
+  and from the v14 test 20 events stamped 30 s ahead (`created_at - timestamp` under -20 s).
 - **Resend of a future-stamped event**: check it before the pilot. The unique index
   includes the timestamp, and an event stamped in the future is stored with the
   receive time, so a resend after a lost ack may not be recognised as a duplicate
