@@ -249,7 +249,39 @@ instead of 30 s. A long backlog is now sent in portions of 300 per 4 s sweep
 (about 75 events/s). **Deploy the backend first** (it now skips duplicates with
 `ON CONFLICT DO NOTHING`, which the older agents also benefit from).
 
+## Start without the backend (v12)
+
+Until v12 the channel configuration existed only in the claim response, so an agent
+that started while the backend or the network was unreachable crashed and restarted
+every ~14 s and collected nothing (chaos finding 21). From v12 every successful claim
+saves the configuration and the node settings to `claim-cache.json` (default: next to
+the buffer, `CLAIM_CACHE_PATH`; written atomically with mode 0600; only a hash of the
+node token is stored, so a copy from another node or after a token change is
+ignored; entries older than `CLAIM_CACHE_MAX_AGE_HOURS`, default 168, are ignored,
+0 = no limit). When the claim cannot reach the backend (no answer, 10 s timeout, 5xx,
+408, 429) the agent logs `backend unreachable — starting channels from the cached
+configuration WITHOUT a lease` and starts the channels from the cache; without a usable
+cache it behaves as before. It then claims in the background after 5, 10, 20, 40 s and
+then every 60 s; on success it logs `claimed edge node after an offline start — lease
+adopted`, starts the heartbeat and, if the configuration changed meanwhile, restarts
+the channels with the new one. An answer of 4xx (invalid token, node removed, lease
+held by another instance) is never bypassed at start; if the server keeps rejecting
+the background claim for 150 s the agent stops its channels and exits (the buffer
+stays on disk). **A node needs one start with the backend reachable after the update**
+to create the cache. No backend change, no migration.
+
 ## Release notes
+
+- **edge-agent-v12** (Oct 8, 2026) — start from the cached channel configuration when
+  the backend is unreachable, background claim with lease adoption (new
+  `claim-cache.ts`, `offline-claim.ts`, 24 unit tests; changes in `index.ts` and
+  `config.ts`). No backend change. Deployed on node-gate with
+  `scripts/deploy-edge-agent.sh edge-agent-v12` after checking out the tag; the node
+  claimed at once and `claim-cache.json` appeared. Verified with a restart during a
+  4 minute packet-drop partition: channels running 10 s after the restart, buffers 0,
+  no duplicates, longest gap 24 s, lease adopted 27 s after the heal. (The tag was first
+  pushed by mistake before the commit and replaced by the correct one before any
+  deployment.)
 
 - **edge-agent-v11** (Oct 7, 2026) — paced and bounded retry sweeps (new
   `retry-tracker.ts`), batched ack removal (new `ack-batcher.ts`,

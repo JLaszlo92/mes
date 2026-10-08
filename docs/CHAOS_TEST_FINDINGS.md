@@ -692,16 +692,30 @@ first and removes it only on the backend's application-level ack.
     or above 20 % for **1 s** (one 32 % sample at 14:12:45) instead of 30 s, **no
     request over 1 s**, `n = uniq`, longest gap 6 s / 6 s / 16.2 s, buffers 0. The
     agent noticed the loss after 21 s (14:09:05) and retried every 12 s.
-20. **Open: nothing raises an alert when an edge node goes offline.** The 4 minute
-    partition (and the one in the first run) produced no alert at all
-    (`alerts` had no new row). The "online" state of the Edge nodes page uses
-    `HEARTBEAT_STALE_SECONDS = 90`, but it is only a display; the clock, disk and
-    certificate evaluators ignore offline nodes (the certificate one reports them),
-    and the rule evaluator only runs rules a user created (none active). What the
-    Edge nodes page showed during the partition was not recorded. Proposed:
-    system alert `edge_node_offline` for a node seen before that has sent no
-    heartbeat for 3 minutes (longer than the display threshold so a restart does
-    not flap), resolving by itself when it comes back.
+20. **Nothing raised an alert when an edge node went offline; now it does
+    (`347000d`, backend only, no agent release).** The 4 minute partition (and the
+    one in the first run) produced no alert at all (`alerts` had no new row). The
+    "online" state of the Edge nodes page uses `HEARTBEAT_STALE_SECONDS = 90`, but it
+    is only a display; the clock, disk and certificate evaluators ignore offline nodes
+    (the certificate one reports them), and the rule evaluator only runs rules a user
+    created (none active). What the Edge nodes page showed during the partition was
+    not recorded. Fix: system alert `edge_node_offline` (new
+    `edge-offline-health.ts` and `edge-offline-health-evaluator.ts`, checked every
+    60 s): a node that has reported before and has been silent for more than 3
+    minutes (`EDGE_OFFLINE_ALERT_SECONDS`, 120 to 86400, default 180; deliberately
+    longer than the 90 s display label so a restart or deploy does not flap). The
+    last sign of life is the last heartbeat; a cleanly stopped node has none (the
+    lease is released) and is measured from `last_seen_at`, so a node that was stopped
+    and forgotten is reported too ("stopped 12 min ago"); a node that never reported
+    is not. After a restart of the backend the evaluator does not look for as long as
+    the limit (the nodes' last heartbeats are old only because the backend was not
+    there to receive them). The alert lists up to five nodes, the longest silent
+    first, and resolves by itself. 13 new unit tests; `pnpm test` is green (edge-agent
+    56, backend 194). Verified live: the node was stopped with `systemctl stop
+    mes-edge-node`; at the first check after the backend restart (05:13:35 UTC) the log
+    said `edge node offline alert raised` with `node-gate-sim (stopped 3 min ago)` and
+    the alert was on the dashboard; the node was started again at about 05:15 and the
+    alert resolved at 05:15:35 (`all edge nodes are reporting again`).
 
 Observation for later (not changed): the unique index is on
 `(source_event_id, timestamp)`, and an event stamped in the future is stored with the
@@ -709,13 +723,118 @@ receive time (slice 9). A resend of such an event after a lost ack gets a differ
 timestamp and is therefore not recognised as a duplicate. Worth a test before the
 pilot.
 
+## Slice 13 — `systemctl stop` with dropped packets, start without network (Oct 8, 2026)
+
+**Setup.** Same nftables partition as slice 12 (packets to and from node-dc on ports
+8884 and 443 dropped, SSH untouched), removed by a timer after 100 s. 15 s into it
+(05:18:58 UTC) `systemctl stop mes-edge-node` on node-gate, timed. Then, by an
+unplanned timing slip, `systemctl start` already at 05:19:32 while the partition was
+still on (it ended at 05:20:23): so this slice shows both a stop and a start without
+any network. The machines kept producing throughout.
+
+| Time (UTC) | What happened |
+|---|---|
+| 05:18:43 | partition starts (last heartbeat reached the server at 05:18:14) |
+| 05:18:58 to 05:19:03 | `systemctl stop`: `real 0m5.036s`, `Result=success`, exit status 0. The agent logs `shutting down…`, the lease release (HTTP) times out after 3 s (`The operation was aborted due to timeout`), the unit goes `inactive` |
+| 05:19:04 to 05:20:24 | on the server the session stays (`session=true`), the heartbeat age grows from 49 s to 130 s; the edge node offline alert does not fire (silent for 131 s, limit 180 s) |
+| 05:19:32 | `systemctl start` with the network still down: the claim (HTTP to the backend) fails after 12 to 13 s with `Connect Timeout Error`, the process exits with status 1, systemd restarts it after 2 s; three such rounds (05:19:45, 05:19:59, 05:20:14), about 14 s each |
+| 05:20:23 | partition removed |
+| 05:20:25 | the fourth start claims at once (the old session was 130 s without a heartbeat, so the lease was free since 05:19:44), `claimed edge node, starting channels`, all three channels started within 0.2 s, connected to the broker |
+| 05:20:25 to 05:20:26 | catch-up for the gap of about 90 s: S7 22 good / 3 scrap (gap 92 s), Modbus 38 / 6 (90 s), OPC UA 39 / 2 (89 s); the buffers (7 / 5 / 6 events from before the stop) went to 0 |
+
+Data (05:17 to 05:22 UTC): `n = uniq` for all three machines (151 / 141 / 92 events, no
+duplicates); the longest gap between two events is 1 min 29.6 s (Modbus), 1 min 28.6 s
+(OPC UA) and 1 min 31.8 s (S7), which is the time nobody observed the machines
+(stop 05:18:58 to channels started 05:20:25, about 87 s): the produced parts are
+booked at the end by the catch-up, one booking per machine, not spread over the gap.
+
+### Findings
+
+21. **Resolved in edge-agent-v12 (slice 14): the edge agent could not start without the
+    backend, so it collected nothing while the backend or the network was unreachable.** The channel configuration comes
+    from the claim response and is not stored on the device. A start without a
+    reachable backend (a power cut or reboot of the device while node-dc or the network
+    is down, as above) ends in a crash loop, one try every ~14 s (12 s connect timeout
+    plus 2 s restart delay, or ~2 s per round when the connection is refused). During that
+    time no channel runs: no events, no buffer. What survives is only what the catch-up
+    can rebuild from the counters of the machines (good and scrap parts, within
+    10 minutes, slice 7); status changes are lost, and parts older than 10 minutes too.
+    Slice 4 (start with the broker down) worked because the claim itself goes through
+    HTTP. A fix needs a design decision: keep the last claimed configuration on the
+    device (next to the buffer) and start the channels from it when the claim fails,
+    claim in the background and adopt the lease when it succeeds. The lease exists so
+    that two agents never read the same machine (that would double count, because
+    every event gets its own random id); an offline start has no lease, so the risk is
+    a second device for the same machines started at the same time.
+    **Fix:** `edge-agent-v12` (`10b52ab`), verified live in slice 14 below.
+22. **A `systemctl stop` is bounded and clean even when nothing gets through, and the
+    lease recovers on its own.** The stop took 5.04 s (the 5 s forced exit of v6 holds
+    for silent connections, not only for refused ones, slice 8), the lease release
+    gave up after 3 s and left the session on the server, which hands the node over
+    to the next claim as soon as the last heartbeat is 90 s old; no manual step. The
+    catch-up booked the unobserved time, nothing was duplicated. The edge node offline
+    alert (finding 20) correctly did not fire for a silence shorter than 3 minutes.
+
+## Slice 14 — start without network from the cached configuration (Oct 8, 2026)
+
+**Fix under test (finding 21, `edge-agent-v12`, commit `10b52ab`).** After every
+successful claim the agent saves the channel configuration and the node settings to
+`claim-cache.json` next to the buffer (written atomically, mode 0600, bound to the node
+token by a hash, at most 7 days old, `CLAIM_CACHE_MAX_AGE_HOURS`). If the claim fails
+because the backend cannot be reached (no answer, timeout after 10 s, 5xx, 408, 429),
+the channels start from the cache without a lease and the agent claims in the
+background (after 5, 10, 20, 40 s, then every 60 s). A claim that is answered with a
+4xx (invalid token, node removed, lease held by another instance) is never bypassed:
+no offline start. In the background, a lease that stays rejected for 150 s (the 90 s
+stale limit plus margin) means another instance owns the node: the channels stop and
+the agent exits, the buffer stays on disk. On success the lease is adopted, the
+heartbeat starts, the cache is refreshed, and the channels are restarted if the
+configuration changed meanwhile. 24 new tests (edge-agent 56 to 80).
+
+**Setup.** Deployed on node-gate with `scripts/deploy-edge-agent.sh edge-agent-v12`;
+`claim-cache.json` (984 bytes, `-rw-------`) appeared with the first claim. Then the
+nftables partition of slice 12 (ports 8884 and 443 to and from node-dc dropped, SSH
+untouched, removed by a timer after 240 s) and, 10 s into it, `systemctl restart
+mes-edge-node`: the stop runs without network (the lease release times out) and the
+start has no network either. The machines kept producing.
+
+| Time (UTC) | What happened |
+|---|---|
+| 05:35:29 | partition starts; 05:35:34 the old process stops (lease release times out after 3 s, session stays on the server) |
+| 05:35:41 to 05:35:51 | new process: claim runs into the 10 s timeout, `backend unreachable — starting channels from the cached configuration WITHOUT a lease`, all three channels started at 05:35:51, no crash loop |
+| 05:35:51 to 05:35:52 | catch-up for the gap of 18 to 19 s: S7 3 good, Modbus 8, OPC UA 8 good / 1 scrap |
+| 05:36:06, 05:36:26, 05:36:56, 05:37:46, 05:38:56 | `background claim failed ... unreachable`, next try in 10, 20, 40, 60, 60 s (each attempt also waits for its 10 s timeout); the broker connection reconnects every 12 s (`connack timeout`) |
+| 05:39:29 | partition removed (timer); the broker connection is back within the same second |
+| 05:39:56 | background claim succeeds: `claimed edge node after an offline start — lease adopted` (27 s after the network came back, the next scheduled attempt) |
+| 05:41 | unit active, database: `has_lease = true`, last heartbeat 07:40:56 local time, i.e. regular |
+
+Data (last 15 minutes, includes the whole test): `n = uniq` for all three machines
+(426 / 435 / 282 events, no duplicates); buffers 0 (checked after the heal); the longest
+gap between two events is 24.0 s (Modbus), 18.3 s (OPC UA), 18.8 s (S7), i.e. only the
+18 s in which the old process was stopped and the new one had not yet started; in
+slice 13 the same situation without the fix left a gap of 1:29 to 1:32. During the
+partition the channels kept counting and the events went to the disk buffer.
+
+### Findings
+
+23. **An offline start from the cached configuration works and loses nothing.** The
+    node counted for the whole 4 minutes without a backend, caught up the 18 s of its
+    own restart, sent its buffer after the heal and took the lease back by itself. The
+    lease adoption can take up to about 70 s after the network is back (60 s backoff
+    cap plus the 10 s claim timeout); events are not affected, only the Edge nodes
+    page shows the node without a session meanwhile.
+24. **Not covered by the live run:** the 150 s give-up rule (a lease that stays
+    rejected) and the 4xx refusal at start are covered by unit tests only; in this run
+    the old session was already stale and the first answered claim succeeded. The
+    status code the backend sends for "lease held" was not checked; every 4xx is treated
+    as a rejection. Without a lease two devices reading the same machines would still
+    double count until the first background claim is answered, which is the accepted
+    risk of option A.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
-- `systemctl stop` while the broker is unreachable by dropped packets (not
-  refused): the 5 s forced exit of v6 is expected to bound it; only the refused
-  case was measured (slice 8). The partition itself (without a stop) is slice 12.
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.

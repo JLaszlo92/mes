@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 7, 2026
+**Last updated:** October 8, 2026
 
 ## Where things stand
 
@@ -1189,6 +1189,29 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`, `DISK_CHECK_PATHS`. Verified live by
   lowering the limit (see the findings doc, slice 10). `pnpm test` is green:
   shared 6, edge-agent 43, backend 157.
+- **`systemctl stop` with dropped packets tested** (Oct 8, slice 13): the stop took
+  5.04 s although nothing got through (the lease release gave up after 3 s), the lease
+  was taken over by the next claim once the last heartbeat was 90 s old, the catch-up
+  booked the unobserved ~90 s, no duplicates. The same run showed that the agent
+  cannot start without a reachable backend (finding 21, fixed below in v12).
+- **Edge agent starts without the backend** (Oct 8, `10b52ab`, **edge-agent-v12**,
+  chaos finding 21, slice 14): the last claimed channel configuration is kept on the
+  device (`claim-cache.json` next to the buffer, atomic write, mode 0600, bound to the
+  node token, at most 7 days old) and a start with an unreachable backend (timeout
+  after 10 s, 5xx) runs the channels from it without a lease, while a background claim
+  (5 s up to 60 s backoff) adopts the lease when it succeeds. An answer of 4xx is never
+  bypassed; a lease that stays rejected for 150 s stops the channels. Verified live: a
+  restart during a 4 minute packet-drop partition, channels up 10 s after the restart,
+  no duplicates, longest gap 24 s (was 1:29 to 1:32), lease adopted 27 s after the
+  network came back. 24 new tests; `pnpm test` is green: shared 6, edge-agent 80,
+  backend 194. No backend change.
+- **Edge node offline alert** (Oct 8, `347000d`, backend only, chaos finding 20):
+  system alert `edge_node_offline` when a node that has reported before is silent
+  for more than 3 minutes (`EDGE_OFFLINE_ALERT_SECONDS`, default 180), also for a
+  cleanly stopped node that was left stopped (measured from `last_seen_at`); checked
+  every 60 s, not before the limit has passed since the backend started, resolves by
+  itself. Verified live by stopping and starting the node. 13 new tests; `pnpm test`
+  is green: edge-agent 56, backend 194.
 - **Retry storm after a long outage fixed** (Oct 7, `f9a6eaa`, **edge-agent-v11**
   and backend, slice 12): a 4 minute network partition (packets dropped, not
   refused) lost no data, but after it the edge agent republished its whole buffer
@@ -1413,10 +1436,15 @@ rewritten) now edits what used to need the database or a delete and re-add:
   dates and remove the old calendar reminders; the edge nodes' client
   certificates are watched since v10 (finding 17), the broker's and the others
   by `mes-cert-check.sh`.
-- **Edge node offline alert** (chaos finding 20): a node that is unreachable for
-  minutes raises no alert today. Proposed `edge_node_offline` system alert after 3
-  minutes without a heartbeat, resolving by itself. Also check the resend of a
-  future-stamped event (the unique index includes the timestamp, see slice 12).
+- **Edge agent offline start** (chaos finding 21, fixed in v12): still to try live
+  are the refusal paths (a lease held by another instance for longer than 150 s, an
+  invalid token) and a real reboot of the device without network. The cache only
+  exists after the first claim with v12 on each node, so a new node needs one start
+  with the backend reachable.
+- **Resend of a future-stamped event**: check it before the pilot. The unique index
+  includes the timestamp, and an event stamped in the future is stored with the
+  receive time, so a resend after a lost ack may not be recognised as a duplicate
+  (see slice 12).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1
