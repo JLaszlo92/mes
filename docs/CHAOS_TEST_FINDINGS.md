@@ -631,19 +631,96 @@ earlier slices (up to 16 s); no baseline for this exact window was measured.
     resolved it (`edge node client certificates are valid again`). Still not
     done: a real expiry of a client certificate on a running node.
 
+## Slice 12 — network partition with dropped packets (Oct 7, 2026)
+
+**Setup.** nftables on node-gate dropped the packets to and from node-dc on the
+MQTT port (8884) and the HTTP port (443), SSH untouched, for 240 s; a timer removed
+the rules by itself (`nft delete table inet chaos`). Unlike "connection refused"
+(slices 2 to 8) nothing answers: the connection just goes silent, which is what a
+cable or switch failure looks like. The machines kept producing (about 0.5 events/s
+for the Modbus and OPC UA rigs, fewer for S7).
+
+**Result 1 (edge-agent-v10), 13:14:55 to 13:18:55 UTC.**
+
+| Time | What happened |
+|---|---|
+| 13:14:55 | partition starts; the data age on the dashboard grows from here |
+| 13:16:25 | the agent notices: `connection to broker closed` (90 s, the default MQTT keepalive is 60 s) |
+| 13:16:27 to 13:19:07 | every reconnect attempt hangs for 30 s (default connect timeout) plus 2 s pause, 32 s per cycle |
+| 13:18:55 | partition removed |
+| 13:19:08 | agent connected again (13 s after the removal), the buffers (0 / 0 / 0 afterwards) emptied within one sample |
+
+Data: 127 / 129 / 91 events had been produced in the partition (Modbus / OPC UA /
+S7), `stored_during = 0` (none reached the database while the network was down),
+all of them arrived after the removal with their original timestamps, `n = uniq`
+(no duplicate rows), longest gap between two events 10 s / 4 s / 18.9 s. Nothing was
+lost, as the code promises: the agent writes every event to the buffer file
+first and removes it only on the backend's application-level ack.
+
+### Findings
+
+18. **Silent connection loss is noticed late and recovered late with the default
+    MQTT settings.** Detection took 90 s (60 s keepalive) and each reconnect
+    attempt hung for 30 s, so after the network came back the agent could be up to
+    32 s late. Nothing is lost during that time (the buffer takes the events), but
+    the dashboard is stale for the whole span. **Fixed in edge-agent-v11
+    (`f9a6eaa`):** `keepalive: 15` and `connectTimeout: 10000` set explicitly on
+    both MQTT clients. Measured in the re-run (below): detection after 21 s,
+    reconnect cycle 12 s (so at most about 12 s after the network is back).
+19. **After a long outage the edge agent and the backend ran a retry storm that
+    made the dashboard unusable for about 30 s (fixed in edge-agent-v11 and the
+    backend, `f9a6eaa`).** The Alerts page requests right after the removal took
+    19 s, 35 s, 15 s and 13 s (second run: 14 s, 14 s, 10 s). Not the
+    database (no active query over 2 s, no lock wait, no `idle in transaction`,
+    at most 8 of 20 pool connections open), but the Node process: 30 s at a steady
+    45 % CPU, then a burst of 223 inserts in 2 s. The Postgres log explained it:
+    about **70 `duplicate key` errors per second for those 30 s**, about 2000 for
+    350 real events (2473 and 2266 in the two other runs, 8148 in the log in
+    total). Causes: (a) every retry sweep (every 4 s) republished the *whole*
+    buffer, so while the backend was still working through the backlog the same
+    events came again; (b) the agent rewrote the whole buffer file once per ack,
+    including the acks of duplicates, which kept it busy and so slowed the
+    removals that would have stopped the resending; (c) the backend answered each
+    duplicate with a unique violation exception (error object, Postgres error
+    line) and an ack. Fix: a retry tracker (an event is republished only 15 s after
+    the last send, at most 300 per sweep, forgotten on every reconnect), acks
+    removed in batches (one read, at most one write, nothing written when the id
+    is not in the buffer), and `INSERT ... ON CONFLICT DO NOTHING` in the backend
+    (`rowCount = 0` means duplicate). 16 new unit tests (retry tracker 4, ack
+    batcher 4, buffer 3, insert 5). **Re-run with v11, 14:08:44 to 14:12:44 UTC:**
+    `duplicate key` errors **0** (the log counter stayed at 8148), backend CPU at
+    or above 20 % for **1 s** (one 32 % sample at 14:12:45) instead of 30 s, **no
+    request over 1 s**, `n = uniq`, longest gap 6 s / 6 s / 16.2 s, buffers 0. The
+    agent noticed the loss after 21 s (14:09:05) and retried every 12 s.
+20. **Open: nothing raises an alert when an edge node goes offline.** The 4 minute
+    partition (and the one in the first run) produced no alert at all
+    (`alerts` had no new row). The "online" state of the Edge nodes page uses
+    `HEARTBEAT_STALE_SECONDS = 90`, but it is only a display; the clock, disk and
+    certificate evaluators ignore offline nodes (the certificate one reports them),
+    and the rule evaluator only runs rules a user created (none active). What the
+    Edge nodes page showed during the partition was not recorded. Proposed:
+    system alert `edge_node_offline` for a node seen before that has sent no
+    heartbeat for 3 minutes (longer than the display threshold so a restart does
+    not flap), resolving by itself when it comes back.
+
+Observation for later (not changed): the unique index is on
+`(source_event_id, timestamp)`, and an event stamped in the future is stored with the
+receive time (slice 9). A resend of such an event after a lost ack gets a different
+timestamp and is therefore not recognised as a duplicate. Worth a test before the
+pilot.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
 - `systemctl stop` while the broker is unreachable by dropped packets (not
   refused): the 5 s forced exit of v6 is expected to bound it; only the refused
-  case was measured (slice 8).
+  case was measured (slice 8). The partition itself (without a stop) is slice 12.
 - The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
   live backend with a real session; the live test above changed the value in
   the database. Route logic is covered by unit tests.
 - A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
-  inferred from it); network partition between the
-  nodes; a clock behind the server (the clock ahead was tested in slice 9; the
+  inferred from it); a clock behind the server (the clock ahead was tested in slice 9; the
   alert covers both directions, the ingestion guard only the future; the
   behind case itself was not run live).
 - A real expiry of an edge node's client certificate (it is monitored since

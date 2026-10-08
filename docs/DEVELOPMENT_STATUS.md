@@ -1189,6 +1189,18 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `DISK_WARN_PERCENT`, `DISK_MIN_FREE_GIB`, `DISK_CHECK_PATHS`. Verified live by
   lowering the limit (see the findings doc, slice 10). `pnpm test` is green:
   shared 6, edge-agent 43, backend 157.
+- **Retry storm after a long outage fixed** (Oct 7, `f9a6eaa`, **edge-agent-v11**
+  and backend, slice 12): a 4 minute network partition (packets dropped, not
+  refused) lost no data, but after it the edge agent republished its whole buffer
+  every 4 s while the backend was still working through it (about 2000 duplicates
+  for 350 events, 70 `duplicate key` errors/s for 30 s), which kept the backend at
+  45 % CPU and made the Alerts page take 10 to 35 s. Now: paced retry (an event is
+  republished only after 15 s, at most 300 per sweep, forgotten on reconnect), acks
+  removed from the buffer in batches, `INSERT ... ON CONFLICT DO NOTHING` in the
+  backend, and MQTT `keepalive: 15` / `connectTimeout: 10000` (detection 90 s to
+  21 s, reconnect cycle 32 s to 12 s). Re-run: 0 duplicate errors, 1 s of CPU peak,
+  no request over 1 s, no data lost. Deploy: backend first, then the agent. 16 new
+  tests.
 - **Edge nodes' client certificates watched** (Oct 7, `790a1d9`,
   **edge-agent-v10**, migration 043): the agent reports the expiry of its client
   certificate with claim and heartbeat, the backend stores it
@@ -1401,6 +1413,10 @@ rewritten) now edits what used to need the database or a delete and re-add:
   dates and remove the old calendar reminders; the edge nodes' client
   certificates are watched since v10 (finding 17), the broker's and the others
   by `mes-cert-check.sh`.
+- **Edge node offline alert** (chaos finding 20): a node that is unreachable for
+  minutes raises no alert today. Proposed `edge_node_offline` system alert after 3
+  minutes without a heartbeat, resolving by itself. Also check the resend of a
+  future-stamped event (the unique index includes the timestamp, see slice 12).
 - **External heartbeat** for node-dc itself (backup alerting can't fire
   if the host is down) — decide before the pilot whether it's needed.
 - **Raw-event retention looks live**: the backend's startup log on Oct 1

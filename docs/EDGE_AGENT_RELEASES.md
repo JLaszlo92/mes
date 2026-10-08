@@ -232,8 +232,36 @@ reported when the agent starts with it. An older agent sends nothing and is not
 checked. **Deploy the backend first** (migration 043); it also accepts the older
 agents.
 
+## Retry pacing, batched acks and MQTT timeouts (v11)
+
+After a long outage the agent used to republish its whole buffer every 4 s and to
+rewrite the buffer file once per ack, so the backend received the same events again
+and again while it was still working through them (chaos slice 12, finding 19). From
+v11: `retry-tracker.ts` publishes an event again only 15 s after the last send, at
+most 300 events per sweep (oldest first), and forgets what it sent on every
+(re)connect; `ack-batcher.ts` collects acknowledged ids for 250 ms and
+`FileEventBuffer.removeMany` removes them with one read and at most one write (no
+write at all when none of them is in the file); a failing flush is logged and the
+events simply stay in the buffer. Both MQTT clients also set `keepalive: 15` and
+`connectTimeout: 10000` explicitly (finding 18): a silent connection loss is noticed
+after about 20 s instead of 90 s and a reconnect attempt hangs for at most 10 s
+instead of 30 s. A long backlog is now sent in portions of 300 per 4 s sweep
+(about 75 events/s). **Deploy the backend first** (it now skips duplicates with
+`ON CONFLICT DO NOTHING`, which the older agents also benefit from).
+
 ## Release notes
 
+- **edge-agent-v11** (Oct 7, 2026) — paced and bounded retry sweeps (new
+  `retry-tracker.ts`), batched ack removal (new `ack-batcher.ts`,
+  `FileEventBuffer.removeMany`), explicit MQTT keepalive 15 s and connect timeout
+  10 s on both clients, changes in `index.ts` (legacy and channel mode) and
+  `buffer.ts`; backend `events-repository.ts` uses `INSERT ... ON CONFLICT DO
+  NOTHING`. **Deploy the backend first.** Deployed on node-gate with
+  `scripts/deploy-edge-agent.sh edge-agent-v11` after checking out the tag; the
+  node claimed at once. Verified with the same 4 minute packet-drop partition as
+  before: 0 duplicate-key errors (was about 2000), 1 s of CPU peak (was 30 s), no
+  request over 1 s (was 10 to 35 s), detection after 21 s (was 90 s), buffers 0, no
+  data lost.
 - **edge-agent-v10** (Oct 7, 2026) — the agent reports the expiry of its client
   certificate with the claim and every heartbeat (new
   `packages/edge-agent/src/client-cert.ts`, unit-tested, and the claim/heartbeat
