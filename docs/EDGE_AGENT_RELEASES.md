@@ -322,7 +322,41 @@ error (exit 78) stops the service in the `failed` state instead of restarting it
 before v16 add the line to `/etc/systemd/system/mes-edge-node.service` (after `RestartSec=2`) and run
 `systemctl daemon-reload`. No backend change.
 
+## Dropped catch-up gaps become `data_gap` events (v17, v18)
+
+A catch-up gap that is not booked (longer than `catchupMaxMinutes`, a clock set back, more than 5000 parts, or
+catch-up switched off) used to show only in the journal of the edge node. From v17 (Modbus, OPC UA) and v18 (S7
+bridge as well) the agent also sends an event of the type `data_gap`: `reason` (`too_old`, `clock_back`,
+`too_large`, `disabled`), `gapSeconds` (the length of the gap; negative if the clock was set back, `null` if
+unknown), `lostGood`, `lostScrap`. It travels the same buffered, acknowledged path as every other event, so it is
+not lost during an outage. The backend stores it in `events` and writes a warning to its log
+(`edge agent reports parts that could not be booked (data gap)`); it is no machine state, so the live state and the
+dashboard feed ignore it, and the hourly rollups (which count `production_count` and `machine_status` only) are
+unaffected. The timestamp is the moment the agent noticed the gap (the end of the gap).
+
+**Deploy order: backend first, then the edge nodes.** A backend without the new type rejects the event as invalid
+and does not acknowledge it, so the edge agent would resend it from its buffer forever.
+
+List the gaps:
+
+```
+SELECT timestamp, machine_id, payload->>'reason' AS reason, payload->>'gapSeconds' AS gap_s,
+       payload->>'lostGood' AS lost_good, payload->>'lostScrap' AS lost_scrap
+FROM events WHERE type = 'data_gap' ORDER BY timestamp DESC;
+```
+
+Not covered: the GPIO bridge has no catch-up. No alert or dashboard view uses the event yet.
+
 ## Release notes
+
+- **edge-agent-v18** (Oct 8, 2026, `7825e7b`) — the S7 bridge reports a dropped gap too: `dropped_gap()` in
+  `python/catchup.py`, a `data_gap` line on the bridge's stdout, strict parsing in `ProcessBridgeSignalSource`.
+  Tests: edge-agent 123, Python catch-up 15 (node-gate: 31 in all). Verified live: 3 minute stop with a 1 minute limit,
+  S7 183 s, 47 good / 3 scrap.
+- **edge-agent-v17** (Oct 8, 2026, `0682ca2`) — the new `data_gap` event type (shared schema), reported for Modbus
+  and OPC UA (`CounterBaseline.takeDroppedGap()`, `droppedGapOf` in `catchup.ts`); `ProductionGate` and
+  `SignalPresenceWatchdog` pass it through. **Needs a backend with the same commit** (see above). Verified live:
+  3 minute stop with a 1 minute limit, Modbus 184 s, 73 good / 6 scrap, OPC UA 185 s, 81 / 9.
 
 - **edge-agent-v16** (Oct 8, 2026, `07b55d8`) — waits out a rejected first claim with a backoff instead
   of exiting (new `initial-claim.ts`, 7 unit tests, `index.ts` first claim), `RestartPreventExitStatus=78` in

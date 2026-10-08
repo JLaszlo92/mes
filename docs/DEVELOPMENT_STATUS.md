@@ -475,8 +475,9 @@ dev server (5173) is disabled.
   tokens (no slow password hash needed). The migration hashes existing
   rows in place and is guarded so re-running can't hash twice.
   `createSession` also deletes expired sessions, so the table can't grow
-  past the live ones. `mfa_pending_logins` still stores raw tokens — low
-  risk (useless without the TOTP code, minutes-long), left as a todo.
+  past the live ones. `mfa_pending_logins` stored raw tokens — low
+  risk (useless without the TOTP code, minutes-long); hashed on Oct 8
+  (see "Pending MFA login tokens hashed" below).
 - **Audit actor email** (`audit-repository.ts`, `sql/029_…`): most routes
   pass only `actorId`, and `actor_email` was only filled when the caller
   passed it — so the Audit log panel showed "—" for nearly everything.
@@ -1256,6 +1257,21 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   unchanged). Gaps found: `/health?db=1` stays 200 and no banner or alert shows an ingestion that fails (fixed the
   same day, next entry; still open: 53100 in the 503 handler, a higher disk threshold); the Postgres log goes silent;
   the ext4 root reserve does not protect inside the LXC container. `INCIDENT_RESPONSE.md` has a disk-full playbook.
+- **Dropped catch-up gaps are events** (Oct 8, `0682ca2`, `7825e7b`, **edge-agent-v17**, **v18**): a gap that is not
+  booked (too old, clock set back, too many parts, catch-up off) is sent as a `data_gap` event (`reason`, `gapSeconds`,
+  `lostGood`, `lostScrap`) through the normal buffered path, for Modbus, OPC UA (v17) and the S7 bridge (v18). The
+  backend only stores it (a warning in the log; no live state, no dashboard push, rollups unaffected). **Deploy the
+  backend before the edge nodes**: an older backend rejects the unknown type without an acknowledgement and the edge
+  would resend it forever. Live test with the limit set to 1 minute and a 3 minute stop: all three gaps recorded
+  (Modbus 184 s, 73 + 6 lost; OPC UA 185 s, 81 + 9; S7 183 s, 47 + 3). Open: an alert or a report that uses the
+  event; the GPIO bridge has no catch-up. The tracked `packages/frontend/tsconfig.tsbuildinfo` was committed once in
+  `0682ca2` (harmless).
+- **Pending MFA login tokens hashed** (Oct 8, `117504f`, `sql/045`): `mfa_pending_logins` keeps the SHA-256 hex of
+  the token in the column `token_hash` (renamed from `token`, same primary key), like `sessions`; the raw token exists
+  only in the login response. The migration deletes the pending logins once (a raw value cannot be told from a hash;
+  they live 5 minutes, two expired rows existed) and is idempotent (checked twice on a PostgreSQL 16 test database).
+  Live check with the MFA account: after the password step one row with a 64 hex character `token_hash`, about 4 min 54 s
+  left; after the code the row was consumed (0 rows). 243 backend tests.
 - **`ingestion_failing` alert** (Oct 8, `60c57d5`, `33305f7`): the backend counts failed event stores; 5 failures over
   30 s raise the system alert "Event storage" (resolved by the first stored event), and `GET /health?db=1` answers 503
   `ingestion_failing` while the database answers but cannot store. Settings `INGESTION_FAIL_COUNT` (5) and
@@ -1501,8 +1517,8 @@ rewritten) now edits what used to need the database or a delete and re-add:
   from the root (it downloads its own copy and also picks up `dist/`);
   `test_s7_bridge.py` needs the `snap7` module (missing on node-dc, so the
   Python test run there shows one import error; node-gate runs 18 tests OK);
-  a dropped catch-up gap (longer than `catchupMaxMinutes`) is only visible in
-  the journal of the edge node — consider recording it as an event or an alert.
+  a dropped catch-up gap is now an event (`data_gap`, edge-agent-v17 / v18); what is
+  still open is an alert or a view that uses it.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a role that is not allowed (the rest passed on Oct 8, slice 17),
@@ -1542,8 +1558,6 @@ rewritten) now edits what used to need the database or a delete and re-add:
   ~120k status events and ~59k downtime periods. If the pilot runs on this
   database, clear the test machines' data first so reports start clean
   (a scoped cleanup script, not ad-hoc SQL).
-- `mfa_pending_logins` stores raw pending tokens — hash like sessions
-  (low risk, low effort).
 - **Incident response**: `docs/INCIDENT_RESPONSE.md` is a draft — fill in
   contacts, customer timelines and legal's notification scope before the
   first external customer. Machine-history purge for the pilot:
