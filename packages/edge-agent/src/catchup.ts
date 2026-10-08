@@ -67,3 +67,23 @@ export function planCatchup(
 
   return { emit: delta, lost: ZERO, note: "caught_up", ageMs };
 }
+
+/** What a dropped catch-up looked like, for the `data_gap` event. */
+export interface DroppedGap {
+  reason: "too_old" | "clock_back" | "too_large" | "disabled";
+  gapSeconds: number | null;
+  lostGood: number;
+  lostScrap: number;
+}
+
+/** The gap to report for a plan whose parts were NOT booked; null when nothing was lost. */
+export function droppedGapOf(plan: CatchupPlan): DroppedGap | null {
+  if (plan.note !== "too_old" && plan.note !== "clock_back" && plan.note !== "too_large" && plan.note !== "disabled") return null;
+  if (plan.lost.good === 0 && plan.lost.scrap === 0) return null;
+  return {
+    reason: plan.note,
+    gapSeconds: plan.ageMs === null ? null : Math.round(plan.ageMs / 1000),
+    lostGood: plan.lost.good,
+    lostScrap: plan.lost.scrap,
+  };
+}

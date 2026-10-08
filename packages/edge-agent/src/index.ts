@@ -148,6 +148,8 @@ function runLegacyMode(): void {
         return { ...envelope, type: "production_count", result: reading.result, scrapReasonCode: reading.scrapReasonCode };
       case "machine_status":
         return { ...envelope, type: "machine_status", status: reading.status };
+      case "data_gap":
+        return { ...envelope, type: "data_gap", reason: reading.reason, gapSeconds: reading.gapSeconds, lostGood: reading.lostGood, lostScrap: reading.lostScrap };
     }
   }
 
@@ -161,6 +163,7 @@ function runLegacyMode(): void {
   function handleReading(reading: SignalReading): void {
     const event = toMachineEvent(reading);
     if (event.type === "production_count") log.debug({ event }, "part event");
+    else if (event.type === "data_gap") log.warn({ gap: event }, "parts were not booked (data gap) - reporting it as an event");
     else log.info({ status: event.status, sourceEventId: event.sourceEventId }, "machine status changed");
     buffer.enqueue(event);
     publishBestEffort(event);
@@ -302,6 +305,8 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
         return { ...envelope, type: "production_count", result: reading.result, scrapReasonCode: reading.scrapReasonCode };
       case "machine_status":
         return { ...envelope, type: "machine_status", status: reading.status };
+      case "data_gap":
+        return { ...envelope, type: "data_gap", reason: reading.reason, gapSeconds: reading.gapSeconds, lostGood: reading.lostGood, lostScrap: reading.lostScrap };
     }
   }
 
@@ -315,6 +320,7 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   function handleReading(reading: SignalReading): void {
     const event = toMachineEvent(reading);
     if (event.type === "production_count") log.debug({ event }, "part event");
+    else if (event.type === "data_gap") log.warn({ machineId: ch.machineId, gap: event }, "parts were not booked (data gap) - reporting it as an event");
     else log.info({ machineId: ch.machineId, status: event.status, sourceEventId: event.sourceEventId }, "machine status changed");
     buffer.enqueue(event);
     publishBestEffort(event);

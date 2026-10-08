@@ -39,6 +39,10 @@ export class SignalPresenceWatchdog implements SignalSource {
     };
 
     this.inner.start((reading) => {
+      if (reading.kind === "data_gap") {
+        onReading(reading); // not a signal: neither starts nor arms the watchdog
+        return;
+      }
       if (reading.kind !== "production_count") return;
 
       if (this.currentlyDown) {

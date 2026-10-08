@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { planCatchup, type CatchupPlan, type CounterSnapshot, type StoredCounters } from "./catchup.js";
+import { droppedGapOf, planCatchup, type CatchupPlan, type CounterSnapshot, type DroppedGap, type StoredCounters } from "./catchup.js";
 
 export function parseStoredCounters(raw: string): StoredCounters | null {
   try {
@@ -58,6 +58,7 @@ export class CounterBaseline {
   private lastSaveWarnMs = 0;
   private readonly now: () => number;
   private readonly saveEveryMs: number;
+  private pendingGap: DroppedGap | null = null;
 
   constructor(private readonly opts: CounterBaselineOptions) {
     this.state = loadCounters(opts.filePath);
@@ -70,9 +71,17 @@ export class CounterBaseline {
     const nowMs = this.now();
     const plan = planCatchup(this.state, { good, scrap }, nowMs, this.opts.maxAgeMs);
     this.logPlan(plan);
+    this.pendingGap = droppedGapOf(plan);
     this.state = { good, scrap, seenAtMs: nowMs };
     this.persist(nowMs);
     return plan.emit;
+  }
+
+  /** The gap the last onFirstRead dropped (not booked), once; null if there was none. The source reports it as a data_gap reading. */
+  takeDroppedGap(): DroppedGap | null {
+    const gap = this.pendingGap;
+    this.pendingGap = null;
+    return gap;
   }
 
   onRead(good: number, scrap: number): void {

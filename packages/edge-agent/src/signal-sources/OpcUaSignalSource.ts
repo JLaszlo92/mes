@@ -119,6 +119,8 @@ export class OpcUaSignalSource implements SignalSource {
       ) {
         // First reading after a start or a lost connection: book the parts made while not observed.
         const seeded = this.options.counterBaseline.onFirstRead(goodCount, scrapCount);
+        const gap = this.options.counterBaseline.takeDroppedGap();
+        if (gap) onReading({ kind: "data_gap", ...gap });
         for (let i = 0; i < seeded.good; i++) onReading({ kind: "production_count", result: "good" });
         for (let i = 0; i < seeded.scrap; i++) onReading({ kind: "production_count", result: "scrap" });
       }

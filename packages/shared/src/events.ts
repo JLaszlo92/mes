@@ -44,9 +44,27 @@ export const MachineStatusEventSchema = z.object({
 });
 export type MachineStatusEvent = z.infer<typeof MachineStatusEventSchema>;
 
+/**
+ * Parts the edge agent could not book: the counter moved while it was not looking (agent restart, lost PLC link)
+ * and the gap was too long (or unusable), so the difference was dropped instead of being booked into the wrong
+ * hour (see catch-up in the edge agent). Stored as an event so the loss is visible in the data, not only in a log.
+ * `reason` is a plain string on purpose: an agent that adds a reason must not be rejected by an older backend.
+ */
+export const DataGapEventSchema = z.object({
+  ...baseEventFields,
+  type: z.literal("data_gap"),
+  reason: z.string().min(1),
+  /** Length of the gap in seconds; null if unknown, negative if the clock was set back. */
+  gapSeconds: z.number().int().nullable(),
+  lostGood: z.number().int().nonnegative(),
+  lostScrap: z.number().int().nonnegative(),
+});
+export type DataGapEvent = z.infer<typeof DataGapEventSchema>;
+
 export const MachineEventSchema = z.discriminatedUnion("type", [
   ProductionCountEventSchema,
   MachineStatusEventSchema,
+  DataGapEventSchema,
 ]);
 export type MachineEvent = z.infer<typeof MachineEventSchema>;
 

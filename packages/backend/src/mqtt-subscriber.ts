@@ -122,8 +122,13 @@ async function handleMessage(
     if (outcome === "duplicate") {
       log.debug({ sourceEventId: event.sourceEventId }, "duplicate event ignored");
     } else {
-      stateStore.applyEvent(event);
-      publishToHub(event);
+      if (event.type === "data_gap") {
+        // Parts the edge agent could not book: kept as data, not a machine state (no live state, no dashboard push).
+        log.warn({ machineId: event.machineId, reason: event.reason, gapSeconds: event.gapSeconds, lostGood: event.lostGood, lostScrap: event.lostScrap }, "edge agent reports parts that could not be booked (data gap)");
+      } else {
+        stateStore.applyEvent(event);
+        publishToHub(event);
+      }
       // Azonnali (nem 30-60mp-es pollozásra váró) ellenőrzés: elérte-e ez a
       // gép valamelyik "auto" munkarendelésének célmennyiségét. Fire-and-
       // forget, hogy ne lassítsa az ack-küldést.

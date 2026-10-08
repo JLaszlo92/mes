@@ -8,7 +8,8 @@ import type { MachineStatusValue } from "@mes/shared";
  */
 export type SignalReading =
   | { kind: "production_count"; result: "good" | "scrap"; scrapReasonCode?: string }
-  | { kind: "machine_status"; status: MachineStatusValue };
+  | { kind: "machine_status"; status: MachineStatusValue }
+  | { kind: "data_gap"; reason: string; gapSeconds: number | null; lostGood: number; lostScrap: number };
 
 /**
  * The extension point PRD Section 5.5 describes: today this interface has

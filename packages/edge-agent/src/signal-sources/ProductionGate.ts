@@ -25,6 +25,10 @@ export class ProductionGate implements SignalSource {
         onReading(reading);
         return;
       }
+      if (reading.kind === "data_gap") {
+        onReading(reading); // a report about lost parts is never filtered
+        return;
+      }
       if (this.currentStatus === "down" && !this.acceptProductionWhileDown) {
         return;
       }
