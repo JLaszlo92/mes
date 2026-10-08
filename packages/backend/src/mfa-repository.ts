@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import QRCode from "qrcode";
 import { pool } from "./db.js";
+import { hashPendingToken } from "./pending-token.js";
 
 const require = createRequire(import.meta.url);
 const otplib = require("otplib") as {
@@ -54,8 +55,8 @@ export async function getMfaSecret(userId: string): Promise<string | null> {
 export async function createPendingLogin(userId: string): Promise<{ token: string; expiresAt: string }> {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + PENDING_TTL_MS);
-  await pool.query(`INSERT INTO mfa_pending_logins (token, user_id, expires_at) VALUES ($1, $2, $3)`, [
-    token,
+  await pool.query(`INSERT INTO mfa_pending_logins (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`, [
+    hashPendingToken(token),
     userId,
     expiresAt,
   ]);
@@ -68,8 +69,8 @@ export async function createPendingLogin(userId: string): Promise<{ token: strin
  */
 export async function consumePendingLogin(token: string): Promise<{ userId: string } | undefined> {
   const result = await pool.query<{ user_id: string }>(
-    `DELETE FROM mfa_pending_logins WHERE token = $1 AND expires_at > now() RETURNING user_id`,
-    [token],
+    `DELETE FROM mfa_pending_logins WHERE token_hash = $1 AND expires_at > now() RETURNING user_id`,
+    [hashPendingToken(token)],
   );
   return result.rows[0] ? { userId: result.rows[0].user_id } : undefined;
 }
