@@ -130,6 +130,25 @@ nodes if the host is trusted.
 - Before declaring recovery: dashboard live, backups succeeding, audit
   log writing, no open `backup_health` alert, edge buffers drained.
 
+### 5.4 Disk full on node-dc
+
+Measured in chaos slice 23 (Oct 8, 2026). The database stays up and refuses the writes with an SQL error; the
+backend does not acknowledge the events, so **the edge nodes buffer them and nothing is lost**; the dashboard shows
+no banner, `GET /health?db=1` stays 200 and the Postgres log goes silent. The `disk_space` alert (85%) is the early
+warning; at 100% it may not be possible to write the alert itself. The ext4 reserve for root does **not** work inside
+the LXC container, so at 100% even a root shell and editors can fail.
+
+1. Free space at once, safest first: `journalctl --vacuum-size=50M`, `apt clean`, then the oldest dumps in
+   `/var/backups/mes` (the newest dump and the S3 copies stay; 3 are kept, about 190 MB each), old logs in
+   `/var/log`. Never delete anything under `/var/lib/postgresql`.
+2. Check: `df -h /`, `systemctl status postgresql@17-main mes-backend`, `curl -sk https://localhost/health?db=1`,
+   and that `max(created_at)` of `events` catches up with `now()` within a minute or two.
+3. On the edge nodes the buffer drains by itself (`/root/buf-snap.sh` shows 0 events afterwards).
+4. If the Postgres does not come back, or a PANIC about the WAL is in the log, free more space first, then
+   `systemctl restart postgresql@17-main`; restore from a backup only if the cluster does not start after that
+   (`ops/backup/README.md`).
+5. Find the cause (`du -xh / | sort -h | tail`), fix it, and keep the free space above the alert limit.
+
 ## 6. Customer communication
 
 - **Who:** only the customer contact (section 3) speaks to the customer.

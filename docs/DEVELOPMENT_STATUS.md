@@ -1250,6 +1250,12 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   Decision: accepted for now (documented); revisit on the real pilot hardware (RTC, NTP, switch boot
   order). Options left: mark the events (`clockUncorrected`) or re-stamp the buffer after the first claim.
   The test events are covered by the pilot data cleanup (`created_at - timestamp > 200 s`).
+- **Disk full on node-dc tested** (Oct 8, slice 23, findings 39 to 41): the alert thresholds 85% / 80% work (hysteresis
+  confirmed); with nothing left for the non-root users the Postgres stays up and fails the writes with an SQL error, the
+  edge nodes buffer, everything recovers without a restart and without a lost event (production count gaps
+  unchanged). Gaps found: `/health?db=1` stays 200 and no banner or alert shows an ingestion that fails (open: an
+  `ingestion_failing` alert, 53100 in the 503 handler, a higher disk threshold); the Postgres log goes silent; the ext4
+  root reserve does not protect inside the LXC container. `INCIDENT_RESPONSE.md` has a disk-full playbook.
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and
@@ -1472,6 +1478,10 @@ rewritten) now edits what used to need the database or a delete and re-add:
 
 ## Still open (lower priority, not blocking)
 
+- **Visible signal for a database that cannot write** (chaos finding 39, slice 23): an `ingestion_failing` alert after
+  N consecutive "failed to persist event" errors; `GET /health?db=1` and the 503 handler also for Postgres 53100
+  and 25006; a second, higher disk threshold. Today only the `disk_space` alert at 85% warns.
+
 - **Edge agent follow-ups** (Oct 5): an agent restart
   button / automatic pickup of changed channel settings (today a change is
   applied when the agent next starts);
@@ -1489,7 +1499,7 @@ rewritten) now edits what used to need the database or a delete and re-add:
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a role that is not allowed (the rest passed on Oct 8, slice 17),
   `systemctl stop` with the broker unreachable by dropped packets (refused
-  connection tested, slice 8), disk full on node-dc (the Postgres stop was tested, slice 10), network
+  connection tested, slice 8), disk full on node-dc (tested in slice 23: the Postgres stop in slice 10), network
   partition (the clocks
   ahead and behind were tested, slices 9 and 15, and the correction, v13 and v14; a wrong clock without
   a network at the start in slice 22). The expired broker certificate was tested on

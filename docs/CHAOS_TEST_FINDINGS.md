@@ -55,7 +55,8 @@ arrives. So the buffer is the exact list of unacknowledged events:
 `ops/chaos/buf-snap.sh` (edge node) prints its size and time span per
 machine; `ops/chaos/chaos-svc.sh` (node-dc) stops a service for N seconds;
 `ops/chaos/chaos-roles.sh` (node-dc) checks the 403 of the role guard (slice 20);
-`ops/chaos/chaos-clock-offline.sh` (node-gate) starts the agent with a wrong clock and no network (slice 22).
+`ops/chaos/chaos-clock-offline.sh` (node-gate) starts the agent with a wrong clock and no network (slice 22);
+`ops/chaos/chaos-disk.sh` (node-dc) fills the disk with a filler file (slice 23).
 After the service is back, the database must contain exactly the buffered
 events (same machine, `timestamp` within the buffered span), the buffer must
 be empty, and no unexplained gap may appear in the event timeline.
@@ -1150,6 +1151,64 @@ re-stamp the unsent events in the buffer by the measured offset after the first 
 ack batcher and the deduplication key `(source_event_id, timestamp)`; wrong if the clock was stepped during the
 period, for example by NTP).
 
+## Slice 23 — the disk of node-dc fills up (Oct 8, 2026)
+
+**Method.** `ops/chaos/chaos-disk.sh` on node-dc: a filler file `/var/lib/mes-chaos/filler` (`fallocate`) grows until
+`df` shows the wanted percentage, or until nothing is left for the non-root users (`fill-full`); `free` deletes it.
+The root file system is 32 GB ext4 on an LVM-thin volume of a Proxmox **LXC container**, 20 GB free (34% used),
+1654 MiB reserved for root by ext4. A systemd timer deletes the filler after `SAFETY_MIN` minutes.
+
+### Stage 1 — the `disk_space` alert
+
+`DEFAULT_DISK_LIMITS`: raise at 85% used, clear below 80%, minimum free 2 GiB; the evaluator runs every 5 minutes.
+
+| State | Result |
+|---|---|
+| 84% (from a clean state), 6 minutes | no alert |
+| 87% | alert raised at the next check: `Disk space is running low: / is 87% used (3.8 GiB free of 29.6 GiB)` |
+| 84%, 88%, 83% afterwards | the alert stays (hysteresis) |
+| 79% | `disk space is back within the limit — alert resolved` at the next check (about 40 s after the change) |
+
+The first run of this stage was too fast (all steps within a minute, the 5 minute check fell into the 87% moment) and
+had to be repeated for the "no alert below 85%" step; the numbers above are the clean ones.
+
+### Stage 2 — nothing left for the non-root users (15:24 to about 15:32 UTC)
+
+| Observation | Result |
+|---|---|
+| Postgres | stayed up (`ActiveState=active`, `NRestarts=0`, same PID); the writes failed with `ERROR: could not extend file "base/16385/33557": No space left on device` (an ordinary SQL error, no PANIC) |
+| Backend, broker | no restart (same PIDs) |
+| Edge nodes | buffered from 15:24:19: 72 / 48 / 42 events (Modbus / OPC-UA / S7) after 4 minutes; the events are not acknowledged while the insert fails |
+| Recovery | after `free` all services were fine without any restart; `max(created_at)` caught up within a minute; the buffers of node-gate were **0** |
+| Data | the gaps of the production count stream are 13 to 48 s over the whole 14:30 to 15:35 period, before, during and after the test; none of the gaps falls on the outage as a hole of minutes: no event lost |
+| `GET /health?db=1` | **200 for the whole outage** (the `SELECT 1` needs no write) |
+| Dashboard | no banner and no error was shown to the user |
+| Postgres log | after the first error line (15:24:20) **no further line for minutes** although the edge nodes kept retrying: the log file could not be written either |
+
+39. **The monitoring does not see a database that can only be read.** `/health?db=1` is 200 and the 503/banner logic
+    reacts only to a connection failure, so an operator sees nothing while every event insert fails; the edge nodes
+    buffer silently. The `disk_space` alert (85%) is the only early warning, and at 100% the alert itself cannot be
+    written. Open: (a) an alert such as `ingestion_failing` raised by the backend after N consecutive
+    "failed to persist event" errors, with a reason (written to the alerts table is not guaranteed on a full disk, so the
+    dashboard should also ask the backend's own counter); (b) `/health?db=1` and the 503 handler also for the
+    Postgres error classes 53100 (`disk_full`) and 25006 (`read_only_sql_transaction`); (c) a second, higher disk
+    threshold (for example 95% critical).
+40. **The root reserve of ext4 does not protect inside the LXC container.** The check for the reserved blocks needs
+    `CAP_SYS_RESOURCE` in the host's user namespace; the root of the container does not have it. At 100% a root shell
+    could not write either (an editor on the node reported `ENOSPC`, journald and the shell history are also at risk), only
+    metadata operations that need no new block (`touch` of an empty file, `rm`) still worked. Recovery is
+    `rm /var/lib/mes-chaos/filler`; in a real incident the largest safe candidates are the old dumps in `/var/backups/mes`
+    (3 kept, about 190 MB each), the journal (`journalctl --vacuum-size=50M`) and `apt clean`. The assumption in the first
+    version of the script (root keeps working) was wrong; the headers are corrected.
+41. **Procedure artifact: the first `fill-full` aborted at the end with ENOSPC before the safety timer was armed** (`set -e`
+    on `fallocate`, which meets the end of the free space because Postgres writes at the same time). Fixed: the
+    timer is armed first, the final ENOSPC is expected.
+
+Backup script (`mes-backup.sh`, read, not run on the full disk): writes to `.partial`, a trap removes it and records
+the failure in `job_status`; the local pruning runs only after a successful upload, so a failed run never deletes the
+good dumps. If the status row cannot be written either (the database cannot write), the backend's "no successful backup
+for 26 hours" check is the fallback.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
@@ -1158,8 +1217,9 @@ period, for example by NTP).
   (for example `/api/status-definitions`, `/api/preventive-schedules`,
   `/api/work-order-assignments`, the edge node channel and settings routes and the
   work order routes open to `operator`); the role guard itself is the same function everywhere.
-- A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
-  inferred from it).
+- A full disk beyond what slice 23 covered: the Postgres WAL path (a PANIC when a new WAL segment cannot be
+  created; the 8 minute test only hit a relation extension), the effect on journald and mosquitto (not observed),
+  and the backup script with a full disk.
 - A real expiry of an edge node's client certificate (it is monitored since
   v10, finding 17; the stop itself is inferred from the broker case, findings
   13 and 16).
