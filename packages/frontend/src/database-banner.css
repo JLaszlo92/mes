@@ -1,0 +1,23 @@
+.db-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 20px;
+  font-size: var(--text-s);
+  border-bottom: 1px solid var(--c-alarm);
+  background: var(--c-alarm-soft);
+  color: var(--c-alarm);
+}
+
+.db-banner[data-state="recovered"] {
+  border-bottom-color: var(--c-accent);
+  background: var(--c-accent-soft);
+  color: var(--c-accent);
+}
+
+.db-banner-actions {
+  display: inline-flex;
+  gap: 8px;
+  margin-left: auto;
+}

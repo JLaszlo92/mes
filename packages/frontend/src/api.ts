@@ -19,6 +19,8 @@
  * kiléptetést.
  */
 
+import { noteDatabaseResponse } from "./database-status.js";
+
 export const WS_URL = import.meta.env.VITE_BACKEND_WS_URL ?? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 export const API_BASE = WS_URL.replace(/^ws/, "http").replace(/\/ws$/, "");
 
@@ -58,5 +60,6 @@ export async function apiFetch(input: RequestInfo | URL, init: RequestInit = {})
 
   const res = await fetch(input, finalInit);
   if (attach && res.status === 401) onUnauthorized?.();
+  if (isBackendUrl(requestUrl(input))) noteDatabaseResponse(res);
   return res;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import Icon, { type IconName } from "./ui/icons.js";
 import { navigate } from "./router.js";
+import DatabaseBanner from "./DatabaseBanner.js";
 
 export interface NavItem {
   id: string;
@@ -210,6 +211,7 @@ export default function AppShell({
             Sign out
           </button>
         </header>
+        <DatabaseBanner />
         <main className="shell-content">{children}</main>
       </div>
     </div>
