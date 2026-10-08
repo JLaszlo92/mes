@@ -1241,9 +1241,20 @@ Events by minute of `created_at`: 18:57: 75, 18:58: 72, 18:59: 16, **19:00: 0**,
 19:02: 52. The hole at 19:00 is filled by the buffered events at 19:01 (16 + 186 = 202 against about 220 at the normal rate
 for three minutes); the comparison by `sourceEventId` against the edge buffer was not made.
 
-Limits: `GET /health?db=1` was **200** in the live runs. The 503 answer is verified by a unit test of the route logic
-(238 backend tests pass), not yet seen on the running server during a trigger test. The alert was tested with the
-trigger, not with the real full disk (slice 23 repeated). The first two attempts of the test did nothing (`sudo` is not
+**Second run, with `GET /health?db=1` polled every 10 s** (trigger 19:09:02 to 19:11:02 UTC):
+
+| Time (UTC) | `GET /health?db=1` |
+|---|---|
+| before, 19:09:12 to 19:09:32 | 200 `{"status":"ok","database":"ok"}` (too few failures yet) |
+| 19:09:42 to 19:11:02 | **503** `{"statusCode":503,"error":"Service Unavailable","code":"ingestion_failing","message":"Events cannot be stored"}` (9 samples in a row) |
+| 19:11:12 on | 200 again (10 s after the trigger was dropped) |
+
+The alert row: raised 19:09:47 (45 s after the start; the endpoint already answered 503 at 19:09:42, because it reads the
+counter directly while the evaluator writes the alert every 15 s), resolved 19:11:17 (the endpoint was 200 at
+19:11:12). `trigger_maradt` = 0 afterwards. The `Retry-After: 5` header did not show in the output of that run (the
+carriage return of the header line overwrote it); it is covered by the unit test of the route logic.
+
+Limits: the alert and the endpoint were tested with the trigger, not with the real full disk (slice 23 repeated). The first two attempts of the first test did nothing (`sudo` is not
 installed on node-dc, `runuser -u postgres --` is the way); the trigger was never created in them.
 
 ## Not tested yet

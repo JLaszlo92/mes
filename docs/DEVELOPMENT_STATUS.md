@@ -1260,7 +1260,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   30 s raise the system alert "Event storage" (resolved by the first stored event), and `GET /health?db=1` answers 503
   `ingestion_failing` while the database answers but cannot store. Settings `INGESTION_FAIL_COUNT` (5) and
   `INGESTION_FAIL_SECONDS` (30). Live test with a trigger that fails every insert with 53100: raised after 38 s,
-  resolved 11 s after the trigger was removed, the buffered events arrived (186 in one minute, 2 min 11 s late).
+  resolved 11 s after the trigger was removed, the buffered events arrived (186 in one minute, 2 min 11 s late);
+  `GET /health?db=1` answered 503 `ingestion_failing` on the running server for the whole blocked period (second run).
   No banner (the alert shows in the alerts panel). Details in the findings doc, slice 23 follow-up.
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
