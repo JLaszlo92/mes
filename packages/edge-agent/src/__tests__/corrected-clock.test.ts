@@ -4,7 +4,6 @@ import {
   clockCorrectionNotice,
   correctionFromAhead,
   measureAhead,
-  shouldRestartChannels,
 } from "../corrected-clock.js";
 
 describe("correctionFromAhead", () => {
@@ -83,19 +82,6 @@ describe("CorrectedClock", () => {
   it("switches on a small correction even though it is below the jitter limit", () => {
     const clock = new CorrectedClock(raw(0));
     expect(clock.update(-2_100)).toEqual({ changed: true, previous: 0, current: 2_100 });
-  });
-});
-
-describe("shouldRestartChannels", () => {
-  it("restarts only when the correction moved more than 5 s", () => {
-    expect(shouldRestartChannels(0, 5_000, null, 0)).toBe(false);
-    expect(shouldRestartChannels(0, 5_001, null, 0)).toBe(true);
-    expect(shouldRestartChannels(300_000, 0, null, 0)).toBe(true);
-    expect(shouldRestartChannels(300_000, 300_400, null, 0)).toBe(false);
-  });
-  it("at most once per minute", () => {
-    expect(shouldRestartChannels(0, 300_000, 1_000, 60_999)).toBe(false);
-    expect(shouldRestartChannels(0, 300_000, 1_000, 61_000)).toBe(true);
   });
 });
 

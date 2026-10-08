@@ -20,9 +20,6 @@ export const CORRECTION_MIN_MS = 2_000;
 export const CORRECTION_JITTER_MS = 500;
 /** A measurement whose request took longer than this is too inaccurate to use. */
 export const MAX_ROUND_TRIP_MS = 5_000;
-/** The S7 bridge process learns the correction only at its start; it is restarted when the correction moved this much. */
-export const CHANNEL_RESTART_THRESHOLD_MS = 5_000;
-export const CHANNEL_RESTART_MIN_INTERVAL_MS = 60_000;
 
 /** The milliseconds to ADD to the device clock; null = no usable measurement. */
 export function correctionFromAhead(aheadMs: number | null): number | null {
@@ -73,17 +70,6 @@ export class CorrectedClock {
     this.offsetMs = next;
     return { changed: next !== previous, previous, current: next };
   }
-}
-
-/** True when the channels (the S7 bridge) run with a correction that is out of date; at most once per minute. */
-export function shouldRestartChannels(
-  channelsOffsetMs: number,
-  currentOffsetMs: number,
-  lastRestartAtMs: number | null,
-  nowMs: number,
-): boolean {
-  if (Math.abs(currentOffsetMs - channelsOffsetMs) <= CHANNEL_RESTART_THRESHOLD_MS) return false;
-  return lastRestartAtMs === null || nowMs - lastRestartAtMs >= CHANNEL_RESTART_MIN_INTERVAL_MS;
 }
 
 export function clockCorrectionNotice(aheadMs: number): string {

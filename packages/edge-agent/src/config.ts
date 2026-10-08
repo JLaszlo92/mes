@@ -38,6 +38,8 @@ export const config = {
   // Last claimed channel configuration (registry mode); lets the agent start while the backend is unreachable.
   claimCachePath: process.env.CLAIM_CACHE_PATH ?? path.join(path.dirname(process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson"), "claim-cache.json"),
   claimCacheMaxAgeMs: claimCacheMaxAgeMsFromEnv(process.env.CLAIM_CACHE_MAX_AGE_HOURS),
+  // File the S7 Python bridge re-reads the clock correction (ms) from (registry mode).
+  clockOffsetFile: process.env.CLOCK_OFFSET_FILE ?? path.join(path.dirname(process.env.BUFFER_FILE_PATH ?? "/tmp/mes-edge-agent-buffer.ndjson"), "clock-offset"),
 
   // "simulated" (default, no hardware/network needed), "s7" (poll a
   // Siemens S7 PLC or its simulator over the network — no wiring, see

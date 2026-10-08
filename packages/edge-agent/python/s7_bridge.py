@@ -43,6 +43,7 @@ import time
 from snap7.util import get_bool, get_dint
 
 from catchup import describe_plan, load_counter_state, plan_catchup, save_counter_state
+from clock_offset import ClockOffset
 
 PLC_IP = os.environ.get("PLC_IP", "127.0.0.1")
 PLC_RACK = int(os.environ.get("PLC_RACK", 0))
@@ -55,13 +56,15 @@ RECONNECT_DELAY_SECONDS = float(os.environ.get("RECONNECT_DELAY_SECONDS", 3.0))
 # Catch-up of parts produced while this bridge could not see the PLC (see catchup.py).
 COUNTER_STATE_FILE = os.environ.get("COUNTER_STATE_FILE", "")
 CATCHUP_MAX_AGE_SECONDS = float(os.environ.get("CATCHUP_MAX_AGE_SECONDS", 600))
-# Milliseconds the agent measured to add to this device's clock (0 = the clock is fine or unknown).
-CLOCK_OFFSET_MS = int(float(os.environ.get("CLOCK_OFFSET_MS", 0)))
+# The correction (ms to add to this device's clock) the agent measured against the server: the value of
+# CLOCK_OFFSET_MS at start, then re-read about once a second from CLOCK_OFFSET_FILE, which the agent
+# rewrites whenever the correction changes (see clock_offset.py). 0 = the clock is fine or unknown.
+CLOCK_OFFSET = ClockOffset(int(float(os.environ.get("CLOCK_OFFSET_MS", 0))), os.environ.get("CLOCK_OFFSET_FILE", ""))
 
 
 def now_ms() -> int:
     """Wall-clock milliseconds corrected by the offset the agent measured against the server."""
-    return int(time.time() * 1000) + CLOCK_OFFSET_MS
+    return int(time.time() * 1000) + CLOCK_OFFSET.get()
 
 
 COUNTER_SAVE_EVERY_SECONDS = 5.0

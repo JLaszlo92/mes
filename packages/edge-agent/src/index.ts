@@ -20,7 +20,8 @@ import { join as joinPath } from "node:path";
 import { CounterBaseline } from "./counter-baseline.js";
 import { ClaimCache, type CachedClaim } from "./claim-cache.js";
 import { CLAIM_TIMEOUT_MS, ClaimHttpError, classifyClaimFailure, sameChannels, startBackgroundClaim } from "./offline-claim.js";
-import { CorrectedClock, clockCorrectionNotice, measureAhead, shouldRestartChannels } from "./corrected-clock.js";
+import { CorrectedClock, clockCorrectionNotice, measureAhead } from "./corrected-clock.js";
+import { writeClockOffsetFile } from "./clock-offset-file.js";
 
 const log = pino({ level: process.env.LOG_LEVEL ?? "info" });
 
@@ -37,6 +38,19 @@ const nodeSettings = { catchupMaxMinutes: config.catchupMaxMinutes };
 // Corrected wall clock (see corrected-clock.ts): in registry mode the offset against the server is
 // measured with the claim and every heartbeat; in legacy mode it stays 0 (the raw device clock).
 const clock = new CorrectedClock();
+
+// The S7 Python bridge cannot see `clock`; it re-reads the correction from a file (registry mode only).
+let clockOffsetFileActive = false;
+
+/** Writes the current correction for the S7 bridge; until that has worked the bridge uses the value from its environment. */
+async function publishClockOffset(): Promise<void> {
+  try {
+    await writeClockOffsetFile(config.clockOffsetFile, clock.offset);
+    clockOffsetFileActive = true;
+  } catch (err) {
+    log.warn({ err }, "could not write the clock offset file — the S7 bridge keeps the offset it was started with");
+  }
+}
 
 function counterStateFile(machineId: string): string {
   return joinPath(config.counterStateDir, `counters.${machineId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
@@ -57,6 +71,7 @@ function s7CatchupEnv(machineId: string): Record<string, string> {
     COUNTER_STATE_FILE: counterStateFile(machineId),
     CATCHUP_MAX_AGE_SECONDS: String(nodeSettings.catchupMaxMinutes * 60),
     CLOCK_OFFSET_MS: String(clock.offset),
+    ...(clockOffsetFileActive ? { CLOCK_OFFSET_FILE: config.clockOffsetFile } : {}),
   };
 }
 
@@ -320,8 +335,9 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
   };
   if (client.connected) subscribeAcks();
   client.on("connect", subscribeAcks);
-  client.on("connect", () => retryTracker.reset());
-  client.on("message", (receivedTopic, payload) => {
+  const resetRetries = (): void => retryTracker.reset();
+  client.on("connect", resetRetries);
+  const onMessage = (receivedTopic: string, payload: Buffer): void => {
     if (receivedTopic !== myAckTopic) return;
     let raw: unknown;
     try {
@@ -332,7 +348,8 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
     const result = safeParseAck(raw);
     if (!result.success) return;
     ackBatcher.add(result.data.sourceEventId);
-  });
+  };
+  client.on("message", onMessage);
 
   const retryTimer = setInterval(retryPending, 4000);
   const source = buildSourceFromChannel(ch);
@@ -344,6 +361,9 @@ function setupChannel(client: MqttClient, ch: ChannelConfig): { stop: () => void
       source.stop();
       clearInterval(retryTimer);
       client.off("connect", subscribeAcks);
+      client.off("connect", resetRetries);
+      client.off("message", onMessage);
+      ackBatcher.flushNow(); // acknowledged events still waiting for their batch leave the buffer now
     },
   };
 }
@@ -483,6 +503,9 @@ async function runRegistryMode(token: string): Promise<void> {
     log.info({ channelCount: channels.length, catchupMaxMinutes: claimed.settings.catchupMaxMinutes }, "claimed edge node, starting channels");
     await saveClaimCache(token, claimed);
   }
+  // The S7 Python bridge reads the clock correction from a file; it has to be there before the first channel starts
+  // (after an offline start the correction is 0 and overwrites whatever an earlier run left behind).
+  await publishClockOffset();
 
   const client = mqtt.connect(config.mqttUrl, { ...mqttTlsOptions(), reconnectPeriod: 2000, keepalive: 15, connectTimeout: 10_000, clientId: `edge-node-${randomUUID()}` });
   client.on("reconnect", () => log.warn("reconnecting to broker…"));
@@ -495,25 +518,18 @@ async function runRegistryMode(token: string): Promise<void> {
 
   let runtimes = channels.map((ch) => setupChannel(client, ch));
 
-  // The correction the channels (the S7 bridge process learns it only at its start) run with.
-  let channelsClockOffset = clock.offset;
-  let lastChannelRestartAt: number | null = null;
-
   function restartChannels(reason: string): void {
-    log.warn({ reason, channelCount: channels.length, clockCorrectionMs: clock.offset }, "restarting channels");
+    log.warn({ reason, channelCount: channels.length }, "restarting channels");
     for (const r of runtimes) r.stop();
     runtimes = channels.map((ch) => setupChannel(client, ch));
-    channelsClockOffset = clock.offset;
-    lastChannelRestartAt = Date.now();
   }
 
-  /** Applies a clock measurement from a heartbeat; the channels are restarted when the S7 bridge's correction is out of date. */
+  /** Applies a clock measurement from a heartbeat. No restart: the channels read the corrected clock live and the S7 bridge re-reads the file. */
   function applyMeasuredClock(aheadMs: number | null): void {
     const change = clock.update(aheadMs);
-    if (change.changed) log.warn({ aheadMs, fromMs: change.previous, toMs: change.current }, "timestamp correction changed");
-    if (shouldRestartChannels(channelsClockOffset, clock.offset, lastChannelRestartAt, Date.now())) {
-      restartChannels("the clock correction changed");
-    }
+    if (!change.changed) return;
+    log.warn({ aheadMs, fromMs: change.previous, toMs: change.current }, "timestamp correction changed");
+    void publishClockOffset();
   }
 
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -552,16 +568,14 @@ async function runRegistryMode(token: string): Promise<void> {
         if (c.clockAheadMs !== null && clockSkewWarning(c.clockAheadMs)) {
           log.warn({ clockAheadMs: c.clockAheadMs }, clockCorrectionNotice(c.clockAheadMs));
         }
-        clock.update(c.clockAheadMs);
+        if (clock.update(c.clockAheadMs).changed) await publishClockOffset();
         nodeSettings.catchupMaxMinutes = c.settings.catchupMaxMinutes;
         const configChanged = !sameChannels(channels, c.channels);
         if (configChanged) {
           log.warn({ before: channels.length, after: c.channels.length }, "channel configuration changed while the node was offline");
           channels = c.channels;
         }
-        if (configChanged || shouldRestartChannels(channelsClockOffset, clock.offset, null, Date.now())) {
-          restartChannels(configChanged ? "the channel configuration changed while offline" : "the clock correction changed");
-        }
+        if (configChanged) restartChannels("the channel configuration changed while offline");
         sessionId = c.sessionId;
         startHeartbeat();
         log.info({ channelCount: channels.length }, "claimed edge node after an offline start — lease adopted");
