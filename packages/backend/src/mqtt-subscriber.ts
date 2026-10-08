@@ -1,3 +1,4 @@
+import { ingestionHealth } from "./ingestion-health.js";
 import { mqttTlsOptions } from "./mqtt-tls.js";
 import mqtt from "mqtt";
 import { ackTopic, EVENT_TOPIC_WILDCARD, safeParseMachineEvent } from "@mes/shared";
@@ -108,6 +109,7 @@ async function handleMessage(
       return;
     }
   } catch (err) {
+    ingestionHealth.recordFailure(err);
     log.error({ err }, "machine registry lookup failed — NOT acking, edge agent will retry");
     return;
   }
@@ -116,6 +118,7 @@ async function handleMessage(
     const outcome = await insertEvent(event, (info) =>
       log.warn({ machineId: event.machineId, sourceEventId: event.sourceEventId, ...info }, "event timestamp is in the future — stored with the receive time"),
     );
+    ingestionHealth.recordSuccess();
     if (outcome === "duplicate") {
       log.debug({ sourceEventId: event.sourceEventId }, "duplicate event ignored");
     } else {
@@ -131,6 +134,7 @@ async function handleMessage(
       }
     }
   } catch (err) {
+    ingestionHealth.recordFailure(err);
     log.error({ err }, "failed to persist event — NOT acking, edge agent will retry");
     return;
   }

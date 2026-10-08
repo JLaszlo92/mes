@@ -17,6 +17,7 @@ import { startLicenseEvaluator } from "./license-service.js";
 import { startCertHealthEvaluator } from "./cert-health-evaluator.js";
 import { startEdgeClockEvaluator } from "./edge-clock-health-evaluator.js";
 import { startDiskSpaceEvaluator } from "./disk-health-evaluator.js";
+import { startIngestionEvaluator } from "./ingestion-health-evaluator.js";
 import { startEdgeDiskEvaluator } from "./edge-disk-health-evaluator.js";
 import { startEdgeCertEvaluator } from "./edge-cert-health-evaluator.js";
 import { startEdgeOfflineEvaluator } from "./edge-offline-health-evaluator.js";
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   startCertHealthEvaluator(app.log);
   startEdgeClockEvaluator(app.log);
   startDiskSpaceEvaluator(app.log);
+  startIngestionEvaluator(app.log);
   startEdgeDiskEvaluator(app.log);
   startEdgeCertEvaluator(app.log);
   startEdgeOfflineEvaluator(app.log);
