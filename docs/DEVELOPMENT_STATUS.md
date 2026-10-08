@@ -1203,6 +1203,11 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   in `event_timestamp_corrections` and `insertEvent` (still one statement) skips them. Verified
   on the live hypertable in a rolled-back transaction. 5 new tests; `pnpm test` is green:
   shared 6, edge-agent 95, backend 199.
+- **Settings API tested with a real session** (Oct 8, slice 17): login with MFA, 401 without
+  or with a bad token, 400 for every invalid value and body, 404 for an unknown node, 200 for a
+  valid change, the audit row `edge_node_settings_updated` with the actor, and the agent's claim
+  cache picks the new value up at the next start. Nothing to fix. Not done live: the 403 of a
+  role below manager.
 - **Postgres stopped on node-dc tested** (Oct 6, slice 10, 3 min 28 s then
   2 min 9 s): the first run showed that an unhandled pg Pool error
   (`57P01` on the stop) crashed the backend, which then looped until Postgres
@@ -1449,7 +1454,7 @@ rewritten) now edits what used to need the database or a delete and re-add:
   the journal of the edge node — consider recording it as an event or an alert.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
-  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a real session,
+  `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a role that is not allowed (the rest passed on Oct 8, slice 17),
   `systemctl stop` with the broker unreachable by dropped packets (refused
   connection tested, slice 8), disk full on node-dc (the Postgres stop was tested, slice 10), network
   partition, the clock of a device that has no network while it is wrong (the clocks

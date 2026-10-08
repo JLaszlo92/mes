@@ -962,13 +962,36 @@ statement writes three rows for the same sequence (the old statement was not run
 database).
 The table grows only by corrected events; old rows can be deleted (no automatic cleanup yet).
 
+## Slice 17 — settings API with a real session (Oct 8, 2026)
+
+**Method.** On node-dc against the live backend (`127.0.0.1:3001`) with a real login of an admin
+account (password, then the MFA code; the two-step login worked as designed, the password and
+the token were not written to any file or to the screen). Edge node `node-gate-sim`,
+setting `catchupMaxMinutes` (10 before and after).
+
+| Request | Result |
+|---|---|
+| PATCH without a token, with an invalid token | 401 `authentication required` |
+| GET the settings | 200 `{"catchupMaxMinutes":10}` |
+| PATCH `-1`, `1441`, `1.5`, `"10"`, `null` | 400 `catchupMaxMinutes must be an integer between 0 and 1440` each |
+| PATCH unknown key, `{}`, `[]` | 400 (`unknown setting: foo`, `no settings given`, `body must be a JSON object`) |
+| PATCH an unknown node id | 404 `unknown edge node` |
+| After all rejected requests | the value in the database is unchanged (10): nothing was written |
+| PATCH `7` | 200; GET and the database show 7 |
+| Audit log | one `edge_node_settings_updated` row: actor and e-mail of the account, `target` = node id and `{"catchupMaxMinutes":7}`, IP `127.0.0.1` |
+| Agent | after a restart of `mes-edge-node` the claim cache holds `catchupMaxMinutes: 7` (the claim carries the setting) |
+| Restore | PATCH `10`: 200, database and agent cache back to 10; logout 204 |
+
+No finding: the route behaved as the unit tests describe. Not tested live: a role that is not
+allowed (403). A setting changed here reaches the agent at its next claim, that is at its next
+start (as documented for v5); there is no push to a running agent.
+
 ## Not tested yet
 
 - A real power cut of the edge node hardware: size of the unsynced loss at the
   end of the buffer file (the container stop in slice 6 cannot show it).
-- The settings API itself (`PATCH /api/edge-nodes/:id/settings`) against the
-  live backend with a real session; the live test above changed the value in
-  the database. Route logic is covered by unit tests.
+- The settings API with a role that is not allowed (`operator` and below should get
+  403): slice 17 had only an admin session; the role check is covered by unit tests.
 - A full disk on node-dc (the Postgres stop is slice 10; a full disk is only
   inferred from it); the clock of a device that has no network while it is wrong
   (slice 15 had the backend reachable, so the agent could measure the offset).
