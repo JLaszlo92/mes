@@ -1240,6 +1240,10 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   forbidden combinations 403, allowed GETs 200, 401 for no / garbage / deactivated user / expired
   session; 0 failures. Routes whose method is not obvious from the source were left out of the
   script (listed in `CHAOS_TEST_FINDINGS.md`, "Not tested yet").
+- **Restart cycle on a refused claim fixed** (Oct 8, `07b55d8`, **edge-agent-v16**, chaos finding 34, slice 21): the
+  first claim waits out a rejection with the backoff 5, 10, 20, 40, 60 s up to 150 s instead of exiting;
+  `RestartPreventExitStatus=78` for configuration errors. After a SIGKILL of the agent on node-gate: 1
+  restart instead of 15 to 18. Deploy on node-gate with `scripts/deploy-edge-agent.sh edge-agent-v16`.
 - **Disk usage alerts** (Oct 6): `disk_space` for node-dc (`50a8deb`) and
   `edge_disk_space` for the online edge nodes (`6777626`, **edge-agent-v9**,
   migration 042; the agent sends the disk of its buffer directory with claim and
@@ -1497,9 +1501,6 @@ rewritten) now edits what used to need the database or a delete and re-add:
   tried live in slice 18 (invalid token, lease held, 150 s give-up); still to try is a real
   reboot of the device without network. The cache only exists after the first claim with
   v12 on each node, so a new node needs one start with the backend reachable.
-- **Restart cycle on a refused claim** (chaos finding 34): an invalid token or a foreign
-  lease makes the unit restart the agent every 4.5 s. Consider a longer `RestartSec` for
-  exit code 1 or an in-process backoff before the exit.
 - **Test-data cleanup also for the clock tests**: slice 9 and 15 left shifted event
   streams (`created_at - timestamp` over 200 s), events with `payload ? 'timestampCorrected'`
   and from the v14 test 20 events stamped 30 s ahead (`created_at - timestamp` under -20 s).

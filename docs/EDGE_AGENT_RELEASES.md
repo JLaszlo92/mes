@@ -306,11 +306,30 @@ after 5, 10, 20, 40 s and then every 60 s, as for a start without the backend (v
 (the usual case: it expires 90 s after the last accepted heartbeat) is adopted without a restart
 (`claimed edge node again after the lease was lost — lease adopted`). If the backend keeps
 refusing for 150 s, another instance owns the node: the agent stops its channels and exits 1
-(the buffer stays on disk; the unit restarts it every few seconds until the claim succeeds, as in
-a start with an invalid token). A heartbeat that fails for a network reason, a 5xx, a 408 or a 429
+(the buffer stays on disk; the unit restarts it, see "A rejected first claim (v16)" for the pace). A heartbeat that fails for a network reason, a 5xx, a 408 or a 429
 stays transient and is retried at the next tick (now logged). No backend change, no migration.
 
+## A rejected first claim (v16)
+
+Until v15 a first claim that the backend rejected (409 while the lease of a crashed instance of this node is
+still fresh, 401 for an invalid token, ...) ended the process at once; the unit restarted it after 2 s and the
+loop repeated every ~4.5 s (13 claims a minute) for up to 90 s after a crash, or for as long as a token stayed
+invalid (chaos finding 34). From v16 the agent logs `the backend rejected the claim — no channel is started;
+asking again` and waits 5, 10, 20, 40, then 60 s between the attempts for up to 150 s before it exits 1; the lease
+of a crashed instance is adopted at the next attempt after it expires, without a restart. An unreachable backend
+still starts from the cached configuration (v12). The unit has `RestartPreventExitStatus=78`: a configuration
+error (exit 78) stops the service in the `failed` state instead of restarting it every 2 s. For installs made
+before v16 add the line to `/etc/systemd/system/mes-edge-node.service` (after `RestartSec=2`) and run
+`systemctl daemon-reload`. No backend change.
+
 ## Release notes
+
+- **edge-agent-v16** (Oct 8, 2026, `07b55d8`) — waits out a rejected first claim with a backoff instead
+  of exiting (new `initial-claim.ts`, 7 unit tests, `index.ts` first claim), `RestartPreventExitStatus=78` in
+  `install-on-node.sh`. No backend change. `pnpm test`: shared 6, edge-agent 116, backend 215. Verified on
+  node-gate: after a SIGKILL 1 restart (v15: 15 to 18 in 100 to 120 s), 4 refused claims at +5, +10, +20 s,
+  claimed after 75 s without a restart. Note: the deploy on node-gate is the checkout of the tag
+  (detached HEAD), so `git pull` fails there; use `scripts/deploy-edge-agent.sh edge-agent-v16`.
 
 - **edge-agent-v15** (Oct 8, 2026, `37f1f51`) — claims again when the heartbeat shows the lease
   was lost, stops after 150 s of refusal (new `heartbeat-failure.ts`, 14 unit tests;

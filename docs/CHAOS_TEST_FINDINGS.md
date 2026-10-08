@@ -1013,12 +1013,10 @@ every 20 s. The lease is stale after 90 s without a heartbeat (`HEARTBEAT_STALE_
     without a restart, if the backend keeps refusing for 150 s the agent stops. 5xx, timeouts and
     network errors stay transient, now logged. At most about 150 s of parallel operation in the
     real conflict case.
-34. **Observation, not changed: the restart cycle on a refused claim.** An invalid token or a lease held
-    by someone else makes the agent exit and the unit restart it every 4.5 s (a claim, 2 s of CPU and an
-    error line each time) for as long as the condition lasts: 13 claims per minute on the backend and
-    a busy edge node. The behaviour is correct (nothing is published without a lease) but noisy; a
-    longer `RestartSec` for exit code 1 or an in-process wait with the 5 to 60 s backoff before the exit
-    would reduce it. Open, low priority.
+34. **Fixed in edge-agent-v16 (slice 21): the restart cycle on a refused claim.** An invalid token or a lease held
+    by someone else made the agent exit at the first claim and the unit restart it every 4.5 s (a claim,
+    2 s of CPU and an error line each time) for as long as the condition lasted: 13 claims per minute on the
+    backend and a busy edge node. The behaviour was correct (nothing is published without a lease) but noisy.
 
 The dashboard alert `edge_node_offline` during the 4 minute lease test was not recorded.
 
@@ -1087,6 +1085,28 @@ Routes: `GET /api/audit-log`, `/api/audit-log/actions`, `POST /api/license/reloa
 request with no token, a garbage token, the token of a deactivated user (`is_active = false`) and an expired
 session answered 401. The 403 body is `{"statusCode":403,"error":"Forbidden","message":"insufficient role"}`,
 with no internal detail. No findings; the temporary users were removed.
+
+## Slice 21 — the restart cycle on a refused claim, fixed (Oct 8, 2026)
+
+**Change (edge-agent-v16, `07b55d8`).** The first claim of a starting agent waits out a rejection
+(`initial-claim.ts`, `claimWaitingOutRejection`): the same backoff as the background claim (5, 10, 20, 40, then
+60 s) until the rejection has lasted 150 s, then it exits with the last error. No channel is started in the
+meantime. An unreachable backend (5xx, 408, 429, no answer) still goes straight to the offline start from the
+cache. The unit gets `RestartPreventExitStatus=78` (`EXIT_CONFIG`: a configuration error cannot fix itself, so the
+service stays `failed` instead of looping every 2 s); `ops/onboarding/install-on-node.sh` writes it for new
+installs, on node-gate the unit was edited by hand.
+
+**Live test on node-gate** (`systemctl kill -s SIGKILL mes-edge-node`: the lease of the dead process stays fresh for up
+to 90 s, so the restarted agent gets a real 409):
+
+| | v15 | v16 |
+|---|---|---|
+| Restarts | 15 in 100 s and 18 in 120 s (two runs) | **1** in 120 s (the one after the kill) |
+| Claims refused (log) | one per restart, about every 4.5 s | 4 (13:58:01, :06, :16, :36), spacing 5, 10, 20 s |
+| Recovery | when the lease expired | claimed at 13:59:16 (the next attempt, 40 s later) without a restart |
+
+Both runs of the first column were meant as the v16 test, but the node still ran v15 (the `git pull` on node-gate failed on
+the detached HEAD, so the build came from the old source). They are kept as the baseline.
 
 ## Not tested yet
 
