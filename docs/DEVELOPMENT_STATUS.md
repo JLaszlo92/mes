@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 8, 2026 (late evening)
+**Last updated:** October 9, 2026
 
 ## Where things stand
 
@@ -1464,8 +1464,42 @@ rewritten) now edits what used to need the database or a delete and re-add:
   mock, which vitest then calls as a cleanup function after the test with
   no arguments - use braces.
 
+## Dashboard polish and live data — Oct 9
+
+Five points from a day of use, all frontend only (no backend change, no migration):
+
+- **Gantt bars are clipped to the visible days** (`2c16bec`): an order longer than the chosen number of days used to
+  run past the edge of the timeline and widen the page. `GanttSchedulePanel.tsx` now clips production and maintenance
+  bars to the window; a clipped side has a square edge, no resize handle, and the tooltip says "Continues beyond the
+  visible days". Drag previews are not clipped.
+- **Alerts badge** (`f51bed5`): the sidebar badge polls every 15 s (was 60 s) and the Alerts table tells it at once
+  after an acknowledge (`alerts-live.ts`, `notifyAlertsChanged` / `onAlertsChanged`, the same pattern as
+  `notifyMasterDataChanged`).
+- **"Connecting…" instead of "Disconnected"** (`2b1fad4`): `App.tsx` keeps `connectionLost` (set when an attempt
+  fails or the socket closes, cleared on open); until then the header shows a grey "Connecting…". The red
+  "Disconnected, retrying" pill is only for a really lost connection.
+- **Alert details** (`0d012b3`): a click on a row in Alerts → Active or History opens `AlertDetailsDrawer.tsx` with
+  the full message, machine, type, raised, status and acknowledgement (the table still cuts the message to fit the
+  column). The row-action buttons stop the click, so Acknowledge does not open the drawer.
+- **Live pages**: `ui/usePolling.ts` calls a function every N seconds while the tab is visible, once when the tab
+  becomes visible again, and not at all when `enabled` is false. Used by: Edge nodes (10 s, node list only,
+  `7290d98`), Work orders, Maintenance orders (paused while a drawer is open), Downtime periods (paused while a reason
+  is saved) at 15 s; Downtime Pareto, Shift summary and Lots at 30 s; the Gantt (15 s, schedule + work orders +
+  maintenance only, paused while dragging or saving, results dropped if a full `load()` ran meanwhile). Already live
+  before: Overview and Live status (WebSocket), Alerts (15 s), Audit log, Fault reports (`refreshMs`). Deliberately
+  **not** live: configuration pages (Machine registry, Plant hierarchy, Shift patterns, Status definitions,
+  Terminals, Fault codes, Alert rules) because a reload would disturb an edit, and the Gantt's off-shift shading
+  (reloaded with the window).
+- **Status pills are a deliberate rule**: only states that ask for attention are pills (in progress, late due date,
+  High and Urgent priority, New alert); normal states are plain text, so that colour keeps its meaning. Not a bug.
+
+**Deploying the frontend:** after `cp -a packages/frontend/dist/. /var/www/mes/` do a hard reload (Cmd+Shift+R).
+The old bundle stays in the browser cache; twice on Oct 9 a "fix does not work" was the old bundle.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
+- **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
+  pause it (`enabled=false`) while a form or drawer holds unsaved input.
 - All notes from previous revisions still apply: build on node-dc not
   node-gate; `rm -rf dist *.tsbuildinfo` for stale-build issues; capture
   any manual `psql` change in a numbered migration immediately;
