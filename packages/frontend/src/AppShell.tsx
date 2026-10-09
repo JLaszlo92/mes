@@ -55,6 +55,7 @@ export default function AppShell({
   activeGroupId,
   activeItemId,
   connected,
+  connectionLost = false,
   role,
   onSignOut,
   topBarControls,
@@ -64,6 +65,8 @@ export default function AppShell({
   activeGroupId: string;
   activeItemId: string;
   connected: boolean;
+  /** The connection was lost (as opposed to the first connection still being made). */
+  connectionLost?: boolean;
   role: string;
   onSignOut: () => void;
   /** A felső sáv bal oldalán, a morzsamenü után (hatókör-választó). */
@@ -201,9 +204,13 @@ export default function AppShell({
           <span className="ui-toolbar-spacer" />
           {connected ? (
             <span className="shell-live">Live</span>
-          ) : (
+          ) : connectionLost ? (
             <span className="ui-pill ui-pill-alarm" role="status">
               Disconnected, retrying
+            </span>
+          ) : (
+            <span role="status" style={{ color: "#898781", fontSize: 12 }}>
+              Connecting…
             </span>
           )}
           <span className="shell-role">{role}</span>

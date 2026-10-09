@@ -243,6 +243,8 @@ function applyEventToMachines(
 export default function App() {
   const [machines, setMachines] = useState<Record<string, MachineState>>({});
   const [connected, setConnected] = useState(false);
+  /** True once a connection attempt failed or the socket closed; false while the first connection is still being made. */
+  const [connectionLost, setConnectionLost] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
 
   const { auth, logout, mfaSetupRequired } = useAuth();
@@ -256,6 +258,7 @@ export default function App() {
   useEffect(() => {
     if (!token) {
       setConnected(false);
+      setConnectionLost(false);
       setMachines({});
       return;
     }
@@ -267,6 +270,7 @@ export default function App() {
     function scheduleRetry() {
       if (cancelled) return;
       failures++;
+      setConnectionLost(true);
       const delay = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** Math.min(failures - 1, 4));
       retryTimer = setTimeout(() => void connect(), delay);
     }
@@ -291,6 +295,7 @@ export default function App() {
       socket.onopen = () => {
         failures = 0;
         setConnected(true);
+        setConnectionLost(false);
       };
 
       socket.onmessage = (raw) => {
@@ -356,6 +361,7 @@ export default function App() {
         activeGroupId={activeGroup?.id ?? ""}
         activeItemId={activeView?.id ?? ""}
         connected={connected}
+        connectionLost={connectionLost}
         role={auth.role}
         onSignOut={logout}
         topBarControls={<ScopeSelector />}
