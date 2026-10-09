@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState } from "react";
 import { apiFetch, API_BASE } from "./api.js";
 
@@ -50,6 +51,8 @@ function latestPerShift(rows: ShiftSummary[]): ShiftSummary[] {
 
 export default function ShiftSummaryPanel() {
   const [rows, setRows] = useState<ShiftSummary[] | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  usePolling(() => setRefreshTick((n) => n + 1), 30_000);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -62,9 +65,12 @@ export default function ShiftSummaryPanel() {
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         return res.json() as Promise<ShiftSummary[]>;
       })
-      .then(setRows)
+      .then((list) => {
+        setRows(list);
+        setError(null);
+      })
       .catch((err) => setError(String(err)));
-  }, []);
+  }, [refreshTick]);
 
   if (error) {
     return <p style={{ color: "#d03b3b", fontSize: 13 }}>Failed to load shift summary: {error}</p>;

@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState } from "react";
 import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
@@ -71,6 +72,8 @@ export default function DowntimeParetoPanel() {
   const [machineId, setMachineId] = useState("");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [pareto, setPareto] = useState<DowntimePareto | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+  usePolling(() => setRefreshTick((n) => n + 1), 30_000);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -92,7 +95,7 @@ export default function DowntimeParetoPanel() {
         setError(null);
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-  }, [hours, machineId, scopeFiltered, scopeMachines, isInScope]);
+  }, [hours, machineId, scopeFiltered, scopeMachines, isInScope, refreshTick]);
 
   const maxSeconds = Math.max(1, ...(pareto?.items.map((i) => i.seconds) ?? [1]));
   const coverage = pareto && pareto.explainableSeconds > 0 ? pareto.explainedSeconds / pareto.explainableSeconds : null;

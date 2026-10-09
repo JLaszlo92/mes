@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -67,6 +68,15 @@ export default function MaintenanceWorkOrdersPanel() {
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [masterDataVersion]);
+
+  // Live: refresh the list every 15 s, but not while a drawer is open (its form must not be reset).
+  usePolling(
+    () => {
+      void loadOrders().catch(() => {});
+    },
+    15_000,
+    editor === null,
+  );
 
   const filtered = useMemo(() => {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);

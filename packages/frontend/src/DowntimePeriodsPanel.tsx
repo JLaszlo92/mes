@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -134,6 +135,9 @@ export default function DowntimePeriodsPanel() {
   useEffect(() => {
     void load();
   }, []);
+
+  // Live: new stops appear without a page reload.
+  usePolling(() => void load(), 15_000, explainingId === null);
 
   async function explain(periodId: string, faultCodeId: string) {
     if (explainingId) return;

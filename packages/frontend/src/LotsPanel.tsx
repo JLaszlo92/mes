@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -17,6 +18,8 @@ interface Lot {
 export default function LotsPanel() {
   const { auth, logout } = useAuth();
   const [lots, setLots] = useState<Lot[]>([]);
+  const [refreshTick, setRefreshTick] = useState(0);
+  usePolling(() => setRefreshTick((n) => n + 1), 30_000);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -31,7 +34,7 @@ export default function LotsPanel() {
       .then(setLots)
       .catch((err) => setError(String(err)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth]);
+  }, [auth, refreshTick]);
 
   return (
     <section style={{ marginTop: 32 }}>

@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -50,6 +51,11 @@ export default function WorkOrdersPanel() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
       .finally(() => setLoading(false));
   }, [masterDataVersion]);
+
+  // Live: new and changed work orders appear without a page reload.
+  usePolling(() => {
+    void loadWorkOrders().catch(() => {});
+  }, 15_000);
 
   const filtered = useMemo(() => {
     const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
