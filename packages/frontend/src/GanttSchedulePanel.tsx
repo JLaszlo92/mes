@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -286,6 +287,7 @@ export default function GanttSchedulePanel() {
   }, []);
 
   function load() {
+    dataEpoch.current += 1;
     const fromIso = new Date(windowStartMs).toISOString();
     const toIso = new Date(windowEndMs).toISOString();
     Promise.all([
@@ -322,6 +324,23 @@ export default function GanttSchedulePanel() {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(load, [daysToShow, windowStartMs]);
+
+  // Live: the schedule, the work orders and the maintenance windows refresh every 15 s. Paused while a
+  // bar is dragged or a save is running; a result is dropped if a full load() ran meanwhile.
+  const dataEpoch = useRef(0);
+  function refreshData() {
+    const epoch = dataEpoch.current;
+    const json = (path: string) => apiFetch(`${API_BASE}${path}`).then((r) => (r.ok ? r.json() : null));
+    Promise.all([json("/api/work-order-assignments"), json("/api/work-orders"), json("/api/maintenance-work-orders")])
+      .then(([a, wo, mt]) => {
+        if (epoch !== dataEpoch.current) return;
+        if (Array.isArray(a)) setAssignments(a);
+        if (Array.isArray(wo)) setWorkOrders(wo);
+        if (Array.isArray(mt)) setMaintenance((mt as MaintenanceOrder[]).filter((x) => x.status !== "closed"));
+      })
+      .catch(() => {});
+  }
+  usePolling(refreshData, 15_000, drag === null && !saving);
 
   // Első betöltéskor az idővonalat a "most" környékére görgetjük.
   useEffect(() => {
