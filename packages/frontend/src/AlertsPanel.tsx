@@ -1,3 +1,4 @@
+import AlertDetailsDrawer from "./AlertDetailsDrawer.js";
 import { notifyAlertsChanged } from "./alerts-live.js";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
@@ -22,6 +23,7 @@ export default function AlertsPanel() {
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [detailsId, setDetailsId] = useState<string | null>(null);
   /** Riasztások, amelyekhez ebben a munkamenetben már készült munkarendelés — a gomb ne duplikáljon. */
   const [ticketCreatedFor, setTicketCreatedFor] = useState<Set<string>>(new Set());
   const canCreateTicket = ["supervisor", "maintenance", "manager", "admin"].includes(auth?.role ?? "");
@@ -43,6 +45,7 @@ export default function AlertsPanel() {
   }, []);
 
   const open = useMemo(() => alerts.filter((a) => !a.resolvedAt && isInScope(a.machineId)), [alerts, isInScope]);
+  const detailsAlert = alerts.find((a) => a.id === detailsId) ?? null;
   const visibleSelected = useMemo(() => new Set([...selected].filter((id) => open.some((a) => a.id === id && !a.acknowledgedAt))), [selected, open]);
 
   async function acknowledge(ids: string[]) {
@@ -130,6 +133,7 @@ export default function AlertsPanel() {
         selected={visibleSelected}
         onSelectedChange={setSelected}
         isDimmed={(a) => !!a.acknowledgedAt}
+        onRowClick={(a) => setDetailsId(a.id)}
         initialSort={{ columnId: "state", dir: "asc" }}
         rowActions={(a) => (
           <>
@@ -147,7 +151,8 @@ export default function AlertsPanel() {
         )}
         emptyText="No active alerts."
       />
-      <p className="ui-field-hint">Resolved alerts are under Alerts → History.</p>
+      <p className="ui-field-hint">Resolved alerts are under Alerts → History. Click a row for the full text.</p>
+      {detailsAlert && <AlertDetailsDrawer alert={detailsAlert} onClose={() => setDetailsId(null)} />}
     </section>
   );
 }

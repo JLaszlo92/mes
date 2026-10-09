@@ -1,3 +1,4 @@
+import AlertDetailsDrawer from "./AlertDetailsDrawer.js";
 import { useMemo, useState } from "react";
 import { useScope } from "./scope.js";
 import DataTable, { type Column } from "./ui/DataTable.js";
@@ -13,6 +14,7 @@ export default function AlertHistoryPanel() {
   const { isFiltered, machines, isInScope } = useScope();
   const [status, setStatus] = useState<Status>("all");
   const [days, setDays] = useState("30");
+  const [details, setDetails] = useState<Alert | null>(null);
 
   const machineIds = useMemo(() => (isFiltered ? machines.filter((m) => isInScope(m.id)).map((m) => m.id).join(",") || "-" : undefined), [isFiltered, machines, isInScope]);
   const from = useMemo(() => (days === "all" ? undefined : new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000 - Number(days) * 86_400_000).toISOString()), [days]);
@@ -53,7 +55,8 @@ export default function AlertHistoryPanel() {
         </select>
       </div>
       {list.error && <p className="ui-message ui-message-error">{list.error}</p>}
-      <DataTable ariaLabel="Alert history" rows={list.rows} columns={columns} getRowId={(a) => a.id} emptyText={list.loading ? "Loading…" : "No alerts in this period."} />
+      {details && <AlertDetailsDrawer alert={details} onClose={() => setDetails(null)} />}
+      <DataTable ariaLabel="Alert history" onRowClick={setDetails} rows={list.rows} columns={columns} getRowId={(a) => a.id} emptyText={list.loading ? "Loading…" : "No alerts in this period."} />
       <Pager offset={list.offset} limit={list.limit} total={list.total} onChange={list.setPage} />
     </section>
   );
