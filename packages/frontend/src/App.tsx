@@ -1,3 +1,4 @@
+import { onAlertsChanged } from "./alerts-live.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { MachineEvent, MachineStatusValue } from "@mes/shared";
 import MachineOverviewPanel from "./MachineOverviewPanel.js";
@@ -143,7 +144,7 @@ function navForRole(role: Role): NavGroup[] {
     .filter((g) => g.items.length > 0);
 }
 
-/** Nyugtázatlan, nyitott riasztások száma az oldalsávhoz — percenként frissül. */
+/** Nyugtázatlan, nyitott riasztások száma az oldalsávhoz — 15 mp-enként frissül, és azonnal, ha az Alerts oldalon nyugtáznak. */
 function useOpenAlertCount(enabled: boolean): number {
   const [count, setCount] = useState(0);
   useEffect(() => {
@@ -157,10 +158,12 @@ function useOpenAlertCount(enabled: boolean): number {
         })
         .catch(() => {});
     void load();
-    const timer = setInterval(load, 60_000);
+    const timer = setInterval(load, 15_000);
+    const unsubscribe = onAlertsChanged(() => void load());
     return () => {
       cancelled = true;
       clearInterval(timer);
+      unsubscribe();
     };
   }, [enabled]);
   return count;

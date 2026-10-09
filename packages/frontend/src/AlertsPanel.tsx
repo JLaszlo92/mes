@@ -1,3 +1,4 @@
+import { notifyAlertsChanged } from "./alerts-live.js";
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -57,6 +58,7 @@ export default function AlertsPanel() {
       setNotice(failed ? `${ids.length - failed} acknowledged, ${failed} failed.` : `${ids.length} acknowledged.`);
       setSelected(new Set());
       load();
+      notifyAlertsChanged();
     } finally {
       setBusy(false);
     }
