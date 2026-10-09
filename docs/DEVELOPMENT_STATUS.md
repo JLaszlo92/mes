@@ -1278,7 +1278,8 @@ Full release notes: `docs/EDGE_AGENT_RELEASES.md`; test results:
   `INGESTION_FAIL_SECONDS` (30). Live test with a trigger that fails every insert with 53100: raised after 38 s,
   resolved 11 s after the trigger was removed, the buffered events arrived (186 in one minute, 2 min 11 s late);
   `GET /health?db=1` answered 503 `ingestion_failing` on the running server for the whole blocked period (second run).
-  No banner (the alert shows in the alerts panel). Details in the findings doc, slice 23 follow-up.
+  The alert shows in the alerts panel; the dashboard banner followed on Oct 9 (see "Robustness follow-ups"). Details in the
+  findings doc, slice 23 follow-up.
 - **Agent restart button and automatic pickup of changed settings** (Oct 8, `22dc0d3`, **edge-agent-v19**,
   migration 046): a change of a node's channels or settings no longer waits for the next agent start. Every heartbeat
   answer carries `configRevision` (first 16 hex characters of the SHA-256 of the canonical JSON of the channel fields the
@@ -1496,6 +1497,42 @@ Five points from a day of use, all frontend only (no backend change, no migratio
 **Deploying the frontend:** after `cp -a packages/frontend/dist/. /var/www/mes/` do a hard reload (Cmd+Shift+R).
 The old bundle stays in the browser cache; twice on Oct 9 a "fix does not work" was the old bundle.
 
+## Robustness follow-ups: write failures, critical disk, banner, data gaps — Oct 9
+
+Four small backlog items from the full-disk test (chaos finding 39) and the `data_gap` event. Backend deploy: restart
+`mes-backend` (no migration); the banner is frontend only (build, copy, hard reload).
+
+- **503 `database_write_failed` on every route** (`database-unavailable.ts`): a database that answers but cannot write
+  (SQLSTATE 53100 disk full, 53200 out of memory, 53000 insufficient resources, 25006 read-only transaction; also the
+  messages "No space left on device", "could not extend file", "read-only transaction", through the cause chain) now
+  answers **503 `{ "error": "database cannot write", "code": "database_write_failed" }` with `Retry-After: 30`** from the
+  global error handler, so no route needs its own handling. A lost connection stays `database_unavailable` with
+  `Retry-After: 5`; 53300 (too many connections) stays "unavailable". The two codes are different on purpose: reads still
+  work with a full disk, and the dashboard's "database unavailable" banner keys on `database_unavailable` only. 8 new tests
+  in `database-unavailable.test.ts`. A route that catches an error and answers 500 itself would bypass the handler; none was
+  found.
+- **Second, critical disk threshold** (`disk-health.ts`, `disk-health-evaluator.ts`, `edge-disk-health-evaluator.ts`): own
+  alert types **`disk_space_critical`** (node-dc) and **`edge_disk_space_critical`** (online edge nodes) next to the existing
+  `disk_space` / `edge_disk_space`. Raised at **95 % used or less than 512 MiB free**, cleared below 90 % (and 640 MiB), text
+  "Disk space is critically low: ... NOW". Own alert type on purpose: an acknowledged 85 % warning must not hide the critical
+  one (alerts have no severity column and only one open system alert per type). Settings `DISK_CRITICAL_PERCENT` (95) and
+  `DISK_CRITICAL_FREE_MIB` (512). `DiskLimits` itself is unchanged; the critical limits are a second set passed as an
+  optional argument. Not tried on the real disk (the unit tests cover raise, hysteresis and resolve); a temporary
+  `DISK_CRITICAL_PERCENT=1` drop-in would show it live.
+- **Banner "Events cannot be stored"** (`DatabaseBanner.tsx`, `database-status.ts`, `c09ad91`): no request of the dashboard
+  fails when only the writes fail, so the banner asks `GET /health?db=1` itself, on load and every 30 s on a visible tab (every
+  10 s while the problem lasts), and shows the red bar on a 503 with `code: "ingestion_failing"`; it disappears when the
+  health answers 200. A `database_unavailable` answer is ignored there (the old banner and its 5 s probe handle it).
+  Tested in the browser by overriding `window.fetch` for `/health?db=1` in the console (no real fault needed).
+- **`data_gap` alert** (`data-gap-health-evaluator.ts`, `e3aef45`): system alert type **`data_gap`**, checked every 5 min:
+  open while any `data_gap` event lies in the last `DATA_GAP_ALERT_HOURS` (default 24), with one stable text listing up to 5
+  machines (gaps, good and scrap parts not booked, latest time, most recent first); resolves by itself when the window is
+  clean. A gap is a point in the past, not a state, hence the window. Acknowledge works as usual. **The 5 test events of
+  Oct 8 (3 machines) raised it at once after the deploy**; it clears by itself 24 h after the newest one, and the pilot
+  data cleanup removes the events. 8 new tests. `pnpm test`: shared 10, edge-agent 132, backend 267.
+- Raw-event retention: the startup log of Oct 9 shows `retentionDays: 90, dryRun: false` (active, not a dry run); the
+  `raw_events_dropped` audit entries have not been checked yet.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
@@ -1557,10 +1594,9 @@ The old bundle stays in the browser cache; twice on Oct 9 a "fix does not work" 
 
 ## Still open (lower priority, not blocking)
 
-- **Rest of the signal for a database that cannot write** (chaos finding 39): the 503 handler of the other routes also
-  for Postgres 53100 and 25006 (today they answer 500 on a full disk); a second, higher disk threshold (for example 95%
-  critical); optionally a dashboard banner for `ingestion_failing`; the `ingestion_failing` test with the real full
-  disk instead of the trigger. The alert and `/health?db=1` are done (`60c57d5`, `33305f7`).
+- **Rest of the signal for a database that cannot write** (chaos finding 39): done on Oct 9 (503 `database_write_failed`,
+  critical disk threshold, banner, see "Robustness follow-ups"). Left: the `ingestion_failing` test with the real full disk
+  instead of the trigger, and a live look at the critical disk alert.
 
 - **Edge agent follow-ups** (Oct 5): the restart button and the automatic pickup of changed
   channel settings are done (edge-agent-v19);
@@ -1572,8 +1608,8 @@ The old bundle stays in the browser cache; twice on Oct 9 a "fix does not work" 
   from the root (it downloads its own copy and also picks up `dist/`);
   `test_s7_bridge.py` needs the `snap7` module (missing on node-dc, so the
   Python test run there shows one import error; node-gate runs 18 tests OK);
-  a dropped catch-up gap is now an event (`data_gap`, edge-agent-v17 / v18); what is
-  still open is an alert or a view that uses it.
+  a dropped catch-up gap is now an event (`data_gap`, edge-agent-v17 / v18) and raises the
+  `data_gap` system alert (Oct 9); still open is a report view of the gaps.
 - **Chaos tests not done yet**: a real power cut of the edge hardware (the
   clean reboot and the `pct stop` hard stop passed on Oct 5, see
   `CHAOS_TEST_FINDINGS.md` slices 5 and 6), the settings API with a role that is not allowed (the rest passed on Oct 8, slice 17),
