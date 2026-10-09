@@ -1028,8 +1028,11 @@ export default function GanttSchedulePanel() {
                         if (!group) return null;
                         const startMs = Date.parse(a.plannedStart);
                         const endMs = Date.parse(a.plannedEnd);
-                        const left = xFromMs(startMs);
-                        const width = Math.max(4, xFromMs(endMs) - left);
+                        if (endMs <= windowStartMs || startMs >= windowEndMs) return null;
+                        const clippedStart = startMs < windowStartMs;
+                        const clippedEnd = endMs > windowEndMs;
+                        const left = xFromMs(Math.max(startMs, windowStartMs));
+                        const width = Math.max(4, xFromMs(Math.min(endMs, windowEndMs)) - left);
                         const isFirst = group.segments[0]?.id === a.id;
                         const isLast = group.segments[group.segments.length - 1]?.id === a.id;
                         const isActive = (drag?.type === "move" || drag?.type === "resize") && drag.workOrderId === a.workOrderId;
@@ -1046,7 +1049,8 @@ export default function GanttSchedulePanel() {
                           `\nPlanned working time ${formatDuration(group.workingMs)}` +
                           (underPlanned ? `, shorter than the required ${formatDuration(required!)}` : "") +
                           (overlapWith ? `\nOverlaps planned maintenance: ${overlapWith.join(", ")}` : "") +
-                          (canPlanProduction ? `\nDrag to move the whole order, drag its outer edges to resize` : "");
+                          (canPlanProduction ? `\nDrag to move the whole order, drag its outer edges to resize` : "") +
+                          (clippedStart || clippedEnd ? `\nContinues beyond the visible days` : "");
 
                         return (
                           <div
@@ -1077,7 +1081,7 @@ export default function GanttSchedulePanel() {
                               height: PROD_HEIGHT,
                               background: COLORS.bar,
                               color: "#fff",
-                              borderRadius: 6,
+                              borderRadius: `${clippedStart ? 0 : 6}px ${clippedEnd ? 0 : 6}px ${clippedEnd ? 0 : 6}px ${clippedStart ? 0 : 6}px`,
                               fontSize: 11,
                               padding: `4px ${HANDLE_WIDTH + 2}px`,
                               overflow: "hidden",
@@ -1094,10 +1098,10 @@ export default function GanttSchedulePanel() {
                             }}
                           >
                             {a.orderNumber}
-                            {canPlanProduction && isFirst && width >= HANDLE_WIDTH * 3 && (
+                            {canPlanProduction && isFirst && !clippedStart && width >= HANDLE_WIDTH * 3 && (
                               <ResizeHandle side="start" onMouseDown={(e) => startResize(e, group, "start", label)} />
                             )}
-                            {canPlanProduction && isLast && (
+                            {canPlanProduction && isLast && !clippedEnd && (
                               <ResizeHandle side="end" onMouseDown={(e) => startResize(e, group, "end", label)} />
                             )}
                           </div>
@@ -1110,8 +1114,8 @@ export default function GanttSchedulePanel() {
                           const startMs = Date.parse(mt.plannedStart!);
                           const endMs = Date.parse(mt.plannedEnd!);
                           if (endMs <= windowStartMs || startMs >= windowEndMs) return null;
-                          const left = xFromMs(startMs);
-                          const width = Math.max(6, xFromMs(endMs) - left);
+                          const left = xFromMs(Math.max(startMs, windowStartMs));
+                          const width = Math.max(6, xFromMs(Math.min(endMs, windowEndMs)) - left);
                           const overlapWith = overlapInfo.byMaintenance.get(mt.id);
                           const isActive = (drag?.type === "mt-move" || drag?.type === "mt-resize") && drag.maintenanceId === mt.id;
                           const title =
@@ -1152,10 +1156,10 @@ export default function GanttSchedulePanel() {
                               }}
                             >
                               {mt.title}
-                              {canPlanMaintenance && width >= HANDLE_WIDTH * 3 && (
+                              {canPlanMaintenance && startMs >= windowStartMs && width >= HANDLE_WIDTH * 3 && (
                                 <ResizeHandle side="start" onMouseDown={(e) => startMaintenanceResize(e, mt, "start")} />
                               )}
-                              {canPlanMaintenance && <ResizeHandle side="end" onMouseDown={(e) => startMaintenanceResize(e, mt, "end")} />}
+                              {canPlanMaintenance && endMs <= windowEndMs && <ResizeHandle side="end" onMouseDown={(e) => startMaintenanceResize(e, mt, "end")} />}
                             </div>
                           );
                         })}
