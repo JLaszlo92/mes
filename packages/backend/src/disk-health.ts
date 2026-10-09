@@ -10,6 +10,8 @@
  */
 
 export const DISK_ALERT_TYPE = "disk_space";
+/** The second, higher threshold has its own alert type: an acknowledged warning must not hide it. */
+export const DISK_CRITICAL_ALERT_TYPE = "disk_space_critical";
 const GIB = 1024 ** 3;
 
 export interface DiskVolume {
@@ -28,6 +30,9 @@ export interface DiskLimits {
 
 export const DEFAULT_DISK_LIMITS: DiskLimits = { raisePercent: 85, clearPercent: 80, minFreeBytes: 2 * GIB };
 
+/** Critical: 95 % used or less than 512 MiB available; clears at 90 % (and 25 % more free space than the minimum). */
+export const DEFAULT_CRITICAL_DISK_LIMITS: DiskLimits = { raisePercent: 95, clearPercent: 90, minFreeBytes: 512 * 1024 ** 2 };
+
 export type DiskHealth = { healthy: true } | { healthy: false; message: string };
 
 /** Used share like df's "Use%": used / (used + available). */
@@ -40,6 +45,8 @@ function formatGiB(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GiB`;
 }
 
+export const DB_DISK_CRITICAL_CONSEQUENCE = "The database is about to stop writing events — free up space or enlarge the volume NOW.";
+
 export const DB_DISK_CONSEQUENCE = "A full disk stops the database from writing events — free up space or enlarge the volume.";
 
 export function assessDisks(
@@ -47,6 +54,7 @@ export function assessDisks(
   wasAlerting: boolean,
   limits: DiskLimits = DEFAULT_DISK_LIMITS,
   consequence: string = DB_DISK_CONSEQUENCE,
+  headline: string = "Disk space is running low",
 ): DiskHealth {
   const percentLimit = wasAlerting ? limits.clearPercent : limits.raisePercent;
   const freeLimit = wasAlerting ? limits.minFreeBytes * 1.25 : limits.minFreeBytes;
@@ -62,6 +70,6 @@ export function assessDisks(
     .join("; ");
   return {
     healthy: false,
-    message: `Disk space is running low: ${listed}. ${consequence}`,
+    message: `${headline}: ${listed}. ${consequence}`,
   };
 }

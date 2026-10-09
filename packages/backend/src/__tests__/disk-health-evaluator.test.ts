@@ -4,8 +4,8 @@ const { raise, resolve, stat, statfs } = vi.hoisted(() => ({ raise: vi.fn(), res
 vi.mock("../alerts-repository.js", () => ({ raiseOrUpdateSystemAlert: raise, resolveSystemAlert: resolve }));
 vi.mock("node:fs/promises", () => ({ stat, statfs }));
 
-import { createDiskCheck, limitsFromEnv, pathsFromEnv, readVolumes } from "../disk-health-evaluator.js";
-import { DEFAULT_DISK_LIMITS } from "../disk-health.js";
+import { createDiskCheck, criticalLimitsFromEnv, limitsFromEnv, pathsFromEnv, readVolumes } from "../disk-health-evaluator.js";
+import { DEFAULT_CRITICAL_DISK_LIMITS, DEFAULT_DISK_LIMITS } from "../disk-health.js";
 
 const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never;
 /** 100 blocks of 1 GiB: `used` of them used, the rest available. */
@@ -86,5 +86,60 @@ describe("settings from the environment", () => {
     delete process.env.DISK_WARN_PERCENT;
     delete process.env.DISK_MIN_FREE_GIB;
     delete process.env.DISK_CHECK_PATHS;
+  });
+});
+
+describe("createDiskCheck - critical limit", () => {
+  beforeEach(() => {
+    stat.mockReset().mockResolvedValue({ dev: 1 });
+    statfs.mockReset();
+    raise.mockReset().mockResolvedValue(true);
+    resolve.mockReset().mockResolvedValue(false);
+  });
+
+  it("raises a separate critical alert at 95 %, keeps it above 90 %, resolves it on its own while the warning stays", async () => {
+    const check = createDiskCheck(log, ["/"], DEFAULT_DISK_LIMITS, DEFAULT_CRITICAL_DISK_LIMITS);
+
+    statfs.mockResolvedValue(disk(96));
+    await check();
+    expect(raise.mock.calls.map((c) => c[0])).toEqual(["disk_space_critical", "disk_space"]);
+    expect(raise.mock.calls[0]![1]).toContain("critically low");
+    expect(raise.mock.calls[0]![1]).toContain("/ is 96% used");
+
+    raise.mockClear();
+    statfs.mockResolvedValue(disk(92)); // between 90 and 95: both stay
+    await check();
+    expect(raise.mock.calls.map((c) => c[0])).toEqual(["disk_space_critical", "disk_space"]);
+    expect(resolve).not.toHaveBeenCalled();
+
+    raise.mockClear();
+    statfs.mockResolvedValue(disk(87)); // below 90: the critical alert resolves, the warning (clears at 80) stays
+    await check();
+    expect(resolve).toHaveBeenCalledWith("disk_space_critical");
+    expect(resolve).not.toHaveBeenCalledWith("disk_space");
+    expect(raise.mock.calls.map((c) => c[0])).toEqual(["disk_space"]);
+  });
+
+  it("does not raise the critical alert between 85 and 95 %", async () => {
+    statfs.mockResolvedValue(disk(90));
+    await createDiskCheck(log, ["/"], DEFAULT_DISK_LIMITS, DEFAULT_CRITICAL_DISK_LIMITS)();
+    expect(raise.mock.calls.map((c) => c[0])).toEqual(["disk_space"]);
+  });
+});
+
+describe("critical limits from the environment", () => {
+  it("uses 95 % / 512 MiB by default and reads overrides", () => {
+    delete process.env.DISK_CRITICAL_PERCENT;
+    delete process.env.DISK_CRITICAL_FREE_MIB;
+    expect(criticalLimitsFromEnv()).toEqual(DEFAULT_CRITICAL_DISK_LIMITS);
+
+    process.env.DISK_CRITICAL_PERCENT = "97";
+    process.env.DISK_CRITICAL_FREE_MIB = "100";
+    expect(criticalLimitsFromEnv()).toEqual({ raisePercent: 97, clearPercent: 92, minFreeBytes: 100 * 1024 ** 2 });
+
+    process.env.DISK_CRITICAL_PERCENT = "nonsense";
+    expect(criticalLimitsFromEnv().raisePercent).toBe(95);
+    delete process.env.DISK_CRITICAL_PERCENT;
+    delete process.env.DISK_CRITICAL_FREE_MIB;
   });
 });
