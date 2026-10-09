@@ -30,6 +30,28 @@ function set(next: DatabaseStatus): void {
   for (const l of [...listeners]) l();
 }
 
+/**
+ * "Events cannot be stored" (chaos slice 23): the database answers, so no request of the dashboard fails, but every
+ * event insert does (full disk). It is learned only from the periodic GET /health?db=1 of the banner, which then
+ * answers 503 with code "ingestion_failing".
+ */
+let ingestionFailing = false;
+
+export function getIngestionFailing(): boolean {
+  return ingestionFailing;
+}
+
+export function setIngestionFailing(next: boolean): void {
+  if (next === ingestionFailing) return;
+  ingestionFailing = next;
+  for (const l of [...listeners]) l();
+}
+
+/** True for the body of /health?db=1 while the backend cannot store events. */
+export function isIngestionFailingBody(body: unknown): boolean {
+  return typeof body === "object" && body !== null && (body as { code?: unknown }).code === "ingestion_failing";
+}
+
 export function markDatabaseDown(): void {
   set("down");
 }
@@ -66,5 +88,6 @@ export function noteDatabaseResponse(res: Response): void {
 /** For tests. */
 export function resetDatabaseStatus(): void {
   status = "ok";
+  ingestionFailing = false;
   listeners.clear();
 }
