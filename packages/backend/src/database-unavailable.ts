@@ -7,6 +7,10 @@ import type { FastifyInstance } from "fastify";
  * into a plain 500 "Internal Server Error", which a dashboard cannot tell from a bug. A 503 with
  * `code: "database_unavailable"` and `Retry-After` says what is wrong and that it will pass.
  * Every other error is handed on unchanged (validation 400, 404, real 500).
+ *
+ * A database that is reachable but cannot WRITE (full disk 53100, out of memory 53200, read-only transaction 25006)
+ * answers 503 too, with its own `code: "database_write_failed"` and a longer Retry-After. It must not use
+ * "database_unavailable": reads still work then, and the dashboard's connection-lost banner keys on that code.
  */
 
 export interface DatabaseTarget {
@@ -67,7 +71,40 @@ export function isDatabaseUnavailable(err: unknown, target: DatabaseTarget | nul
   return check(err, target, 0);
 }
 
+/**
+ * SQLSTATE: 53000 insufficient resources, 53100 disk full, 53200 out of memory, 25006 read-only transaction
+ * (a standby, or Postgres switched itself to read-only after a storage problem). 53300 is NOT here: it is "unavailable".
+ */
+const WRITE_FAILURE_SQLSTATES = new Set(["53000", "53100", "53200", "25006"]);
+
+/** Messages of the same failures when there is no SQLSTATE (a wrapped or re-thrown error). */
+const WRITE_FAILURE_MESSAGES = [
+  /no space left on device/i,
+  /could not extend file/i,
+  /cannot execute .* in a read-only transaction/i,
+  /read-only transaction/i,
+];
+
+function checkWriteFailure(err: unknown, depth: number): boolean {
+  if (typeof err !== "object" || err === null || depth > 5) return false;
+  const e = err as Record<string, unknown>;
+  const code = typeof e.code === "string" ? e.code : "";
+  if (code && WRITE_FAILURE_SQLSTATES.has(code)) return true;
+  if (typeof e.message === "string" && WRITE_FAILURE_MESSAGES.some((re) => re.test(e.message as string))) return true;
+  if (checkWriteFailure(e.cause, depth + 1)) return true;
+  if (Array.isArray(e.errors)) return e.errors.some((inner) => checkWriteFailure(inner, depth + 1));
+  return false;
+}
+
+/** The database answers but cannot store data (full disk, out of memory, read-only). Not the same as unavailable. */
+export function isDatabaseWriteFailure(err: unknown): boolean {
+  return checkWriteFailure(err, 0);
+}
+
 export const DATABASE_UNAVAILABLE_BODY = { error: "database unavailable", code: "database_unavailable" } as const;
+export const DATABASE_WRITE_FAILED_BODY = { error: "database cannot write", code: "database_write_failed" } as const;
+/** A full disk does not pass in 5 seconds. */
+export const WRITE_FAILED_RETRY_AFTER_SECONDS = 30;
 export const RETRY_AFTER_SECONDS = 5;
 const LOG_EVERY_MS = 10_000;
 
@@ -80,14 +117,21 @@ export function registerDatabaseUnavailableHandler(app: FastifyInstance, databas
   let lastLogMs = 0;
   let suppressed = 0;
   app.setErrorHandler((err, request, reply) => {
-    if (!isDatabaseUnavailable(err, target)) return reply.send(err);
+    const unavailable = isDatabaseUnavailable(err, target);
+    if (!unavailable && !isDatabaseWriteFailure(err)) return reply.send(err);
     const now = nowMs();
     if (now - lastLogMs >= LOG_EVERY_MS) {
-      app.log.warn({ err, url: request.url, suppressed }, "database unavailable — answering 503");
+      app.log.warn(
+        { err, url: request.url, suppressed },
+        unavailable ? "database unavailable — answering 503" : "database cannot write — answering 503",
+      );
       lastLogMs = now;
       suppressed = 0;
     } else {
       suppressed += 1;
+    }
+    if (!unavailable) {
+      return reply.code(503).header("Retry-After", String(WRITE_FAILED_RETRY_AFTER_SECONDS)).send(DATABASE_WRITE_FAILED_BODY);
     }
     return reply.code(503).header("Retry-After", String(RETRY_AFTER_SECONDS)).send(DATABASE_UNAVAILABLE_BODY);
   });

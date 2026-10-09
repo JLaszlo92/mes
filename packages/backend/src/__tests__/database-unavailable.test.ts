@@ -1,6 +1,11 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
-import { databaseTargetFromUrl, isDatabaseUnavailable, registerDatabaseUnavailableHandler } from "../database-unavailable.js";
+import {
+  databaseTargetFromUrl,
+  isDatabaseUnavailable,
+  isDatabaseWriteFailure,
+  registerDatabaseUnavailableHandler,
+} from "../database-unavailable.js";
 
 const refused = (port = 5432) => Object.assign(new Error(`connect ECONNREFUSED 127.0.0.1:${port}`), { code: "ECONNREFUSED", port, address: "127.0.0.1", syscall: "connect" });
 const target = { host: "localhost", port: 5432 };
@@ -121,6 +126,66 @@ describe("registerDatabaseUnavailableHandler", () => {
     await app.inject({ method: "GET", url: "/down" });
     expect(warns).toHaveLength(2);
     expect((warns[1] as [{ suppressed: number }])[0].suppressed).toBe(4);
+    await app.close();
+  });
+});
+
+describe("isDatabaseWriteFailure", () => {
+  it("recognises a full disk, out of memory and a read-only transaction by SQLSTATE", () => {
+    for (const code of ["53000", "53100", "53200", "25006"]) {
+      expect(isDatabaseWriteFailure(Object.assign(new Error("pg"), { code }))).toBe(true);
+    }
+  });
+
+  it("recognises the messages when there is no SQLSTATE, also in the cause chain", () => {
+    expect(isDatabaseWriteFailure(new Error('could not extend file "base/16384/2619": No space left on device'))).toBe(true);
+    expect(isDatabaseWriteFailure(new Error("cannot execute INSERT in a read-only transaction"))).toBe(true);
+    expect(isDatabaseWriteFailure(new Error("query failed", { cause: Object.assign(new Error("x"), { code: "53100" }) }))).toBe(true);
+  });
+
+  it("does not take ordinary errors, constraint violations or an outage for a write failure", () => {
+    expect(isDatabaseWriteFailure(new Error("boom"))).toBe(false);
+    expect(isDatabaseWriteFailure(Object.assign(new Error("dup"), { code: "23505" }))).toBe(false);
+    expect(isDatabaseWriteFailure(Object.assign(new Error("too many connections"), { code: "53300" }))).toBe(false);
+    expect(isDatabaseWriteFailure(refused())).toBe(false);
+    expect(isDatabaseWriteFailure(null)).toBe(false);
+  });
+});
+
+describe("registerDatabaseUnavailableHandler - write failures", () => {
+  async function build() {
+    const app = Fastify();
+    registerDatabaseUnavailableHandler(app, "postgres://u:p@localhost:5432/mes");
+    app.get("/full", async () => { throw Object.assign(new Error('could not extend file "base/1/2": No space left on device'), { code: "53100" }); });
+    app.get("/readonly", async () => { throw Object.assign(new Error("cannot execute INSERT in a read-only transaction"), { code: "25006" }); });
+    app.get("/down", async () => { throw refused(); });
+    app.get("/toomany", async () => { throw Object.assign(new Error("sorry, too many clients already"), { code: "53300" }); });
+    await app.register(async (child) => {
+      child.get("/child-full", async () => { throw Object.assign(new Error("pg"), { code: "53100" }); });
+    });
+    await app.ready();
+    return app;
+  }
+
+  it("answers 503 database_write_failed with a 30 s Retry-After for a full disk and a read-only database", async () => {
+    const app = await build();
+    for (const url of ["/full", "/readonly", "/child-full"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["retry-after"]).toBe("30");
+      expect(res.json()).toEqual({ error: "database cannot write", code: "database_write_failed" });
+    }
+    await app.close();
+  });
+
+  it("keeps database_unavailable for an outage, also for too many connections", async () => {
+    const app = await build();
+    for (const url of ["/down", "/toomany"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(503);
+      expect(res.headers["retry-after"]).toBe("5");
+      expect(res.json().code).toBe("database_unavailable");
+    }
     await app.close();
   });
 });
