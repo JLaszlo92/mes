@@ -19,8 +19,18 @@ export interface WorkOrder {
   countOverproduction: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Kiválasztott munkautasítás neve; null = automatikus (az alkatrész nevével egyező). */
+  workInstructionName: string | null;
+  /** A rendeléshez rögzített alapanyag-tételek (work_order_material_consumption). */
+  materials: WorkOrderMaterial[];
   /** Az ütemezés összefoglalója (work_order_assignments), vagy null, ha nincs ütemezve. */
   schedule: WorkOrderScheduleSummary | null;
+}
+
+export interface WorkOrderMaterial {
+  materialLotId: string;
+  materialName: string;
+  lotNumber: string;
 }
 
 export interface WorkOrderScheduleSummary {
@@ -46,6 +56,8 @@ type WorkOrderRow = {
   count_overproduction: boolean;
   created_at: string;
   updated_at: string;
+  work_instruction_name?: string | null;
+  materials?: WorkOrderMaterial[] | null;
   sched_machine_id?: string | null;
   sched_machine_name?: string | null;
   sched_start?: string | null;
@@ -68,6 +80,8 @@ function toWorkOrder(row: WorkOrderRow): WorkOrder {
     countOverproduction: row.count_overproduction,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    workInstructionName: row.work_instruction_name ?? null,
+    materials: row.materials ?? [],
     schedule:
       row.sched_machine_id && row.sched_start && row.sched_end
         ? {
@@ -88,8 +102,16 @@ const SELECT_WITH_SCHEDULE = `
   SELECT wo.*,
          s.machine_id AS sched_machine_id, s.machine_name AS sched_machine_name,
          s.planned_start AS sched_start, s.planned_end AS sched_end,
-         s.planned_seconds AS sched_seconds, s.segments AS sched_segments
+         s.planned_seconds AS sched_seconds, s.segments AS sched_segments,
+         mat.materials
   FROM work_orders wo
+  LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object('materialLotId', ml.id, 'materialName', ml.material_name, 'lotNumber', ml.lot_number)
+                    ORDER BY c.recorded_at, ml.id) AS materials
+    FROM work_order_material_consumption c
+    JOIN material_lots ml ON ml.id = c.material_lot_id
+    WHERE c.work_order_id = wo.id
+  ) mat ON true
   LEFT JOIN LATERAL (
     SELECT (array_agg(woa.machine_id ORDER BY woa.planned_start))[1] AS machine_id,
            (array_agg(m.name ORDER BY woa.planned_start))[1] AS machine_name,
@@ -122,13 +144,14 @@ export interface CreateWorkOrderInput {
   status?: WorkOrderStatus;
   completionMode?: CompletionMode;
   countOverproduction?: boolean;
+  workInstructionName?: string | null;
 }
 
 export async function createWorkOrder(input: CreateWorkOrderInput): Promise<WorkOrder> {
   const id = randomUUID();
   await pool.query(
-    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes, completion_mode, count_overproduction, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'manual'), COALESCE($9, true), COALESCE($10, 'planned'))`,
+    `INSERT INTO work_orders (id, order_number, part_name, quantity, expected_cycle_time_seconds, due_date, notes, completion_mode, count_overproduction, status, work_instruction_name)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, 'manual'), COALESCE($9, true), COALESCE($10, 'planned'), $11)`,
     [
       id,
       input.orderNumber,
@@ -140,6 +163,7 @@ export async function createWorkOrder(input: CreateWorkOrderInput): Promise<Work
       input.completionMode ?? null,
       input.countOverproduction ?? null,
       input.status ?? null,
+      input.workInstructionName ?? null,
     ],
   );
   const created = await getWorkOrder(id);
@@ -196,6 +220,7 @@ const COLUMN_BY_FIELD: Record<keyof WorkOrderPatch, string> = {
   notes: "notes",
   completionMode: "completion_mode",
   countOverproduction: "count_overproduction",
+  workInstructionName: "work_instruction_name",
 };
 
 export interface WorkOrderChange {

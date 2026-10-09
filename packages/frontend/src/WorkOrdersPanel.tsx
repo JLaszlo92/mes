@@ -68,7 +68,7 @@ export default function WorkOrdersPanel() {
       if (machineFilter && machineFilter !== "none" && wo.schedule?.machineId !== machineFilter) return false;
       if (lateOnly && !isLate(wo)) return false;
       if (words.length === 0) return true;
-      const haystack = [wo.orderNumber, wo.partName, wo.notes, wo.schedule?.machineName].filter(Boolean).join(" ").toLowerCase();
+      const haystack = [wo.orderNumber, wo.partName, wo.notes, wo.schedule?.machineName, wo.workInstructionName, ...wo.materials.flatMap((m) => [m.materialName, m.lotNumber])].filter(Boolean).join(" ").toLowerCase();
       return words.every((w) => haystack.includes(w));
     });
   }, [workOrders, query, status, machineFilter, lateOnly, isInScope]);
@@ -127,7 +127,7 @@ export default function WorkOrdersPanel() {
   function exportCsv(rows: WorkOrder[]) {
     downloadCsv(
       `work-orders-${new Date().toISOString().slice(0, 10)}.csv`,
-      ["Order", "Part", "Quantity", "Cycle time (s)", "Due date", "Status", "Machine", "Planned start", "Planned end", "Planned working time (h)", "Completion", "Notes"],
+      ["Order", "Part", "Quantity", "Cycle time (s)", "Due date", "Status", "Machine", "Planned start", "Planned end", "Planned working time (h)", "Completion", "Material lots", "Work instruction", "Notes"],
       rows.map((w) => [
         w.orderNumber,
         w.partName,
@@ -140,6 +140,8 @@ export default function WorkOrdersPanel() {
         w.schedule?.plannedEnd,
         w.schedule ? (w.schedule.plannedSeconds / 3600).toFixed(2) : "",
         w.completionMode,
+        w.materials.map((m) => `${m.materialName} (${m.lotNumber})`).join("; "),
+        w.workInstructionName ?? "",
         w.notes,
       ]),
     );
@@ -163,6 +165,23 @@ export default function WorkOrdersPanel() {
       header: "Machine",
       sortValue: (w) => w.schedule?.machineName ?? null,
       cell: (w) => w.schedule?.machineName ?? <span className="ui-sub">Not scheduled</span>,
+    },
+    {
+      id: "material",
+      header: "Material",
+      sortValue: (w) => w.materials[0]?.materialName ?? null,
+      cell: (w) =>
+        w.materials.length === 0 ? (
+          <span className="ui-sub">—</span>
+        ) : (
+          <span>
+            {w.materials[0]!.materialName}
+            <span className="ui-sub">
+              Lot {w.materials[0]!.lotNumber}
+              {w.materials.length > 1 ? ` +${w.materials.length - 1} more` : ""}
+            </span>
+          </span>
+        ),
     },
     { id: "start", header: "Planned start", sortValue: (w) => w.schedule?.plannedStart ?? null, cell: (w) => formatDateTime(w.schedule?.plannedStart) },
     { id: "end", header: "Planned end", sortValue: (w) => w.schedule?.plannedEnd ?? null, cell: (w) => formatDateTime(w.schedule?.plannedEnd) },
@@ -208,7 +227,7 @@ export default function WorkOrdersPanel() {
         <input
           className="ui-input ui-search"
           type="search"
-          placeholder="Search order, part, machine, notes…"
+          placeholder="Search order, part, machine, material, notes…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           aria-label="Search work orders"
@@ -314,6 +333,8 @@ export default function WorkOrdersPanel() {
               // Rögtön ütemezhető: a drawer szerkesztő módban nyílik újra.
               setEditor({ mode: "edit", workOrder: wo });
               setNotice(`${wo.orderNumber} created. You can schedule it now.`);
+            } else if (kind === "materials") {
+              setEditor({ mode: "edit", workOrder: wo });
             } else if (kind === "scheduled") {
               setEditor({ mode: "edit", workOrder: wo });
               setNotice(wo.schedule ? `${wo.orderNumber} scheduled on ${wo.schedule.machineName}.` : `${wo.orderNumber} unscheduled.`);

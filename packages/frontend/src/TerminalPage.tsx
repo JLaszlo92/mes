@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import LoginForm from "./LoginForm.js";
 import { apiFetch, API_BASE } from "./api.js";
+import InstructionViewer, { VIEWER_LABELS_HU, type ViewerTab } from "./InstructionViewer.js";
+import type { WorkInstruction } from "./work-instructions.js";
 
 interface TerminalUi {
   id: string;
@@ -36,14 +38,6 @@ interface FaultReport {
   status: string;
 }
 
-interface WorkInstruction {
-  id: string;
-  partName: string;
-  version: number;
-  content: string;
-  pdfUrl: string | null;
-}
-
 interface WorkOrderProgress {
   goodCount: number;
   scrapCount: number;
@@ -72,6 +66,18 @@ const startButtonStyle = {
   fontSize: 16,
 };
 
+const instructionButtonStyle = {
+  padding: "12px 18px",
+  border: "1px solid #2c5a85",
+  borderRadius: 8,
+  background: "#e4ecf4",
+  color: "#234a6e",
+  cursor: "pointer",
+  fontSize: 16,
+  fontWeight: 600,
+  minHeight: 48,
+};
+
 const faultButtonStyle = {
   padding: "14px 18px",
   border: "1px solid #d03b3b",
@@ -91,7 +97,9 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [assignmentsByMachine, setAssignmentsByMachine] = useState<Record<string, Assignment[]>>({});
   const [faultCodesByMachine, setFaultCodesByMachine] = useState<Record<string, FaultCode[]>>({});
   const [recentReports, setRecentReports] = useState<FaultReport[]>([]);
-  const [instructionsByPart, setInstructionsByPart] = useState<Record<string, WorkInstruction | null>>({});
+  // The instruction of each started work order (the one set on the order, else the one named like the part).
+  const [instructionByOrder, setInstructionByOrder] = useState<Record<string, WorkInstruction>>({});
+  const [viewer, setViewer] = useState<{ instruction: WorkInstruction; workOrderId: string; orderNumber: string; tab: ViewerTab } | null>(null);
   const [progressByWorkOrder, setProgressByWorkOrder] = useState<Record<string, WorkOrderProgress>>({});
   const [shiftSummaryByMachine, setShiftSummaryByMachine] = useState<Record<string, ShiftSummary>>({});
   const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
@@ -155,27 +163,27 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         }
         setShiftSummaryByMachine(shiftByMachine);
 
-        const activePartNames = new Set(
-          Object.values(byMachine)
-            .flat()
-            .filter((a) => a.workOrderStatus === "in_progress")
-            .map((a) => a.partName),
-        );
-        for (const partName of activePartNames) {
-          if (partName in instructionsByPart) continue;
-          apiFetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}`, {
-            headers: auth ? { Authorization: `Bearer ${auth.token}` } : {},
-          })
-            .then((res) => (res.ok ? res.json() : null))
-            .then((instruction: WorkInstruction | null) => {
-              setInstructionsByPart((prev) => ({ ...prev, [partName]: instruction }));
-            });
-        }
-
         const inProgressOrderIds = Object.values(byMachine)
           .flat()
           .filter((a) => a.workOrderStatus === "in_progress")
           .map((a) => a.workOrderId);
+
+        // Asked on every refresh, so a new version published in the dashboard
+        // reaches the terminal within seconds. An order without instruction answers 404.
+        Promise.all(
+          [...new Set(inProgressOrderIds)].map((workOrderId) =>
+            apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/work-instruction`)
+              .then((res) => (res.ok ? res.json() : null))
+              .catch(() => null)
+              .then((instruction: WorkInstruction | null) => [workOrderId, instruction] as const),
+          ),
+        ).then((pairs) => {
+          const next: Record<string, WorkInstruction> = {};
+          for (const [id, instruction] of pairs) {
+            if (instruction) next[id] = instruction;
+          }
+          setInstructionByOrder(next);
+        });
 
         if (inProgressOrderIds.length > 0 && auth) {
           Promise.all(
@@ -206,28 +214,31 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth, terminalUiId]);
 
-  useEffect(() => {
-    if (!auth) return;
-    for (const assignments of Object.values(assignmentsByMachine)) {
-      for (const a of assignments) {
-        if (a.workOrderStatus !== "in_progress") continue;
-        const instruction = instructionsByPart[a.partName];
-        if (!instruction) continue;
-        const key = `${instruction.id}:${a.workOrderId}`;
-        if (loggedViewsRef.current.has(key)) continue;
-        loggedViewsRef.current.add(key);
-        apiFetch(`${API_BASE}/api/work-instructions/view`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth.token}` },
-          body: JSON.stringify({ workInstructionId: instruction.id, workOrderId: a.workOrderId }),
-        }).catch(() => {});
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assignmentsByMachine, instructionsByPart]);
-
   if (!auth) {
     return <LoginForm />;
+  }
+
+  /**
+   * Opens the instruction of a started order. This is the moment that is
+   * logged as "shown to the operator": once per version and order in a session.
+   */
+  function openInstruction(instruction: WorkInstruction, workOrderId: string, orderNumber: string, tab: ViewerTab) {
+    setViewer({ instruction, workOrderId, orderNumber, tab });
+    const key = `${instruction.id}:${workOrderId}`;
+    if (loggedViewsRef.current.has(key)) return;
+    loggedViewsRef.current.add(key);
+    apiFetch(`${API_BASE}/api/work-instructions/view`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workInstructionId: instruction.id, workOrderId }),
+    })
+      .then((res) => {
+        if (!res.ok) loggedViewsRef.current.delete(key);
+      })
+      .catch(() => {
+        // Not recorded (network): the next opening tries again.
+        loggedViewsRef.current.delete(key);
+      });
   }
 
   async function startWorkOrder(workOrderId: string) {
@@ -307,7 +318,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
             )}
 
             {currentAssignments.map((a) => {
-              const instruction = instructionsByPart[a.partName];
+              const instruction = a.workOrderStatus === "in_progress" ? instructionByOrder[a.workOrderId] : undefined;
               const progress = progressByWorkOrder[a.workOrderId];
               return (
                 <div key={a.id} style={{ padding: "12px 0", borderTop: "1px solid #e1e0d9" }}>
@@ -338,17 +349,19 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                     )}
                   </div>
 
-                  {a.workOrderStatus === "in_progress" && instruction && (
-                    <div style={{ marginTop: 10, background: "#f4f6fb", borderRadius: 8, padding: 12 }}>
-                      <div style={{ fontSize: 11, color: "#898781", marginBottom: 4 }}>
-                        📋 Work instructions — v{instruction.version}
-                      </div>
-                      <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{instruction.content}</div>
-                      {instruction.pdfUrl && (
-                        <a href={instruction.pdfUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13 }}>
-                          📄 Open linked document
-                        </a>
+                  {instruction && (
+                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                      <button style={instructionButtonStyle} onClick={() => openInstruction(instruction, a.workOrderId, a.orderNumber, "text")}>
+                        Munkautasítás
+                      </button>
+                      {instruction.pdfFileId && (
+                        <button style={instructionButtonStyle} onClick={() => openInstruction(instruction, a.workOrderId, a.orderNumber, "pdf")}>
+                          PDF megnyitása
+                        </button>
                       )}
+                      <span style={{ fontSize: 13, color: "#898781" }}>
+                        {instruction.partName} · v{instruction.version}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -408,6 +421,18 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
           </section>
         );
       })}
+
+      {viewer && (
+        <InstructionViewer
+          key={`${viewer.instruction.id}:${viewer.workOrderId}`}
+          instruction={viewer.instruction}
+          subtitle={viewer.orderNumber}
+          initialTab={viewer.tab}
+          labels={VIEWER_LABELS_HU}
+          large
+          onClose={() => setViewer(null)}
+        />
+      )}
     </div>
   );
 }

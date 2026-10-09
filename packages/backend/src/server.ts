@@ -61,6 +61,7 @@ import {
   createMaterialLot,
   listConsumptionForWorkOrder,
   recordConsumption,
+  removeConsumption,
   isUniqueViolation as isMaterialLotUniqueViolation,
   isForeignKeyViolation as isMaterialLotForeignKeyViolation,
 } from "./material-lots-repository.js";
@@ -70,14 +71,6 @@ import {
   signOffCorrectiveAction,
   isForeignKeyViolation as isCorrectiveActionForeignKeyViolation,
 } from "./corrective-actions-repository.js";
-import {
-  listCurrentInstructions,
-  getCurrentInstructionForPart,
-  listVersionsForPart,
-  createNewVersion,
-  recordView,
-  listViews,
-} from "./work-instructions-repository.js";
 import {
   listSchedules,
   createSchedule,
@@ -157,6 +150,7 @@ import machineRegistryRoutes from "./machine-registry-routes.js";
 import plantHierarchyRoutes from "./plant-hierarchy-routes.js";
 import workOrderRoutes from "./work-order-routes.js";
 import maintenanceRoutes from "./maintenance-routes.js";
+import workInstructionRoutes from "./work-instruction-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -177,6 +171,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(plantHierarchyRoutes);
   await app.register(workOrderRoutes);
   await app.register(maintenanceRoutes);
+  await app.register(workInstructionRoutes);
 
   // /health stays a pure liveness check; /health?db=1 also asks the database (the dashboard banner polls it during an outage).
   app.get<{ Querystring: { db?: string } }>("/health", async (request, reply) => {
@@ -843,6 +838,25 @@ export async function buildServer(): Promise<FastifyInstance> {
       }
     },
   );
+  app.delete<{ Params: { id: string; materialLotId: string } }>(
+    "/api/work-orders/:id/material-consumption/:materialLotId",
+    { preHandler: requireRole("admin", "manager") },
+    async (request, reply) => {
+      const removed = await removeConsumption(request.params.id, request.params.materialLotId);
+      if (!removed) {
+        reply.code(404);
+        return { error: "this material lot is not recorded on this work order" };
+      }
+      await recordAuditEvent({
+        actorId: request.user!.id,
+        action: "material_consumption_removed",
+        target: request.params.id,
+        details: { materialLotId: request.params.materialLotId },
+        ipAddress: request.ip,
+      });
+      return { success: true };
+    },
+  );
   app.get<{ Querystring: { faultReportId?: string } }>("/api/corrective-actions", async (request) =>
     listCorrectiveActions(request.query.faultReportId || undefined),
   );
@@ -899,80 +913,6 @@ export async function buildServer(): Promise<FastifyInstance> {
     },
     );
 
-      app.get("/api/work-instructions", async (request, reply) => {
-    if (!request.user) {
-      reply.code(401);
-      return { error: "authentication required" };
-    }
-    return listCurrentInstructions();
-  });
-
-  app.get<{ Params: { partName: string } }>("/api/work-instructions/:partName", async (request, reply) => {
-    if (!request.user) {
-      reply.code(401);
-      return { error: "authentication required" };
-    }
-    const instruction = await getCurrentInstructionForPart(decodeURIComponent(request.params.partName));
-    if (!instruction) {
-      reply.code(404);
-      return { error: "no instructions for this part" };
-    }
-    return instruction;
-  });
-
-  app.get<{ Params: { partName: string } }>("/api/work-instructions/:partName/versions", async (request, reply) => {
-    if (!request.user) {
-      reply.code(401);
-      return { error: "authentication required" };
-    }
-    return listVersionsForPart(decodeURIComponent(request.params.partName));
-  });
-
-  app.post<{ Body: { partName: string; content: string; pdfUrl?: string } }>(
-    "/api/work-instructions",
-    { preHandler: requireRole("admin", "manager") },
-    async (request, reply) => {
-      const { partName, content } = request.body;
-      if (!partName || !content) {
-        reply.code(400);
-        return { error: "partName and content are required" };
-      }
-      const instruction = await createNewVersion({ ...request.body, createdBy: request.user!.id });
-      await recordAuditEvent({
-        actorId: request.user!.id,
-        action: "work_instruction_versioned",
-        target: instruction.id,
-        details: { partName, version: instruction.version },
-        ipAddress: request.ip,
-      });
-      reply.code(201);
-      return instruction;
-    },
-  );
-
-  app.post<{ Body: { workInstructionId: string; workOrderId?: string } }>(
-    "/api/work-instructions/view",
-    async (request, reply) => {
-      if (!request.user) {
-        reply.code(401);
-        return { error: "authentication required" };
-      }
-      const { workInstructionId, workOrderId } = request.body;
-      if (!workInstructionId) {
-        reply.code(400);
-        return { error: "workInstructionId is required" };
-      }
-      await recordView(workInstructionId, workOrderId ?? null, request.user.id);
-      reply.code(201);
-      return { success: true };
-    },
-  );
-
-  app.get(
-    "/api/work-instructions/views/log",
-    { preHandler: requireRole("admin", "manager", "supervisor") },
-    async () => listViews(),
-  );
   app.get(
   "/api/preventive-schedules",
   { preHandler: requireRole("maintenance", "manager", "admin") },

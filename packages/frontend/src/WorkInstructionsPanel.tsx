@@ -1,186 +1,199 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
-import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { formatDateTime } from "./ui/format.js";
+import { usePolling } from "./ui/usePolling.js";
+import InstructionViewer from "./InstructionViewer.js";
+import WorkInstructionDrawer, { type InstructionTarget } from "./WorkInstructionDrawer.js";
+import { formatBytes, listInstructions, type WorkInstruction } from "./work-instructions.js";
 
-interface WorkInstruction {
-  id: string;
-  partName: string;
-  version: number;
-  content: string;
-  pdfUrl: string | null;
-  isCurrent: boolean;
-  createdByEmail: string | null;
-  createdAt: string;
-}
+type DocFilter = "" | "pdf" | "none";
 
-interface InstructionView {
-  id: string;
-  partName: string;
-  version: number;
-  orderNumber: string | null;
-  viewedByEmail: string | null;
-  viewedAt: string;
-}
-
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const secondaryButtonStyle = { ...buttonStyle, background: "#fff", color: "#0b0b0b" };
-
+/**
+ * Munkautasítások: kereshető táblázat, mint a gyártási rendeléseknél. Sorra
+ * kattintva az oldalpanelen szerkeszthető (a mentés új verzió), ugyanott
+ * tölthető fel a PDF, és látszik a verziótörténet meg a megtekintés-napló.
+ */
 export default function WorkInstructionsPanel() {
-  const { auth, logout } = useAuth();
-  const [instructions, setInstructions] = useState<WorkInstruction[]>([]);
-  const [views, setViews] = useState<InstructionView[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [form, setForm] = useState({ partName: "", content: "", pdfUrl: "" });
-  const [submitting, setSubmitting] = useState(false);
-  const [historyFor, setHistoryFor] = useState<string | null>(null);
-  const [history, setHistory] = useState<WorkInstruction[]>([]);
+  const { auth } = useAuth();
+  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const canSeeLog = canEdit || auth?.role === "supervisor";
 
-  const isAdmin = auth?.role === "admin" || auth?.role === "manager";
-  const canSeeLog = isAdmin || auth?.role === "supervisor";
+  const [instructions, setInstructions] = useState<WorkInstruction[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [docFilter, setDocFilter] = useState<DocFilter>("");
+  const [editor, setEditor] = useState<InstructionTarget | null>(null);
+  const [preview, setPreview] = useState<WorkInstruction | null>(null);
 
   function load() {
-    apiFetch(`${API_BASE}/api/work-instructions`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-      .then((res) => {
-        if (res.status === 401) {
-          logout();
-          throw new Error("session expired — please sign in again");
-        }
-        return res.json();
+    return listInstructions()
+      .then((rows) => {
+        setInstructions(rows);
+        setError(null);
       })
-      .then(setInstructions)
-      .catch((err) => setError(String(err)));
-
-    if (canSeeLog) {
-      apiFetch(`${API_BASE}/api/work-instructions/views/log`, { headers: { Authorization: `Bearer ${auth?.token}` } })
-        .then((res) => (res.ok ? res.json() : []))
-        .then(setViews);
-    }
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    void load().finally(() => setLoading(false));
+  }, []);
 
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/work-instructions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          partName: form.partName.trim(),
-          content: form.content.trim(),
-          pdfUrl: form.pdfUrl.trim() || undefined,
-        }),
-      });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setForm({ partName: "", content: "", pdfUrl: "" });
-      load();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  // "Open orders" changes as work orders are created and closed; not while an editor is open.
+  usePolling(() => void load(), 30_000, editor === null && preview === null);
 
-  async function showHistory(partName: string) {
-    setHistoryFor(partName);
-    const res = await apiFetch(`${API_BASE}/api/work-instructions/${encodeURIComponent(partName)}/versions`, {
-      headers: { Authorization: `Bearer ${auth?.token}` },
+  const filtered = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return instructions.filter((wi) => {
+      const hasDoc = wi.pdfFileId !== null || wi.pdfUrl !== null;
+      if (docFilter === "pdf" && !hasDoc) return false;
+      if (docFilter === "none" && hasDoc) return false;
+      if (words.length === 0) return true;
+      const haystack = [wi.partName, wi.content, wi.pdfFileName, wi.createdByEmail].filter(Boolean).join(" ").toLowerCase();
+      return words.every((w) => haystack.includes(w));
     });
-    if (res.ok) setHistory(await res.json());
+  }, [instructions, query, docFilter]);
+
+  const filtersActive = query !== "" || docFilter !== "";
+  function clearFilters() {
+    setQuery("");
+    setDocFilter("");
   }
 
-  if (!isAdmin) return null;
+  const columns: Column<WorkInstruction>[] = [
+    {
+      id: "name",
+      header: "Instruction",
+      sortValue: (wi) => wi.partName,
+      cell: (wi) => (
+        <span>
+          {wi.partName}
+          <span className="ui-sub ui-cell-clip">{wi.content.split("\n")[0] || "No text"}</span>
+        </span>
+      ),
+    },
+    { id: "version", header: "Version", align: "right", width: 80, sortValue: (wi) => wi.version, cell: (wi) => `v${wi.version}` },
+    {
+      id: "document",
+      header: "Document",
+      sortValue: (wi) => wi.pdfFileName ?? (wi.pdfUrl ? "link" : null),
+      cell: (wi) =>
+        wi.pdfFileId ? (
+          <span>
+            <span className="ui-cell-clip">{wi.pdfFileName}</span>
+            <span className="ui-sub">{formatBytes(wi.pdfSizeBytes)}</span>
+          </span>
+        ) : wi.pdfUrl ? (
+          "Link"
+        ) : (
+          <span className="ui-sub">None</span>
+        ),
+    },
+    {
+      id: "orders",
+      header: "Open orders",
+      align: "right",
+      width: 110,
+      sortValue: (wi) => wi.openWorkOrders ?? 0,
+      cell: (wi) => wi.openWorkOrders ?? 0,
+    },
+    {
+      id: "updated",
+      header: "Last changed",
+      sortValue: (wi) => wi.createdAt,
+      cell: (wi) => (
+        <span>
+          {formatDateTime(wi.createdAt)}
+          <span className="ui-sub">{wi.createdByEmail ?? "—"}</span>
+        </span>
+      ),
+    },
+  ];
 
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Work instructions</h2>
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Work instructions</h2>
+        <span className="ui-panel-count num">{filtered.length === instructions.length ? instructions.length : `${filtered.length} of ${instructions.length}`}</span>
+        <span className="ui-toolbar-spacer" />
+        {canEdit && (
+          <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })}>
+            New instruction
+          </button>
+        )}
+      </div>
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Part name<br />
-          <input required value={form.partName} onChange={(e) => setForm((f) => ({ ...f, partName: e.target.value }))} placeholder="Bracket 12" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12, flex: "1 1 300px" }}>
-          Instructions<br />
-          <textarea
-            required
-            value={form.content}
-            onChange={(e) => setForm((f) => ({ ...f, content: e.target.value }))}
-            rows={4}
-            style={{ ...inputStyle, width: "100%", fontFamily: "inherit" }}
-          />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          PDF link (optional)<br />
-          <input value={form.pdfUrl} onChange={(e) => setForm((f) => ({ ...f, pdfUrl: e.target.value }))} placeholder="https://…" style={inputStyle} />
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Publishing…" : "Publish new version"}
-        </button>
-      </form>
+      <div className="ui-toolbar" role="search">
+        <input
+          className="ui-input ui-search"
+          type="search"
+          placeholder="Search name, text, file…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search work instructions"
+        />
+        <select className="ui-select" value={docFilter} onChange={(e) => setDocFilter(e.target.value as DocFilter)} aria-label="Document">
+          <option value="">With or without document</option>
+          <option value="pdf">With a document</option>
+          <option value="none">Text only</option>
+        </select>
+        {filtersActive && (
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {instructions.length === 0 && <p style={{ color: "#898781" }}>No work instructions yet.</p>}
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
 
-      {instructions.map((wi) => (
-        <div key={wi.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8 }}>
-          <div style={{ display: "flex", gap: 20, alignItems: "center" }}>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>Part</div><div style={{ fontWeight: 600 }}>{wi.partName}</div></div>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>Version</div><div>v{wi.version}</div></div>
-            <div><div style={{ fontSize: 12, color: "#898781" }}>By</div><div>{wi.createdByEmail ?? "—"}</div></div>
-            <button style={{ ...secondaryButtonStyle, marginLeft: "auto" }} onClick={() => showHistory(wi.partName)}>
-              History
+      {loading && instructions.length === 0 ? (
+        <p className="ui-message ui-message-info">Loading work instructions…</p>
+      ) : (
+        <DataTable
+          ariaLabel="Work instructions"
+          rows={filtered}
+          columns={columns}
+          getRowId={(wi) => wi.partName}
+          onRowClick={(wi) => setEditor({ mode: "edit", instruction: wi })}
+          initialSort={{ columnId: "name", dir: "asc" }}
+          rowActions={(wi) => (
+            <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => setPreview(wi)}>
+              View
             </button>
-          </div>
-          <div style={{ fontSize: 13, marginTop: 8, whiteSpace: "pre-wrap" }}>{wi.content}</div>
-          {wi.pdfUrl && (
-            <a href={wi.pdfUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12 }}>
-              📄 Linked document
-            </a>
           )}
-        </div>
-      ))}
-
-      {historyFor && (
-        <div style={{ marginTop: 16 }}>
-          <h3 style={{ fontSize: 14 }}>Version history — {historyFor}</h3>
-          {history.map((h) => (
-            <div key={h.id} style={{ fontSize: 12, color: "#898781", padding: "4px 0", borderTop: "1px solid #e1e0d9" }}>
-              v{h.version} — {h.createdByEmail ?? "—"} — {new Date(h.createdAt).toLocaleString()} {h.isCurrent && "(current)"}
-            </div>
-          ))}
-        </div>
+          emptyText={
+            instructions.length === 0 ? (
+              canEdit ? "No work instructions yet. Create one and name it like the part it belongs to." : "No work instructions yet."
+            ) : (
+              <>
+                No instructions match these filters.{" "}
+                <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            )
+          }
+        />
       )}
 
-      {canSeeLog && views.length > 0 && (
-        <details style={{ marginTop: 24 }}>
-          <summary style={{ fontSize: 13, color: "#898781", cursor: "pointer" }}>View log ({views.length})</summary>
-          {views.map((v) => (
-            <div key={v.id} style={{ fontSize: 12, color: "#898781", padding: "4px 0", borderTop: "1px solid #e1e0d9" }}>
-              {v.partName} v{v.version} shown to {v.viewedByEmail ?? "—"}
-              {v.orderNumber ? ` for ${v.orderNumber}` : ""} at {new Date(v.viewedAt).toLocaleString()}
-            </div>
-          ))}
-        </details>
+      {editor && (
+        <WorkInstructionDrawer
+          key={editor.mode === "edit" ? editor.instruction.id : "new"}
+          target={editor}
+          canEdit={canEdit}
+          canSeeLog={canSeeLog}
+          onClose={() => setEditor(null)}
+          onSaved={(wi) => {
+            setEditor(null);
+            setNotice(wi.version === 1 ? `${wi.partName} created.` : `${wi.partName} saved as version ${wi.version}.`);
+            void load();
+          }}
+        />
       )}
+      {preview && <InstructionViewer instruction={preview} subtitle="Preview: what the operator sees" onClose={() => setPreview(null)} />}
     </section>
   );
 }

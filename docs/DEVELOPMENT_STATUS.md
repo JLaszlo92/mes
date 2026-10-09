@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 9, 2026
+**Last updated:** October 9, 2026 (evening)
 
 ## Where things stand
 
@@ -1533,6 +1533,53 @@ Four small backlog items from the full-disk test (chaos finding 39) and the `dat
 - Raw-event retention: the startup log of Oct 9 shows `retentionDays: 90, dryRun: false` (active, not a dry run); the
   `raw_events_dropped` audit entries have not been checked yet.
 
+## Work instructions, PDF upload and material on the work order — Oct 9 (evening)
+
+Migration **047** (`work_instruction_files`, `work_instructions.pdf_file_id` / `pdf_file_name`,
+`work_orders.work_instruction_name`). Deploy: `pnpm install` (new frontend dependency `pdfjs-dist`), build backend and
+frontend, restart `mes-backend`, copy `dist/` to `/var/www/mes/`, hard reload.
+
+- **Work instructions are a table** (`WorkInstructionsPanel.tsx`, `WorkInstructionDrawer.tsx`): search, "with / without
+  document" filter, open work orders per instruction, row click opens the editor, **View** shows what the operator sees.
+  **Editing = a new version**: the save button reads "Save as version N"; old versions stay (the view log points at
+  them) and are listed in the drawer with their own View. The name cannot be changed after creation. The old card list
+  and its "Publish new version" form are gone.
+- **PDF upload**: chosen in the drawer, uploaded when the instruction is saved
+  (`POST /api/work-instructions/files`, body = the file, `Content-Type: application/pdf`, name in `X-File-Name`;
+  admin/manager; 15 MB limit, checked for the `%PDF-` header). **Stored in Postgres** (`work_instruction_files.content`,
+  bytea), not on the file system: the nightly `pg_dump` and the restore drill cover it with no second backup path, and
+  there is no directory whose owner or mode can be wrong. Identical files are stored once (unique `sha256`); an upload
+  that no version ever used is deleted after a day. If the documents ever reach gigabytes, move `content` to object
+  storage and keep the table as the index. The old "PDF link" field still exists ("Link to a document instead").
+- **Serving** (`GET /api/work-instructions/files/:id`, any signed-in role): `ETag` = sha256 (304 without reading the
+  file), `nosniff`, `Content-Security-Policy: sandbox`. It needs the session token, so it is **not** a plain link: the
+  frontend fetches it and draws it with pdf.js (`ui/PdfViewer.tsx`, lazy chunk, legacy build for older tablets, pages
+  drawn when they scroll near, zoom 100 to 300 %). The worker is imported with Vite's `?worker`, so it is a `.js` file
+  under `/assets/` (nginx's default MIME table does not serve `.mjs` as JavaScript).
+- **Which instruction a work order shows**: `work_orders.work_instruction_name`, chosen in the work order drawer
+  ("Work instruction" section, with a preview); empty = **automatic**, the instruction named exactly like the part (the
+  old behaviour). One expression everywhere: `COALESCE(wo.work_instruction_name, wo.part_name)`
+  (`work-instructions-repository.ts`). An unknown name is rejected with 400 `{field: "workInstructionName"}`.
+- **Terminal** (`TerminalPage.tsx`): a started (`in_progress`) order with an instruction shows **Munkautasítás** and,
+  if it has an uploaded PDF, **PDF megnyitása**; both open the full-screen `InstructionViewer` (tabs Leírás / PDF, large
+  touch targets, Hungarian captions). The instruction is asked per order on every 5 s refresh
+  (`GET /api/work-orders/:id/work-instruction`), so a new version reaches the terminal without a reload. **The view log
+  now records an opening**, not the fact that the order was started (before, the text was always on screen and every
+  started order was logged).
+- **Material on the work order**: the drawer has a **Material** section (add / remove a material lot; immediate, like
+  scheduling; audited as `material_consumption_recorded` / `material_consumption_removed`), the table has a Material
+  column, the search and the CSV export include it. New: `DELETE /api/work-orders/:id/material-consumption/:materialLotId`
+  (admin/manager). `GET /api/work-orders` returns `materials` and `workInstructionName`. The separate form at the bottom
+  of Production → Material lots still works.
+- **Routes moved** out of `server.ts` into `work-instruction-routes.ts`; validation in `work-instruction-input.ts`
+  (links must be http/https; the names `files`, `view`, `views` are refused because fixed routes would shadow them).
+  The old routes called `decodeURIComponent` on an already decoded path parameter, which broke names containing `%`.
+- Tested on a local PostgreSQL 16 (all migrations, twice) with real requests and in Chromium (dashboard and a
+  1024×768 terminal): upload, dedupe, 304, wrong type, 16 MB, roles, new version, PDF opened twice, Escape order.
+  `pnpm test`: backend 289. Not tested: a real tablet, and a PDF larger than a few pages on one.
+- **There is no CSV import for work orders** (only "Export CSV"). The export's column order would be the natural
+  import format if one is built.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
@@ -1677,5 +1724,7 @@ Four small backlog items from the full-disk test (chaos finding 39) and the `dat
   it's clear no integration needs them.
 - Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
   `api.ts` now exports `API_BASE`, so these can become imports.
+- Work instructions follow-ups: the Material lots and Lots pages are still the old card lists; the terminal does not
+  show the order's material; instructions cannot be retired or renamed; no CSV import for work orders.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,
   downtime Pareto analysis, multilingual work instructions) — not started.

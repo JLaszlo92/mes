@@ -24,6 +24,15 @@ describe("parseWorkOrderPatch", () => {
   });
 });
 
+describe("workInstructionName", () => {
+  it("is trimmed, and empty or null means automatic", () => {
+    expect(parseWorkOrderPatch({ workInstructionName: " Bracket A-12 " })).toEqual({ ok: true, value: { workInstructionName: "Bracket A-12" } });
+    expect(parseWorkOrderPatch({ workInstructionName: "" })).toEqual({ ok: true, value: { workInstructionName: null } });
+    expect(parseWorkOrderPatch({ workInstructionName: null })).toEqual({ ok: true, value: { workInstructionName: null } });
+    expect(parseWorkOrderPatch({ workInstructionName: 5 })).toMatchObject({ ok: false, field: "workInstructionName" });
+  });
+});
+
 describe("parseWorkOrderCreate", () => {
   it("requires order number, part and quantity", () => {
     expect(parseWorkOrderCreate({ partName: "A", quantity: 1 })).toMatchObject({ ok: false, field: "orderNumber" });

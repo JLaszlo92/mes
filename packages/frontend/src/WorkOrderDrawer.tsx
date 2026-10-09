@@ -1,9 +1,11 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import Drawer from "./ui/Drawer.js";
 import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine } from "./master-data.js";
 import { endOfDay, formatDateTime, formatDuration, fromLocalInput, toLocalInput } from "./ui/format.js";
+import InstructionViewer from "./InstructionViewer.js";
+import { instructionForOrder, listInstructions, type WorkInstruction } from "./work-instructions.js";
 
 export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
 
@@ -27,6 +29,9 @@ export interface WorkOrder {
   completionMode: "manual" | "auto";
   countOverproduction: boolean;
   createdAt: string;
+  /** Chosen work instruction, by name; null = automatic (the one named like the part). */
+  workInstructionName: string | null;
+  materials: WorkOrderMaterial[];
   schedule: {
     machineId: string;
     machineName: string;
@@ -35,6 +40,20 @@ export interface WorkOrder {
     plannedSeconds: number;
     segments: number;
   } | null;
+}
+
+export interface WorkOrderMaterial {
+  materialLotId: string;
+  materialName: string;
+  lotNumber: string;
+}
+
+interface MaterialLot {
+  id: string;
+  materialName: string;
+  lotNumber: string;
+  supplier: string | null;
+  receivedAt: string | null;
 }
 
 export type WorkOrderTarget = { mode: "edit"; workOrder: WorkOrder } | { mode: "create"; copyOf?: WorkOrder };
@@ -63,6 +82,8 @@ interface Draft {
   status: WorkOrderStatus;
   completionMode: "manual" | "auto";
   countOverproduction: boolean;
+  /** "" = automatic. */
+  workInstructionName: string;
 }
 
 function toDraft(wo: WorkOrder | undefined, copy: boolean): Draft {
@@ -76,6 +97,7 @@ function toDraft(wo: WorkOrder | undefined, copy: boolean): Draft {
     status: wo && !copy ? wo.status : "planned",
     completionMode: wo?.completionMode ?? "manual",
     countOverproduction: wo?.countOverproduction ?? true,
+    workInstructionName: wo?.workInstructionName ?? "",
   };
 }
 
@@ -90,6 +112,7 @@ function toPayload(d: Draft): Record<string, unknown> {
     status: d.status,
     completionMode: d.completionMode,
     countOverproduction: d.countOverproduction,
+    workInstructionName: d.workInstructionName || null,
   };
 }
 
@@ -123,8 +146,8 @@ export default function WorkOrderDrawer({
   machines: Machine[];
   canEdit: boolean;
   onClose: () => void;
-  /** A frissített rendelés. "created" után a szülő szerkesztő módba vált (ütemezéshez), "saved" után bezár, "scheduled" után nyitva marad. */
-  onSaved: (wo: WorkOrder, kind: "created" | "saved" | "scheduled") => void;
+  /** A frissített rendelés. "created" után a szülő szerkesztő módba vált (ütemezéshez), "saved" után bezár, "scheduled" és "materials" után nyitva marad. */
+  onSaved: (wo: WorkOrder, kind: "created" | "saved" | "scheduled" | "materials") => void;
 }) {
   const creating = target.mode === "create";
   const source = target.mode === "edit" ? target.workOrder : target.copyOf;
@@ -133,6 +156,37 @@ export default function WorkOrderDrawer({
   const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<{ message: string; field?: string } | null>(null);
+  const [instructions, setInstructions] = useState<WorkInstruction[] | null>(null);
+  const [preview, setPreview] = useState<WorkInstruction | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    listInstructions()
+      .then((rows) => alive && setInstructions(rows))
+      .catch(() => alive && setInstructions([]));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // What the terminal will show for the draft as it stands now.
+  const shownInstruction = instructionForOrder(instructions ?? [], { partName: draft.partName, workInstructionName: draft.workInstructionName || null });
+  const instructionHint =
+    instructions === null ? (
+      "Loading…"
+    ) : shownInstruction ? (
+      <>
+        {draft.workInstructionName === "" ? `Named like the part: “${shownInstruction.partName}”, ` : ""}v{shownInstruction.version}
+        {shownInstruction.pdfFileId ? ", with PDF" : ""}.{" "}
+        <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={() => setPreview(shownInstruction)}>
+          Preview
+        </button>
+      </>
+    ) : draft.partName.trim() === "" ? (
+      "Automatic: the instruction named like the part."
+    ) : (
+      `No instruction is named “${draft.partName.trim()}”: the terminal shows none. Choose one, or create it under Quality → Work instructions.`
+    );
 
   const changed = JSON.stringify(draft) !== JSON.stringify(initial);
   const errors = localErrors(draft, creating);
@@ -146,6 +200,7 @@ export default function WorkOrderDrawer({
 
   function requestClose() {
     if (saving) return;
+    if (preview) return setPreview(null);
     if (canEdit && changed && !window.confirm(creating ? "Discard this new work order?" : "Discard unsaved changes?")) return;
     onClose();
   }
@@ -189,7 +244,7 @@ export default function WorkOrderDrawer({
   return (
     <Drawer
       title={title}
-      subtitle={creating ? "Save the order first, then schedule it on a machine." : target.workOrder.partName}
+      subtitle={creating ? "Save the order first, then add its material and schedule it on a machine." : target.workOrder.partName}
       onRequestClose={requestClose}
       footer={
         canEdit ? (
@@ -266,6 +321,24 @@ export default function WorkOrderDrawer({
           </section>
 
           <section className="ui-section">
+            <h3 className="ui-section-title">Work instruction</h3>
+            <Field label="Shown at the terminal" error={fieldError("workInstructionName")} hint={instructionHint}>
+              <select className="ui-select" value={draft.workInstructionName} onChange={(e) => set("workInstructionName", e.target.value)} aria-invalid={!!fieldError("workInstructionName")}>
+                <option value="">Automatic (by part name)</option>
+                {/* A chosen instruction stays selectable even while the list is loading. */}
+                {draft.workInstructionName !== "" && !(instructions ?? []).some((i) => i.partName === draft.workInstructionName) && (
+                  <option value={draft.workInstructionName}>{draft.workInstructionName}</option>
+                )}
+                {(instructions ?? []).map((i) => (
+                  <option key={i.partName} value={i.partName}>
+                    {i.partName} (v{i.version})
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </section>
+
+          <section className="ui-section">
             <h3 className="ui-section-title">Completion</h3>
             <div className="ui-grid-2">
               <Field label="Close the order" hint={draft.completionMode === "auto" ? "Closes itself when the good count reaches the quantity." : "The operator confirms completion at the terminal."}>
@@ -284,6 +357,18 @@ export default function WorkOrderDrawer({
       </form>
 
       {!creating && (
+        <MaterialsSection
+          workOrder={target.workOrder}
+          canEdit={canEdit}
+          onChanged={() => {
+            void apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(target.workOrder.id)}`)
+              .then((r) => readJsonOrThrow<WorkOrder>(r))
+              .then((wo) => onSaved(wo, "materials"));
+          }}
+        />
+      )}
+
+      {!creating && (
         <ScheduleSection
           workOrder={target.workOrder}
           machines={machines}
@@ -297,7 +382,125 @@ export default function WorkOrderDrawer({
           }}
         />
       )}
+      {preview && <InstructionViewer instruction={preview} subtitle="Preview: what the operator sees" onClose={() => setPreview(null)} />}
     </Drawer>
+  );
+}
+
+/**
+ * A rendeléshez felhasznált alapanyag-tételek. Mint az ütemezés: azonnal ható
+ * műveletek (hozzáadás / eltávolítás), nem a "Save changes" gomb része. Lezárt
+ * rendelésnél is szerkeszthető — a nyomonkövetési adat utólag is javítható, és
+ * minden változás az audit naplóba kerül.
+ */
+function MaterialsSection({ workOrder, canEdit, onChanged }: { workOrder: WorkOrder; canEdit: boolean; onChanged: () => void }) {
+  const [lots, setLots] = useState<MaterialLot[] | null>(null);
+  const [choice, setChoice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    apiFetch(`${API_BASE}/api/material-lots`)
+      .then((r) => readJsonOrThrow<MaterialLot[]>(r))
+      .then((rows) => alive && setLots(rows))
+      .catch((err) => alive && setError(err instanceof Error ? err.message : String(err)));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const used = new Set(workOrder.materials.map((m) => m.materialLotId));
+  const available = (lots ?? []).filter((l) => !used.has(l.id));
+  const base = `${API_BASE}/api/work-orders/${encodeURIComponent(workOrder.id)}/material-consumption`;
+
+  async function run(request: () => Promise<Response>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await readJsonOrThrow<unknown>(await request());
+      setChoice("");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="ui-section">
+      <h3 className="ui-section-title">Material</h3>
+      {workOrder.materials.length === 0 ? (
+        <p className="ui-field-hint" style={{ marginTop: 0 }}>
+          No material lot recorded yet. Without it the finished lot cannot be traced back to its material.
+        </p>
+      ) : (
+        <ul className="ui-mini-list">
+          {workOrder.materials.map((m) => (
+            <li key={m.materialLotId} style={{ alignItems: "center" }}>
+              <span style={{ flex: 1, minWidth: 0 }}>
+                {m.materialName}
+                <span className="ui-sub">Lot {m.lotNumber}</span>
+              </span>
+              {canEdit && (
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-small ui-btn-ghost"
+                  disabled={busy}
+                  onClick={() => void run(() => apiFetch(`${base}/${encodeURIComponent(m.materialLotId)}`, { method: "DELETE" }))}
+                >
+                  Remove
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {canEdit && (
+        <>
+          <div className="ui-inline-form">
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <Field label="Material lot">
+                <select className="ui-select" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy || lots === null}>
+                  <option value="">{lots === null ? "Loading…" : available.length === 0 ? "No other material lots" : "Choose a material lot…"}</option>
+                  {available.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.materialName} · lot {l.lotNumber}
+                      {l.supplier ? ` · ${l.supplier}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <button
+              type="button"
+              className="ui-btn"
+              disabled={busy || choice === ""}
+              onClick={() =>
+                void run(() =>
+                  apiFetch(base, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ materialLotId: choice }) }),
+                )
+              }
+            >
+              {busy ? "Saving…" : "Add"}
+            </button>
+          </div>
+          <p className="ui-field-hint" style={{ margin: "8px 0 0" }}>
+            A delivery that is not in the list is registered under{" "}
+            <a href="/production/materials" target="_blank" rel="noopener noreferrer">
+              Production → Material lots
+            </a>
+            .
+          </p>
+        </>
+      )}
+      {error && (
+        <p className="ui-message ui-message-error" style={{ marginTop: 8 }}>
+          {error}
+        </p>
+      )}
+    </section>
   );
 }
 

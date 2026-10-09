@@ -18,6 +18,8 @@ export interface WorkOrderPatch {
   notes?: string | null;
   completionMode?: "manual" | "auto";
   countOverproduction?: boolean;
+  /** The instruction to show at the terminal, by name; null = the one named like the part. */
+  workInstructionName?: string | null;
 }
 
 export interface WorkOrderCreate extends WorkOrderPatch {
@@ -44,6 +46,7 @@ const FIELDS = [
   "notes",
   "completionMode",
   "countOverproduction",
+  "workInstructionName",
 ] as const;
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -109,6 +112,11 @@ function parseFields(body: Record<string, unknown>): WorkOrderPatch {
   if ("countOverproduction" in body) {
     if (typeof body.countOverproduction !== "boolean") throw new FieldError("countOverproduction", "countOverproduction must be true or false");
     p.countOverproduction = body.countOverproduction;
+  }
+  if ("workInstructionName" in body) {
+    const v = body.workInstructionName;
+    if (v === null || (typeof v === "string" && v.trim() === "")) p.workInstructionName = null;
+    else p.workInstructionName = text("workInstructionName", v, 200);
   }
   return p;
 }

@@ -93,6 +93,15 @@ export async function recordConsumption(
   );
 }
 
+/** `false`: nothing was recorded for this pair. */
+export async function removeConsumption(workOrderId: string, materialLotId: string): Promise<boolean> {
+  const result = await pool.query(
+    `DELETE FROM work_order_material_consumption WHERE work_order_id = $1 AND material_lot_id = $2`,
+    [workOrderId, materialLotId],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
 export function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23505";
 }

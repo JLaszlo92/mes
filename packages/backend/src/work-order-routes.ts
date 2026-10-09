@@ -11,6 +11,7 @@ import {
   patchWorkOrder,
   type WorkOrderChange,
 } from "./work-orders-repository.js";
+import { getCurrentInstructionForPart } from "./work-instructions-repository.js";
 import { parseWorkOrderBulk, parseWorkOrderCreate, parseWorkOrderPatch } from "./work-order-input.js";
 
 /**
@@ -51,6 +52,11 @@ async function afterChange(request: FastifyRequest, change: WorkOrderChange, det
   }
 }
 
+/** A kiválasztott munkautasításnak léteznie kell (elgépelt név ne maradjon csendben utasítás nélkül). */
+async function unknownInstruction(name: string | null | undefined): Promise<boolean> {
+  return typeof name === "string" && !(await getCurrentInstructionForPart(name));
+}
+
 export default async function workOrderRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/work-orders", async () => listWorkOrders());
 
@@ -63,6 +69,9 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
   app.post("/api/work-orders", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
     const parsed = parseWorkOrderCreate(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
+    if (await unknownInstruction(parsed.value.workInstructionName)) {
+      return fail(reply, 400, `there is no work instruction named "${parsed.value.workInstructionName}"`, "workInstructionName");
+    }
     try {
       const workOrder = await createWorkOrder(parsed.value);
       await recordAuditEvent({
@@ -86,6 +95,9 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
     // Az operátor a terminálról csak indítani/lezárni tud — törzsadatot nem módosíthat.
     if (request.user!.role === "operator" && Object.keys(parsed.value).some((k) => k !== "status")) {
       return fail(reply, 403, "operators can only change the status of a work order");
+    }
+    if (await unknownInstruction(parsed.value.workInstructionName)) {
+      return fail(reply, 400, `there is no work instruction named "${parsed.value.workInstructionName}"`, "workInstructionName");
     }
     const change = await patchWorkOrder(request.params.id, parsed.value);
     if (!change) return fail(reply, 404, "unknown work order");
