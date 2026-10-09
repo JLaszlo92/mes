@@ -1,3 +1,4 @@
+import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useAuth } from "./auth-context.js";
 import { ApiError } from "./master-data.js";
@@ -277,6 +278,13 @@ export default function EdgeNodesPanel() {
   }
 
   useEffect(load, []);
+
+  // Live: online state, clock, disk and last seen refresh on their own (heartbeats come every 30 s).
+  usePolling(() => {
+    fetchEdgeNodes()
+      .then((list) => setNodes(list))
+      .catch(() => {});
+  }, 10_000);
 
   const fail = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
 
