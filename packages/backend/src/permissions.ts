@@ -34,6 +34,7 @@ export const PERMISSIONS = [
   { key: "terminal.complete_work_order", group: "Terminal", label: "Complete a work order at the terminal" },
   { key: "terminal.report_fault", group: "Terminal", label: "Report a fault at the terminal" },
   { key: "terminal.open_instructions", group: "Terminal", label: "Open work instructions at the terminal" },
+  { key: "terminal.set_status", group: "Terminal", label: "Set the machine status at the terminal" },
 
   { key: "admin.machines", group: "Administration", label: "Machines, sites and lines, shifts, statuses, fault codes" },
   { key: "admin.edge_nodes", group: "Administration", label: "Edge nodes and data sources" },

@@ -5,6 +5,7 @@ import { pool } from "./db.js";
 import { insertEvent } from "./events-repository.js";
 import { stateStore } from "./state.js";
 import { publishToHub } from "./hub.js";
+import { endManualStatus } from "./manual-status.js";
 
 const EVAL_INTERVAL_MS = 60_000;
 
@@ -32,6 +33,9 @@ async function tick(): Promise<void> {
 
     const currentState = stateStore.get(machineId);
     if (currentState?.status === "off_shift") continue;
+
+    // A status set at the terminal ends with the shift.
+    await endManualStatus(machineId, "off_shift");
 
     const event: MachineEvent = {
       machineId,

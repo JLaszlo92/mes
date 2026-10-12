@@ -62,6 +62,8 @@ describe("the route map", () => {
   it("the default grants in migration 048 name only known permissions", () => {
     const sql = readFileSync(path.join(SRC, "..", "sql", "048_roles_permissions_workers.sql"), "utf8");
     const granted = [...sql.matchAll(/\('[a-z_]+', '([a-z_.]+)'\)/g)].map((m) => m[1]!);
+    const later = readFileSync(path.join(SRC, "..", "sql", "049_manual_machine_status.sql"), "utf8");
+    granted.push(...[...later.matchAll(/SELECT r\.id, '([a-z_.]+)'/g)].map((m) => m[1]!));
     expect(granted.length).toBeGreaterThan(30);
     expect(granted.filter((p) => !isPermission(p))).toEqual([]);
   });

@@ -73,9 +73,20 @@ export interface TerminalAssignment {
   workOrderStatus: string;
 }
 
+export interface StatusOption {
+  code: string;
+  label: string;
+  oeeCategory: string;
+  color: string | null;
+}
+
 export interface TerminalMachine {
   id: string;
   name: string;
+  /** The current status (latest status event) and, if a worker set it, who and when. */
+  status: { code: string; since: string; manual: { code: string; setBy: string | null; setAt: string } | null } | null;
+  /** What a worker may set (Admin → Status definitions). */
+  statusOptions: StatusOption[];
   shift: { shiftName: string; goodCount: number; scrapCount: number; oee: number | null } | null;
   current: TerminalAssignment[];
   history: TerminalAssignment[];
@@ -116,6 +127,10 @@ export const terminalApi = {
     request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, { method: "POST", body: {}, ticket }),
   reportFault: (id: string, ticket: string, machineId: string, faultCodeId: string) =>
     request<{ workerExpiresAt: number }>(id, "/fault-reports", { method: "POST", body: { machineId, faultCodeId }, ticket }),
+  setStatus: (id: string, ticket: string, machineId: string, code: string) =>
+    request<{ workerExpiresAt: number }>(id, `/machines/${encodeURIComponent(machineId)}/status`, { method: "POST", body: { code }, ticket }),
+  endStatus: (id: string, ticket: string, machineId: string) =>
+    request<{ workerExpiresAt: number }>(id, `/machines/${encodeURIComponent(machineId)}/status`, { method: "POST", body: { end: true }, ticket }),
   openInstruction: (id: string, ticket: string, workOrderId: string) =>
     request<{ instruction: WorkInstruction; workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/instruction`, { method: "POST", body: {}, ticket }),
   fileSource: (id: string, fileId: string) => ({

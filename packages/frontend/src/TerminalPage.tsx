@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import InstructionViewer, { VIEWER_LABELS_HU, type ViewerTab } from "./InstructionViewer.js";
 import TerminalPinPad from "./TerminalPinPad.js";
-import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalState, type Worker } from "./terminal-api.js";
+import TerminalChoiceSheet from "./TerminalChoiceSheet.js";
+import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
 import type { WorkInstruction } from "./work-instructions.js";
 
 /**
@@ -24,7 +25,28 @@ const PERMISSION_TEXT: Record<string, string> = {
   "terminal.complete_work_order": "rendelést lezárni",
   "terminal.report_fault": "hibát jelenteni",
   "terminal.open_instructions": "munkautasítást megnyitni",
+  "terminal.set_status": "gépállapotot állítani",
 };
+
+/** Built-in statuses (the rest come with their own name from Status definitions). */
+const BUILT_IN: Record<string, { label: string; color: string }> = {
+  running: { label: "Gyártás", color: "#0b7d33" },
+  down: { label: "Leállás", color: "#b3261e" },
+  off_shift: { label: "Műszakon kívül", color: "#8a929b" },
+};
+
+function statusLook(code: string, m: TerminalMachine): { label: string; color: string } {
+  const option = m.statusOptions.find((o) => o.code === code);
+  if (option) return { label: option.label, color: option.color ?? "#9a5b00" };
+  return BUILT_IN[code] ?? { label: code, color: "#9a5b00" };
+}
+
+function clock(iso: string): string {
+  const d = new Date(iso);
+  const today = new Date().toDateString() === d.toDateString();
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  return today ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
 
 const POLL_MS = 5000;
 /** Same as the server (terminal-workers.ts). Counted on this device's clock: a tablet with a wrong clock still counts right; the server decides anyway. */
@@ -46,6 +68,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [viewer, setViewer] = useState<{ instruction: WorkInstruction; orderNumber: string; tab: ViewerTab } | null>(null);
   const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
+  const [sheet, setSheet] = useState<{ kind: "fault" | "status"; machineId: string } | null>(null);
   const messageTimer = useRef<number | undefined>(undefined);
 
   const load = useCallback(() => {
@@ -219,6 +242,16 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
                 </div>
               )}
             </div>
+            <div className="term-status-row">
+              <StatusBadge m={m} />
+              <span className="term-spacer" />
+              <button type="button" className="term-btn term-btn-alarm" disabled={busy} onClick={() => setSheet({ kind: "fault", machineId: m.id })}>
+                Hiba jelentése
+              </button>
+              <button type="button" className="term-btn" disabled={busy} onClick={() => setSheet({ kind: "status", machineId: m.id })}>
+                Státusz
+              </button>
+            </div>
 
             {m.current.length === 0 && <p className="term-sub">Nincs ütemezett rendelés.</p>}
             {m.current.map((a) => (
@@ -246,39 +279,12 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
               </div>
             )}
 
-            {m.faultCodes.length > 0 && (
-              <div className="term-faults">
-                <div className="term-sub">Hiba jelentése</div>
-                <div className="term-fault-buttons">
-                  {m.faultCodes.map((fc) => (
-                    <button
-                      key={fc.id}
-                      type="button"
-                      className="term-fault"
-                      disabled={busy}
-                      onClick={() =>
-                        act({
-                          title: `Hiba jelentése: ${fc.code} — ${fc.name}`,
-                          permission: "terminal.report_fault",
-                          run: async (w) => {
-                            const r = await terminalApi.reportFault(terminalUiId, w.ticket, m.id, fc.id);
-                            flash("ok", `Lejelentve: ${fc.code} — ${fc.name} (${w.name})`);
-                            return r.workerExpiresAt;
-                          },
-                        })
-                      }
-                    >
-                      {fc.code}
-                      <span>{fc.name}</span>
-                    </button>
-                  ))}
-                </div>
-                {m.recentReports.length > 0 && <div className="term-sub">Legutóbbi: {m.recentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}</div>}
-              </div>
-            )}
+            {m.recentReports.length > 0 && <div className="term-sub term-recent">Legutóbbi hibajelentések: {m.recentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}</div>}
           </section>
         );
       })}
+
+      {sheet && state && <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} />}
 
       {pending && <TerminalPinPad title={pending.title} error={pinError} busy={pinBusy} onSubmit={(pin) => void submitPin(pin)} onCancel={() => setPending(null)} />}
 
@@ -295,6 +301,120 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         />
       )}
     </div>
+  );
+}
+
+function StatusBadge({ m }: { m: TerminalMachine }) {
+  if (!m.status) return <span className="term-status" style={{ borderColor: "#8a929b" }}>Nincs adat a gépről</span>;
+  const look = statusLook(m.status.code, m);
+  return (
+    <span className="term-status" style={{ borderColor: look.color }}>
+      <span className="term-status-dot" style={{ background: look.color }} aria-hidden="true" />
+      <span>
+        <strong>{look.label}</strong>
+        <span className="term-sub">
+          {" "}
+          · {clock(m.status.since)} óta
+          {m.status.manual ? ` · kézzel: ${m.status.manual.setBy ?? "?"}` : ""}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/** The fault list and the status list of one machine; choosing asks the worker's code (via act). */
+function MachineSheet({
+  sheet,
+  state,
+  close,
+  act,
+  terminalId,
+  flash,
+}: {
+  sheet: { kind: "fault" | "status"; machineId: string };
+  state: TerminalState;
+  close: () => void;
+  act: (action: Action) => void;
+  terminalId: string;
+  flash: (kind: "ok" | "error", text: string) => void;
+}) {
+  const m = state.machines.find((x) => x.id === sheet.machineId);
+  if (!m) return null;
+
+  if (sheet.kind === "fault") {
+    return (
+      <TerminalChoiceSheet
+        title={`Hiba jelentése — ${m.name}`}
+        subtitle="Válaszd ki a hiba okát"
+        emptyText="Ehhez a géphez nincs felvéve hibaok (Admin → Fault codes)."
+        choices={m.faultCodes.map((fc) => ({ key: fc.id, label: fc.code, sub: fc.name, tone: "alarm" as const }))}
+        onCancel={close}
+        onChoose={(id) => {
+          const fc = m.faultCodes.find((x) => x.id === id)!;
+          close();
+          act({
+            title: `Hiba jelentése: ${fc.code} — ${fc.name}`,
+            permission: "terminal.report_fault",
+            run: async (w) => {
+              const r = await terminalApi.reportFault(terminalId, w.ticket, m.id, fc.id);
+              flash("ok", `Lejelentve: ${fc.code} — ${fc.name} (${w.name})`);
+              return r.workerExpiresAt;
+            },
+          });
+        }}
+      />
+    );
+  }
+
+  const manual = m.status?.manual;
+  return (
+    <TerminalChoiceSheet
+      title={`Státusz — ${m.name}`}
+      subtitle={manual ? "A kézi állapot addig marad, amíg a gép újra nem termel, vagy le nem zárod." : "A kiválasztott állapot addig marad, amíg a gép újra nem termel."}
+      emptyText="Nincs beállítható állapot (Admin → Status definitions)."
+      choices={m.statusOptions.map((o) => ({
+        key: o.code,
+        label: o.label,
+        sub: o.oeeCategory === "excluded" ? "tervezett, nem rontja az OEE-t" : "leállásnak számít",
+        color: o.color,
+      }))}
+      footer={
+        manual ? (
+          <button
+            type="button"
+            className="term-btn"
+            onClick={() => {
+              close();
+              act({
+                title: `Kézi állapot lezárása — ${m.name}`,
+                permission: "terminal.set_status",
+                run: async (w) => {
+                  const r = await terminalApi.endStatus(terminalId, w.ticket, m.id);
+                  flash("ok", `${m.name}: vissza a gép jeléhez (${w.name})`);
+                  return r.workerExpiresAt;
+                },
+              });
+            }}
+          >
+            Kézi állapot lezárása — vissza a gép jeléhez
+          </button>
+        ) : undefined
+      }
+      onCancel={close}
+      onChoose={(code) => {
+        const o = m.statusOptions.find((x) => x.code === code)!;
+        close();
+        act({
+          title: `Státusz: ${o.label} — ${m.name}`,
+          permission: "terminal.set_status",
+          run: async (w) => {
+            const r = await terminalApi.setStatus(terminalId, w.ticket, m.id, o.code);
+            flash("ok", `${m.name}: ${o.label} (${w.name})`);
+            return r.workerExpiresAt;
+          },
+        });
+      }}
+    />
   );
 }
 

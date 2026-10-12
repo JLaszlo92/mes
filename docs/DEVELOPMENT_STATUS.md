@@ -1679,8 +1679,41 @@ tablet (below), and operators need a user record with a code.
   lockout guards, pairing, PIN, ticket, actions and the PIN lock; Chromium for Users, Roles, pairing and a 1024×768 terminal
   (wrong code, right code, start, instruction and PDF without a second code, sign-out, a read-only worker refused, reload
   still paired). `pnpm test`: backend 317.
-- Not done: a manual machine status change at the terminal (no such function existed yet), per-user machine scope, a
-  terminal-only permission to explain downtime, CSV import of workers.
+- Not done: per-user machine scope, a terminal-only permission to explain downtime, CSV import of workers. (The manual
+  machine status is in, see the next section.)
+
+## Terminal: machine status, "Hiba jelentése" and "Státusz" — Oct 12
+
+Migration **049**. Backend and frontend.
+
+- **The machine card shows the current status**: a coloured badge (Gyártás / Leállás / Műszakon kívül, otherwise the name
+  and colour from Status definitions), since when, and "kézzel: <worker>" while a manual status holds. Under it two big
+  buttons replace the old row of fault-code buttons:
+  - **Hiba jelentése** → a list of the machine's active fault codes → worker code → fault report (as before).
+  - **Státusz** → a list of the statuses from **Status definitions** (the machine's own, then the global ones it does not
+    override; `off_shift` is left out, the shift calendar sets that) with their OEE category → worker code → the status is
+    set. While a manual status holds, the list also offers **"Kézi állapot lezárása — vissza a gép jeléhez"**.
+- **Rule**: a manual status holds **until the machine runs again** (a `running` signal newer than the manual status) **or the
+  worker ends it**. Other signals meanwhile (e.g. `down`) do not override it: they are stored as `machine_status_signal`
+  events and remembered as the "signal status", which the machine returns to when the worker ends the manual status.
+  Choosing another status replaces the active one; the start of an off-shift period ends it. A buffered edge event older
+  than the manual status is stored as history only and does not touch the live state.
+- **How**: the manual status is written as an ordinary `machine_status` event (`payload.source = "terminal"`, `setBy`), so
+  the timeline, rollups, machine history OEE (by the definition's `oee_category`), shift summary and the live view all see
+  it without change; the decision sits in front of the insert in `mqtt-subscriber.ts` (`decideSignal` in
+  `manual-status.ts`). Bookkeeping in `machine_manual_status` (one active row per machine, `end_reason`: signal_running /
+  operator / replaced / off_shift). The return to the signal is a `machine_status` event with `source = "manual_end"`.
+- **API**: `POST /api/terminal/:terminalId/machines/:machineId/status` with `{ "code": "…" }` or `{ "end": true }`, worker
+  ticket and permission **`terminal.set_status`** (new; granted once by marker `049_terminal_set_status` to Operátor,
+  Karbantartó, Karbantartó supervisor, Quality operátor, Quality supervisor). Audit `machine_status_set` /
+  `machine_status_ended`. The `state` response carries `status` and `statusOptions` per machine.
+- **Known gap**: the downtime evaluator only opens downtime periods for `down`, so a manual status with
+  `counts_as_down` (e.g. "Anyagra vár") does not create a downtime period to explain; machine history OEE does count it
+  as down. To be decided whether manual `counts_as_down` statuses should open downtime periods with the reason pre-filled.
+- Tested: `decideSignal` unit test; live with a local broker: set, a `down` signal kept as signal, replace, end by worker
+  (back to `down`), set again and a `running` signal ends it, wrong code / `off_shift` 400, ending twice 409, audit;
+  Chromium on the terminal (badge, fault list with code, status list, manual badge kept against a `down` signal, end,
+  portrait 800×1280). `pnpm test`: backend 321.
 
 ## Practical notes for whoever (or whatever session) picks this up
 

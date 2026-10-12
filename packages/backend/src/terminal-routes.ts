@@ -12,6 +12,8 @@ import { listAssignmentsForMachine } from "./work-order-assignments-repository.j
 import { getInstructionFile, getInstructionForWorkOrder, instructionFileExists, recordView } from "./work-instructions-repository.js";
 import { getWorkOrderProgress, patchWorkOrder } from "./work-orders-repository.js";
 import { workerTickets } from "./terminal-workers.js";
+import { listStatusDefinitions } from "./machine-status-definitions-repository.js";
+import { currentStatus, endManualStatus, getActiveManualStatus, setManualStatus } from "./manual-status.js";
 
 /**
  * A gép melletti terminál API-ja.
@@ -69,18 +71,35 @@ async function workerFor(request: TerminalRequest, reply: FastifyReply, terminal
 
 const HISTORY_PER_MACHINE = 10;
 
+/**
+ * The statuses a worker may set on a machine: its own definitions, then the global ones not overridden by code.
+ * off_shift is left out: the shift calendar sets it, not the operator.
+ */
+function statusOptionsFor(
+  definitions: { machineId: string | null; code: string; displayName: string; oeeCategory: string; color: string | null }[],
+  machineId: string,
+): { code: string; label: string; oeeCategory: string; color: string | null }[] {
+  definitions = definitions.filter((d) => d.code !== "off_shift");
+  const own = definitions.filter((d) => d.machineId === machineId);
+  const global = definitions.filter((d) => d.machineId === null && !own.some((o) => o.code === d.code));
+  return [...own, ...global].map((d) => ({ code: d.code, label: d.displayName, oeeCategory: d.oeeCategory, color: d.color }));
+}
+
 export default async function terminalRoutes(app: FastifyInstance): Promise<void> {
   // Everything the screen shows, in one request (polled every few seconds).
   app.get<{ Params: { terminalId: string } }>("/api/terminal/:terminalId/state", async (request, reply) => {
     const terminal = await terminalOf(request, reply);
     if (!terminal) return reply;
+    const definitions = await listStatusDefinitions();
     const machines = await Promise.all(
       terminal.machineIds.map(async (machineId, i) => {
-        const [assignments, codes, reports, shift] = await Promise.all([
+        const [assignments, codes, reports, shift, status, manual] = await Promise.all([
           listAssignmentsForMachine(machineId),
           listFaultCodes(machineId),
           listFaultReportsPage({ machineIds: [machineId], limit: 5, offset: 0 }),
           getCurrentShiftSummaryForMachine(machineId).catch(() => undefined),
+          currentStatus(machineId),
+          getActiveManualStatus(machineId),
         ]);
         const done = (s: string) => s === "completed" || s === "cancelled";
         const current = assignments.filter((a) => !done(a.workOrderStatus));
@@ -104,6 +123,14 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
         return {
           id: machineId,
           name: terminal.machineNames[i] ?? machineId,
+          status: status
+            ? {
+                code: status.status,
+                since: status.since,
+                manual: manual ? { code: manual.statusCode, setBy: manual.setByName, setAt: manual.setAt } : null,
+              }
+            : null,
+          statusOptions: statusOptionsFor(definitions, machineId),
           shift: shift ?? null,
           current,
           history,
@@ -219,6 +246,43 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       if (isForeignKeyViolation(err)) return fail(reply, 400, "unknown machine or fault code");
       throw err;
     }
+  });
+
+  // Set a status from Status definitions, or end the manual one ({ end: true }): back to the machine's signal.
+  app.post<{ Params: { terminalId: string; machineId: string } }>("/api/terminal/:terminalId/machines/:machineId/status", async (request, reply) => {
+    const terminal = await terminalOf(request as unknown as TerminalRequest, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request as unknown as TerminalRequest, reply, terminal.id, "terminal.set_status");
+    if (!worker) return reply;
+    const machineId = request.params.machineId;
+    if (!terminal.machineIds.includes(machineId)) return fail(reply, 400, "this machine is not on this terminal");
+    const body = (request.body ?? {}) as { code?: unknown; end?: unknown };
+    if (body.end === true) {
+      const ended = await endManualStatus(machineId, "operator", worker.user.id);
+      if (!ended) return fail(reply, 409, "no status was set by hand on this machine");
+      await recordAuditEvent({
+        actorId: worker.user.id,
+        actorEmail: worker.user.name,
+        action: "machine_status_ended",
+        target: machineId,
+        details: { status: ended.statusCode, backTo: ended.signalStatus, terminalId: terminal.id, terminal: terminal.name },
+        ipAddress: request.ip,
+      });
+      return { success: true, workerExpiresAt: worker.expiresAt };
+    }
+    const options = statusOptionsFor(await listStatusDefinitions(), machineId);
+    const option = options.find((o) => o.code === body.code);
+    if (!option) return fail(reply, 400, "unknown status for this machine");
+    await setManualStatus({ machineId, statusCode: option.code, userId: worker.user.id, userName: worker.user.name, terminalId: terminal.id });
+    await recordAuditEvent({
+      actorId: worker.user.id,
+      actorEmail: worker.user.name,
+      action: "machine_status_set",
+      target: machineId,
+      details: { status: option.code, label: option.label, oeeCategory: option.oeeCategory, terminalId: terminal.id, terminal: terminal.name },
+      ipAddress: request.ip,
+    });
+    return { success: true, workerExpiresAt: worker.expiresAt };
   });
 
   // Opening an instruction is what the view log records: who, which version, for which order.

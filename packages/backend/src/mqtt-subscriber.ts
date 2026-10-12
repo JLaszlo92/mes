@@ -5,6 +5,7 @@ import { ackTopic, EVENT_TOPIC_WILDCARD, safeParseMachineEvent } from "@mes/shar
 import type { FastifyBaseLogger } from "fastify";
 import { config } from "./config.js";
 import { insertEvent } from "./events-repository.js";
+import { decideSignal, endManualStatus, getActiveManualStatus, recordSuppressedSignal, type SignalDecision } from "./manual-status.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
 import { checkAndAutoCompleteWorkOrders } from "./work-order-completion-service.js";
@@ -114,7 +115,36 @@ async function handleMessage(
     return;
   }
 
+  // While a status set at the terminal is active, the machine's own status events
+  // either end it (running) or are kept as signals only (manual-status.ts).
+  let decision: SignalDecision = "apply";
+  if (event.type === "machine_status") {
+    try {
+      decision = decideSignal(await getActiveManualStatus(event.machineId), event);
+    } catch (err) {
+      ingestionHealth.recordFailure(err);
+      log.error({ err }, "manual status lookup failed — NOT acking, edge agent will retry");
+      return;
+    }
+  }
+  if (decision === "suppress" && event.type === "machine_status") {
+    try {
+      await recordSuppressedSignal(event);
+      ingestionHealth.recordSuccess();
+    } catch (err) {
+      ingestionHealth.recordFailure(err);
+      log.error({ err }, "failed to persist event — NOT acking, edge agent will retry");
+      return;
+    }
+    client.publish(ackTopic(event.machineId), JSON.stringify({ sourceEventId: event.sourceEventId }), { qos: 1 });
+    return;
+  }
+
   try {
+    if (decision === "apply_and_end") {
+      await endManualStatus(event.machineId, "signal_running");
+      log.info({ machineId: event.machineId }, "manual status ended: the machine runs again");
+    }
     const outcome = await insertEvent(event, (info) =>
       log.warn({ machineId: event.machineId, sourceEventId: event.sourceEventId, ...info }, "event timestamp is in the future — stored with the receive time"),
     );
@@ -125,7 +155,7 @@ async function handleMessage(
       if (event.type === "data_gap") {
         // Parts the edge agent could not book: kept as data, not a machine state (no live state, no dashboard push).
         log.warn({ machineId: event.machineId, reason: event.reason, gapSeconds: event.gapSeconds, lostGood: event.lostGood, lostScrap: event.lostScrap }, "edge agent reports parts that could not be booked (data gap)");
-      } else {
+      } else if (decision !== "history") {
         stateStore.applyEvent(event);
         publishToHub(event);
       }
