@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { pool } from "./db.js";
 
 export interface TerminalUi {
@@ -7,9 +7,12 @@ export interface TerminalUi {
   machineIds: string[];
   machineNames: string[];
   createdAt: string;
+  /** When the current device was paired (null: no device can open this terminal). */
+  pairedAt: string | null;
+  lastSeenAt: string | null;
 }
 
-type ListRow = { id: string; name: string; created_at: string; machine_ids: string[]; machine_names: string[] };
+type ListRow = { id: string; name: string; created_at: string; machine_ids: string[]; machine_names: string[]; paired_at: string | null; last_seen_at: string | null };
 
 function toTerminalUi(row: ListRow): TerminalUi {
   return {
@@ -18,6 +21,8 @@ function toTerminalUi(row: ListRow): TerminalUi {
     createdAt: row.created_at,
     machineIds: row.machine_ids,
     machineNames: row.machine_names,
+    pairedAt: row.paired_at,
+    lastSeenAt: row.last_seen_at,
   };
 }
 
@@ -25,7 +30,7 @@ function toTerminalUi(row: ListRow): TerminalUi {
 // összegyűjtve, még akkor is, ha egyetlen gép sincs hozzárendelve (üres
 // tömb, nem hiányzó sor).
 const BASE_SELECT = `
-  SELECT t.id, t.name, t.created_at,
+  SELECT t.id, t.name, t.created_at, t.paired_at, t.last_seen_at,
          COALESCE(array_agg(m.id) FILTER (WHERE m.id IS NOT NULL), '{}') AS machine_ids,
          COALESCE(array_agg(m.name) FILTER (WHERE m.id IS NOT NULL), '{}') AS machine_names
   FROM terminal_uis t
@@ -34,13 +39,13 @@ const BASE_SELECT = `
 `;
 
 export async function listTerminalUis(): Promise<TerminalUi[]> {
-  const result = await pool.query<ListRow>(`${BASE_SELECT} GROUP BY t.id, t.name, t.created_at ORDER BY t.name`);
+  const result = await pool.query<ListRow>(`${BASE_SELECT} GROUP BY t.id ORDER BY t.name`);
   return result.rows.map(toTerminalUi);
 }
 
 export async function getTerminalUi(id: string): Promise<TerminalUi | undefined> {
   const result = await pool.query<ListRow>(
-    `${BASE_SELECT} WHERE t.id = $1 GROUP BY t.id, t.name, t.created_at`,
+    `${BASE_SELECT} WHERE t.id = $1 GROUP BY t.id`,
     [id],
   );
   return result.rows[0] ? toTerminalUi(result.rows[0]) : undefined;
@@ -114,4 +119,44 @@ export async function deleteTerminalUi(id: string): Promise<boolean> {
 
 export function isUniqueViolation(err: unknown): boolean {
   return typeof err === "object" && err !== null && "code" in err && err.code === "23505";
+}
+
+// ------------------------------------------------------------ pairing
+
+function hashDeviceToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/**
+ * Párosítás: új, hosszú véletlen eszköz-token; a régi azonnal érvénytelen.
+ * A nyers token csak a válaszban létezik (a párosító linkben), itt a
+ * SHA-256-ja tárolódik — mint a sessionöknél.
+ */
+export async function pairTerminal(id: string): Promise<string | undefined> {
+  const token = randomBytes(32).toString("base64url");
+  const result = await pool.query(
+    `UPDATE terminal_uis SET device_token_hash = $2, paired_at = now(), last_seen_at = NULL WHERE id = $1`,
+    [id, hashDeviceToken(token)],
+  );
+  return (result.rowCount ?? 0) > 0 ? token : undefined;
+}
+
+export async function unpairTerminal(id: string): Promise<boolean> {
+  const result = await pool.query(`UPDATE terminal_uis SET device_token_hash = NULL, paired_at = NULL WHERE id = $1`, [id]);
+  return (result.rowCount ?? 0) > 0;
+}
+
+/** The terminal this device token belongs to (and only that one), with its machines. */
+export async function findTerminalByDeviceToken(terminalId: string, token: string): Promise<TerminalUi | undefined> {
+  const result = await pool.query<ListRow>(
+    `${BASE_SELECT} WHERE t.id = $1 AND t.device_token_hash = $2 GROUP BY t.id`,
+    [terminalId, hashDeviceToken(token)],
+  );
+  const row = result.rows[0];
+  if (!row) return undefined;
+  // "Last seen" for the admin page; written at most once a minute.
+  if (!row.last_seen_at || Date.now() - new Date(row.last_seen_at).getTime() > 60_000) {
+    await pool.query(`UPDATE terminal_uis SET last_seen_at = now() WHERE id = $1`, [terminalId]);
+  }
+  return toTerminalUi(row);
 }

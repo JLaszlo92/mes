@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import {
   createMachine,
@@ -69,7 +68,7 @@ export default async function machineRegistryRoutes(app: FastifyInstance): Promi
     return machine;
   });
 
-  app.post("/api/machine-registry", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.post("/api/machine-registry", async (request, reply) => {
     const parsed = parseMachineCreate(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     try {
@@ -105,10 +104,10 @@ export default async function machineRegistryRoutes(app: FastifyInstance): Promi
       throw err;
     }
   };
-  app.patch<{ Params: { id: string } }>("/api/machine-registry/:id", { preHandler: requireRole("admin", "manager") }, patchHandler);
-  app.put<{ Params: { id: string } }>("/api/machine-registry/:id", { preHandler: requireRole("admin", "manager") }, patchHandler);
+  app.patch<{ Params: { id: string } }>("/api/machine-registry/:id", patchHandler);
+  app.put<{ Params: { id: string } }>("/api/machine-registry/:id", patchHandler);
 
-  app.post("/api/machine-registry/bulk", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.post("/api/machine-registry/bulk", async (request, reply) => {
     const parsed = parseMachineBulk(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     const bulk = parsed.value;

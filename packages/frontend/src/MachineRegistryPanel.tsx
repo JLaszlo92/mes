@@ -20,8 +20,8 @@ const EMPTY_HIERARCHY: PlantHierarchy = { sites: [], areas: [], lines: [] };
  * gépig ez a gyorsabb). Minden mentés a szerveren egy tranzakció.
  */
 export default function MachineRegistryPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const { auth, can } = useAuth();
+  const canEdit = can("admin.machines");
   const masterDataVersion = useMasterDataVersion();
   const { isInScope, isFiltered: scopeFiltered, label: scopeLabel } = useScope();
 

@@ -41,7 +41,13 @@ const ZOOMS = [1, 1.25, 1.5, 2, 3];
 /** Upper limit for one page's canvas, so a zoomed page cannot exhaust a tablet's memory. */
 const MAX_CANVAS_PIXELS = 12_000_000;
 
-export default function PdfViewer({ fileId, labels = PDF_LABELS_EN }: { fileId: string; labels?: PdfViewerLabels }) {
+/** Where the PDF comes from: by default the dashboard's own (session) endpoint; the terminal passes its own URL and device header. */
+export interface PdfSource {
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export default function PdfViewer({ fileId, source, labels = PDF_LABELS_EN }: { fileId: string; source?: PdfSource; labels?: PdfViewerLabels }) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -55,7 +61,7 @@ export default function PdfViewer({ fileId, labels = PDF_LABELS_EN }: { fileId: 
     setDoc(null);
     setError(null);
     (async () => {
-      const [lib, res] = await Promise.all([loadPdfJs(), apiFetch(`${API_BASE}/api/work-instructions/files/${encodeURIComponent(fileId)}`)]);
+      const [lib, res] = await Promise.all([loadPdfJs(), source ? fetch(source.url, { headers: source.headers }) : apiFetch(`${API_BASE}/api/work-instructions/files/${encodeURIComponent(fileId)}`)]);
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
       const data = await res.arrayBuffer();
       if (!alive) return;
@@ -70,7 +76,8 @@ export default function PdfViewer({ fileId, labels = PDF_LABELS_EN }: { fileId: 
       alive = false;
       destroy?.();
     };
-  }, [fileId, attempt]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId, source?.url, attempt]);
 
   // The pages follow the width of the frame (rotation, window resize).
   useEffect(() => {

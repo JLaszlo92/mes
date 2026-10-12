@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import type { WorkInstruction } from "./work-instructions.js";
 import { PDF_LABELS_EN, type PdfViewerLabels } from "./ui/pdf-labels.js";
+import type { PdfSource } from "./ui/PdfViewer.js";
 
 const PdfViewer = lazy(() => import("./ui/PdfViewer.js"));
 
@@ -52,6 +53,7 @@ export default function InstructionViewer({
   initialTab,
   labels = VIEWER_LABELS_EN,
   large = false,
+  pdfSource,
   onClose,
 }: {
   instruction: WorkInstruction;
@@ -60,6 +62,8 @@ export default function InstructionViewer({
   labels?: InstructionViewerLabels;
   /** Touch-sized controls and larger text, for the terminal. */
   large?: boolean;
+  /** The terminal reads the PDF through its own endpoint (device token), not the dashboard session. */
+  pdfSource?: (fileId: string) => PdfSource;
   onClose: () => void;
 }) {
   const hasPdf = instruction.pdfFileId !== null;
@@ -114,7 +118,7 @@ export default function InstructionViewer({
 
       {tab === "pdf" && instruction.pdfFileId ? (
         <Suspense fallback={<div className="ui-pdf-state">{labels.pdf.loading}</div>}>
-          <PdfViewer fileId={instruction.pdfFileId} labels={labels.pdf} />
+          <PdfViewer fileId={instruction.pdfFileId} source={pdfSource?.(instruction.pdfFileId)} labels={labels.pdf} />
         </Suspense>
       ) : (
         <div className="ui-viewer-text">

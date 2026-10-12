@@ -15,9 +15,9 @@ type DocFilter = "" | "pdf" | "none";
  * tölthető fel a PDF, és látszik a verziótörténet meg a megtekintés-napló.
  */
 export default function WorkInstructionsPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "admin" || auth?.role === "manager";
-  const canSeeLog = canEdit || auth?.role === "supervisor";
+  const { auth, can } = useAuth();
+  const canEdit = can("instructions.manage");
+  const canSeeLog = can("instructions.view_log");
 
   const [instructions, setInstructions] = useState<WorkInstruction[]>([]);
   const [loading, setLoading] = useState(true);

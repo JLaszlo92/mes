@@ -1,437 +1,397 @@
-import { useEffect, useRef, useState } from "react";
-import { useAuth } from "./auth-context.js";
-import LoginForm from "./LoginForm.js";
-import { apiFetch, API_BASE } from "./api.js";
+import { useCallback, useEffect, useRef, useState } from "react";
 import InstructionViewer, { VIEWER_LABELS_HU, type ViewerTab } from "./InstructionViewer.js";
+import TerminalPinPad from "./TerminalPinPad.js";
+import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalState, type Worker } from "./terminal-api.js";
 import type { WorkInstruction } from "./work-instructions.js";
 
-interface TerminalUi {
-  id: string;
-  name: string;
-  machineIds: string[];
-  machineNames: string[];
+/**
+ * A gép melletti terminál. Bejelentkezés nélkül fut (a párosított eszköz
+ * tokenjével, újraindítás után is), mindenki láthatja. Minden változtatás —
+ * rendelés indítása és lezárása, hibajelentés, munkautasítás megnyitása — a
+ * dolgozó személyes kódját kéri; a kód után 60 másodpercig (minden
+ * művelettel újrakezdve) nem kell újra beírni, és a művelet az ő nevén fut.
+ */
+
+interface Action {
+  /** What the pin pad says, e.g. "Rendelés indítása: WO-1". */
+  title: string;
+  permission: string;
+  run: (worker: Worker) => Promise<number | void>;
 }
 
-interface Assignment {
-  id: string;
-  workOrderId: string;
-  plannedStart: string;
-  plannedEnd: string;
-  orderNumber: string;
-  partName: string;
-  quantity: number;
-  workOrderStatus: string;
-}
-
-interface FaultCode {
-  id: string;
-  machineId: string;
-  code: string;
-  name: string;
-  isActive: boolean;
-}
-
-interface FaultReport {
-  id: string;
-  machineId: string;
-  faultCode: string;
-  status: string;
-}
-
-interface WorkOrderProgress {
-  goodCount: number;
-  scrapCount: number;
-  quantity: number;
-  remaining: number;
-  targetReached: boolean;
-}
-
-interface ShiftSummary {
-  shiftName: string;
-  goodCount: number;
-  scrapCount: number;
-  availability: number;
-  oee: number | null;
-}
-
-const HISTORICAL_STATUSES = new Set(["completed", "cancelled"]);
-
-const startButtonStyle = {
-  padding: "10px 20px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 8,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 16,
+const PERMISSION_TEXT: Record<string, string> = {
+  "terminal.start_work_order": "rendelést indítani",
+  "terminal.complete_work_order": "rendelést lezárni",
+  "terminal.report_fault": "hibát jelenteni",
+  "terminal.open_instructions": "munkautasítást megnyitni",
 };
 
-const instructionButtonStyle = {
-  padding: "12px 18px",
-  border: "1px solid #2c5a85",
-  borderRadius: 8,
-  background: "#e4ecf4",
-  color: "#234a6e",
-  cursor: "pointer",
-  fontSize: 16,
-  fontWeight: 600,
-  minHeight: 48,
-};
-
-const faultButtonStyle = {
-  padding: "14px 18px",
-  border: "1px solid #d03b3b",
-  borderRadius: 10,
-  background: "#fff",
-  color: "#d03b3b",
-  cursor: "pointer",
-  fontSize: 15,
-  fontWeight: 600,
-  minWidth: 120,
-  textAlign: "center" as const,
-};
+const POLL_MS = 5000;
+/** Same as the server (terminal-workers.ts). Counted on this device's clock: a tablet with a wrong clock still counts right; the server decides anyway. */
+const WORKER_IDLE_MS = 60_000;
 
 export default function TerminalPage({ terminalUiId }: { terminalUiId: string }) {
-  const { auth, logout } = useAuth();
-  const [ui, setUi] = useState<TerminalUi | null>(null);
-  const [assignmentsByMachine, setAssignmentsByMachine] = useState<Record<string, Assignment[]>>({});
-  const [faultCodesByMachine, setFaultCodesByMachine] = useState<Record<string, FaultCode[]>>({});
-  const [recentReports, setRecentReports] = useState<FaultReport[]>([]);
-  // The instruction of each started work order (the one set on the order, else the one named like the part).
-  const [instructionByOrder, setInstructionByOrder] = useState<Record<string, WorkInstruction>>({});
-  const [viewer, setViewer] = useState<{ instruction: WorkInstruction; workOrderId: string; orderNumber: string; tab: ViewerTab } | null>(null);
-  const [progressByWorkOrder, setProgressByWorkOrder] = useState<Record<string, WorkOrderProgress>>({});
-  const [shiftSummaryByMachine, setShiftSummaryByMachine] = useState<Record<string, ShiftSummary>>({});
+  const [paired, setPaired] = useState(() => {
+    takePairingToken(terminalUiId);
+    return readDeviceToken(terminalUiId) !== null;
+  });
+  const [state, setState] = useState<TerminalState | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [worker, setWorker] = useState<Worker | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [pending, setPending] = useState<Action | null>(null);
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinBusy, setPinBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
+  const [viewer, setViewer] = useState<{ instruction: WorkInstruction; orderNumber: string; tab: ViewerTab } | null>(null);
   const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
-  const [feedback, setFeedback] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const messageTimer = useRef<number | undefined>(undefined);
 
-  const loggedViewsRef = useRef<Set<string>>(new Set());
-
-  function load() {
-    apiFetch(`${API_BASE}/api/terminal-uis/${encodeURIComponent(terminalUiId)}`)
-      .then((res) => {
-        if (!res.ok) throw new Error(`terminal UI not found (${res.status})`);
-        return res.json();
+  const load = useCallback(() => {
+    terminalApi
+      .state(terminalUiId)
+      .then((s) => {
+        setState(s);
+        setLoadError(null);
       })
-      .then((data: TerminalUi) => {
-        setUi(data);
-        setError(null);
-        return Promise.all([
-          Promise.all(
-            data.machineIds.map((machineId) =>
-              apiFetch(`${API_BASE}/api/work-order-assignments?machineId=${encodeURIComponent(machineId)}`)
-                .then((r) => r.json())
-                .then((assignments: Assignment[]) => [machineId, assignments] as const),
-            ),
-          ),
-          Promise.all(
-            data.machineIds.map((machineId) =>
-              apiFetch(`${API_BASE}/api/fault-codes?machineId=${encodeURIComponent(machineId)}`)
-                .then((r) => r.json())
-                .then((codes: FaultCode[]) => [machineId, codes] as const),
-            ),
-          ),
-          auth
-            ? apiFetch(`${API_BASE}/api/fault-reports`, { headers: { Authorization: `Bearer ${auth.token}` } }).then((r) =>
-                r.ok ? r.json() : [],
-              )
-            : Promise.resolve([]),
-          Promise.all(
-            data.machineIds.map((machineId) =>
-              apiFetch(`${API_BASE}/api/machines/${encodeURIComponent(machineId)}/current-shift`)
-                .then((r) => (r.ok ? r.json() : null))
-                .then((summary: ShiftSummary | null) => [machineId, summary] as const),
-            ),
-          ),
-        ]);
-      })
-      .then(([assignmentPairs, faultCodePairs, reports, shiftPairs]) => {
-        const byMachine: Record<string, Assignment[]> = {};
-        for (const [machineId, assignments] of assignmentPairs) byMachine[machineId] = assignments;
-        setAssignmentsByMachine(byMachine);
-
-        const codesByMachine: Record<string, FaultCode[]> = {};
-        for (const [machineId, codes] of faultCodePairs) codesByMachine[machineId] = codes.filter((c) => c.isActive);
-        setFaultCodesByMachine(codesByMachine);
-
-        setRecentReports(reports as FaultReport[]);
-
-        const shiftByMachine: Record<string, ShiftSummary> = {};
-        for (const [machineId, summary] of shiftPairs) {
-          if (summary) shiftByMachine[machineId] = summary;
-        }
-        setShiftSummaryByMachine(shiftByMachine);
-
-        const inProgressOrderIds = Object.values(byMachine)
-          .flat()
-          .filter((a) => a.workOrderStatus === "in_progress")
-          .map((a) => a.workOrderId);
-
-        // Asked on every refresh, so a new version published in the dashboard
-        // reaches the terminal within seconds. An order without instruction answers 404.
-        Promise.all(
-          [...new Set(inProgressOrderIds)].map((workOrderId) =>
-            apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/work-instruction`)
-              .then((res) => (res.ok ? res.json() : null))
-              .catch(() => null)
-              .then((instruction: WorkInstruction | null) => [workOrderId, instruction] as const),
-          ),
-        ).then((pairs) => {
-          const next: Record<string, WorkInstruction> = {};
-          for (const [id, instruction] of pairs) {
-            if (instruction) next[id] = instruction;
-          }
-          setInstructionByOrder(next);
-        });
-
-        if (inProgressOrderIds.length > 0 && auth) {
-          Promise.all(
-            inProgressOrderIds.map((workOrderId) =>
-              apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/progress`, {
-                headers: { Authorization: `Bearer ${auth.token}` },
-              })
-                .then((res) => (res.ok ? res.json() : null))
-                .then((progress) => [workOrderId, progress] as const),
-            ),
-          ).then((pairs) => {
-            const next: Record<string, WorkOrderProgress> = {};
-            for (const [id, progress] of pairs) {
-              if (progress) next[id] = progress;
-            }
-            setProgressByWorkOrder(next);
-          });
-        }
-      })
-      .catch((err) => setError(String(err)));
-  }
+      .catch((err) => {
+        if (err instanceof TerminalError && err.code === "terminal_not_paired") {
+          forgetDeviceToken(terminalUiId);
+          setPaired(false);
+        } else setLoadError(err instanceof Error ? err.message : String(err));
+      });
+  }, [terminalUiId]);
 
   useEffect(() => {
-    if (!auth) return;
+    if (!paired) return;
     load();
-    const timer = setInterval(load, 5000);
+    const timer = setInterval(load, POLL_MS);
     return () => clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth, terminalUiId]);
+  }, [paired, load]);
 
-  if (!auth) {
-    return <LoginForm />;
+  // The countdown of the signed-in worker; at zero the terminal locks itself.
+  useEffect(() => {
+    if (!worker) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [worker]);
+  useEffect(() => {
+    if (worker && now >= worker.expiresAt) setWorker(null);
+  }, [now, worker]);
+
+  function flash(kind: "ok" | "error", text: string) {
+    setMessage({ kind, text });
+    window.clearTimeout(messageTimer.current);
+    messageTimer.current = window.setTimeout(() => setMessage(null), kind === "ok" ? 4000 : 8000);
   }
 
-  /**
-   * Opens the instruction of a started order. This is the moment that is
-   * logged as "shown to the operator": once per version and order in a session.
-   */
-  function openInstruction(instruction: WorkInstruction, workOrderId: string, orderNumber: string, tab: ViewerTab) {
-    setViewer({ instruction, workOrderId, orderNumber, tab });
-    const key = `${instruction.id}:${workOrderId}`;
-    if (loggedViewsRef.current.has(key)) return;
-    loggedViewsRef.current.add(key);
-    apiFetch(`${API_BASE}/api/work-instructions/view`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workInstructionId: instruction.id, workOrderId }),
-    })
-      .then((res) => {
-        if (!res.ok) loggedViewsRef.current.delete(key);
-      })
-      .catch(() => {
-        // Not recorded (network): the next opening tries again.
-        loggedViewsRef.current.delete(key);
-      });
-  }
-
-  async function startWorkOrder(workOrderId: string) {
-    await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
-      body: JSON.stringify({ status: "in_progress" }),
-    });
-    load();
-  }
-
-  async function completeWorkOrder(workOrderId: string) {
-    await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
-      body: JSON.stringify({ status: "completed" }),
-    });
-    load();
-  }
-
-  async function reportFault(machineId: string, faultCodeId: string, faultLabel: string) {
-    const res = await apiFetch(`${API_BASE}/api/fault-reports`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth!.token}` },
-      body: JSON.stringify({ machineId, faultCodeId, occurrenceCount: 1 }),
-    });
-    if (res.ok) {
-      setFeedback(`Reported: ${faultLabel}`);
-      setTimeout(() => setFeedback(null), 3000);
+  async function execute(action: Action, as: Worker) {
+    if (!as.permissions.includes(action.permission)) {
+      flash("error", `${as.name} nem jogosult ${PERMISSION_TEXT[action.permission] ?? "erre"}. Másik dolgozó kódjával próbáld.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const done = await action.run(as);
+      if (typeof done === "number") setWorker({ ...as, expiresAt: Date.now() + WORKER_IDLE_MS });
       load();
+    } catch (err) {
+      if (err instanceof TerminalError && err.code === "worker_required") {
+        setWorker(null);
+        setPending(action);
+        setPinError("A belépés lejárt, add meg újra a kódodat.");
+      } else if (err instanceof TerminalError && err.code === "terminal_not_paired") {
+        setPaired(false);
+      } else flash("error", err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
     }
   }
 
+  /** Every change goes through here: with a signed-in worker it runs, otherwise the code is asked first. */
+  function act(action: Action) {
+    if (busy) return;
+    if (worker && Date.now() < worker.expiresAt) void execute(action, worker);
+    else {
+      setPinError(null);
+      setPending(action);
+    }
+  }
+
+  async function submitPin(pin: string) {
+    if (!pending) return;
+    setPinBusy(true);
+    setPinError(null);
+    try {
+      const w = { ...(await terminalApi.unlock(terminalUiId, pin)), expiresAt: Date.now() + WORKER_IDLE_MS };
+      setWorker(w);
+      setNow(Date.now());
+      const action = pending;
+      setPending(null);
+      if (action.permission !== "") await execute(action, w);
+    } catch (err) {
+      if (err instanceof TerminalError && err.code === "wrong_pin") setPinError("Hibás kód.");
+      else if (err instanceof TerminalError && err.code === "locked") setPinError("Túl sok hibás kód. Várj néhány percet, utána próbáld újra.");
+      else if (err instanceof TerminalError && err.code === "permission") setPinError(`${err.message.split(" has no ")[0]} nem dolgozhat a terminálon (nincs jogosultsága).`);
+      else setPinError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPinBusy(false);
+    }
+  }
+
+  function signOut() {
+    if (worker) void terminalApi.lock(terminalUiId, worker.ticket);
+    setWorker(null);
+  }
+
+  if (!paired) {
+    return (
+      <div className="term">
+        <div className="term-notice">
+          <h1>Ez a képernyő nincs párosítva</h1>
+          <p>
+            A terminál használatához egy adminisztrátornak párosítania kell ezt az eszközt: a dashboardon Admin → Terminals → <strong>Pair device</strong>, majd
+            a megjelenő linket (QR-kódot) ezen az eszközön kell megnyitni. Egyszer kell megtenni; újraindítás után is megmarad.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const secondsLeft = worker ? Math.max(0, Math.ceil((worker.expiresAt - now) / 1000)) : 0;
+
   return (
-    <div style={{ fontFamily: "system-ui, sans-serif", maxWidth: 900, margin: "20px auto", padding: "0 16px" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h1 style={{ fontSize: 22 }}>{ui?.name ?? "Terminal"}</h1>
-        <button onClick={logout} style={{ fontSize: 14, padding: "6px 12px", border: "1px solid #e1e0d9", borderRadius: 6, background: "#fff", cursor: "pointer" }}>
-          Sign out
-        </button>
+    <div className="term">
+      <header className="term-head">
+        <h1>{state?.terminal.name ?? "Terminál"}</h1>
+        <span className="term-spacer" />
+        {worker ? (
+          <div className="term-worker">
+            <span>
+              <strong>{worker.name}</strong>
+              <span className="term-sub">
+                {worker.roleName} · még {secondsLeft} mp
+              </span>
+            </span>
+            <button type="button" className="term-btn term-btn-ghost" onClick={signOut}>
+              Kilépés
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="term-btn term-btn-ghost"
+            onClick={() => {
+              setPinError(null);
+              setPending({ title: "Belépés", permission: "", run: async () => undefined });
+            }}
+          >
+            Belépés kóddal
+          </button>
+        )}
       </header>
 
-      {error && <p style={{ color: "#d03b3b" }}>{error}</p>}
-      {feedback && (
-        <p style={{ background: "#eafaea", color: "#0ca30c", padding: "8px 12px", borderRadius: 8, fontWeight: 600 }}>
-          ✓ {feedback}
-        </p>
-      )}
-      {!ui && !error && <p style={{ color: "#898781" }}>Loading…</p>}
+      {message && <div className={`term-flash term-flash-${message.kind}`}>{message.kind === "ok" ? "✓ " : ""}{message.text}</div>}
+      {loadError && <div className="term-flash term-flash-error">Nincs kapcsolat a szerverrel: {loadError}</div>}
+      {!state && !loadError && <p className="term-sub">Betöltés…</p>}
 
-      {ui?.machineIds.map((machineId, i) => {
-        const assignments = assignmentsByMachine[machineId] ?? [];
-        const faultCodes = faultCodesByMachine[machineId] ?? [];
-        const machineRecentReports = recentReports.filter((r) => r.machineId === machineId).slice(0, 5);
-        const shiftSummary = shiftSummaryByMachine[machineId];
-
-        const currentAssignments = assignments.filter((a) => !HISTORICAL_STATUSES.has(a.workOrderStatus));
-        const historicalAssignments = assignments.filter((a) => HISTORICAL_STATUSES.has(a.workOrderStatus));
-        const showHistory = showHistoryFor[machineId] ?? false;
-
+      {state?.machines.map((m) => {
+        const showHistory = showHistoryFor[m.id] ?? false;
         return (
-          <section key={machineId} style={{ marginTop: 24, border: "1px solid #e1e0d9", borderRadius: 12, padding: 16 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
-              <h2 style={{ fontSize: 18, marginTop: 0 }}>{ui.machineNames[i]}</h2>
-              {shiftSummary && (
-                <div style={{ display: "flex", gap: 14, fontSize: 13, color: "#898781" }}>
-                  <span>Shift: <strong style={{ color: "#0b0b0b" }}>{shiftSummary.shiftName}</strong></span>
-                  <span>Good: <strong style={{ color: "#0ca30c" }}>{shiftSummary.goodCount}</strong></span>
-                  <span>Scrap: <strong style={{ color: "#d03b3b" }}>{shiftSummary.scrapCount}</strong></span>
-                  <span>OEE: <strong style={{ color: "#0b0b0b" }}>{shiftSummary.oee !== null ? `${Math.round(shiftSummary.oee * 100)}%` : "—"}</strong></span>
+          <section key={m.id} className="term-machine">
+            <div className="term-machine-head">
+              <h2>{m.name}</h2>
+              {m.shift && (
+                <div className="term-shift">
+                  <span>
+                    Műszak: <strong>{m.shift.shiftName}</strong>
+                  </span>
+                  <span>
+                    Jó: <strong>{m.shift.goodCount}</strong>
+                  </span>
+                  <span>
+                    Selejt: <strong className="term-scrap">{m.shift.scrapCount}</strong>
+                  </span>
+                  <span>
+                    OEE: <strong>{m.shift.oee !== null ? `${Math.round(m.shift.oee * 100)}%` : "—"}</strong>
+                  </span>
                 </div>
               )}
             </div>
 
-            {currentAssignments.length === 0 && historicalAssignments.length === 0 && (
-              <p style={{ color: "#898781" }}>No work orders scheduled.</p>
-            )}
+            {m.current.length === 0 && <p className="term-sub">Nincs ütemezett rendelés.</p>}
+            {m.current.map((a) => (
+              <OrderRow key={a.id} a={a} order={m.orders[a.workOrderId]} busy={busy} act={act} terminalId={terminalUiId} onInstruction={(instruction, tab) => setViewer({ instruction, orderNumber: a.orderNumber, tab })} />
+            ))}
 
-            {currentAssignments.map((a) => {
-              const instruction = a.workOrderStatus === "in_progress" ? instructionByOrder[a.workOrderId] : undefined;
-              const progress = progressByWorkOrder[a.workOrderId];
-              return (
-                <div key={a.id} style={{ padding: "12px 0", borderTop: "1px solid #e1e0d9" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontWeight: 600, fontSize: 16 }}>{a.orderNumber} — {a.partName}</div>
-                      <div style={{ fontSize: 13, color: "#898781" }}>
-                        {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
-                      </div>
-                      {a.workOrderStatus === "in_progress" && progress && (
-                        <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4, color: progress.targetReached ? "#0ca30c" : "#0b0b0b" }}>
-                          {progress.goodCount} / {progress.quantity} db kész
-                          {progress.targetReached ? " — célmennyiség elérve" : ` — ${progress.remaining} hátra`}
-                        </div>
-                      )}
-                    </div>
-                    {a.workOrderStatus === "in_progress" ? (
-                      <button
-                        style={{ ...startButtonStyle, background: "#0ca30c", borderColor: "#0ca30c" }}
-                        onClick={() => completeWorkOrder(a.workOrderId)}
-                      >
-                        Befejezés
-                      </button>
-                    ) : (
-                      <button style={startButtonStyle} onClick={() => startWorkOrder(a.workOrderId)}>
-                        Elkezdés
-                      </button>
-                    )}
-                  </div>
-
-                  {instruction && (
-                    <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                      <button style={instructionButtonStyle} onClick={() => openInstruction(instruction, a.workOrderId, a.orderNumber, "text")}>
-                        Munkautasítás
-                      </button>
-                      {instruction.pdfFileId && (
-                        <button style={instructionButtonStyle} onClick={() => openInstruction(instruction, a.workOrderId, a.orderNumber, "pdf")}>
-                          PDF megnyitása
-                        </button>
-                      )}
-                      <span style={{ fontSize: 13, color: "#898781" }}>
-                        {instruction.partName} · v{instruction.version}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {historicalAssignments.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <button
-                  onClick={() => setShowHistoryFor((prev) => ({ ...prev, [machineId]: !showHistory }))}
-                  style={{ fontSize: 12, padding: "4px 10px", border: "1px solid #e1e0d9", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#898781" }}
-                >
-                  {showHistory ? "Hide" : "Show"} history ({historicalAssignments.length})
+            {m.history.length > 0 && (
+              <div className="term-history">
+                <button type="button" className="term-btn term-btn-ghost term-btn-small" onClick={() => setShowHistoryFor((p) => ({ ...p, [m.id]: !showHistory }))}>
+                  {showHistory ? "Korábbiak elrejtése" : `Korábbiak (${m.history.length})`}
                 </button>
-
                 {showHistory &&
-                  historicalAssignments.map((a) => (
-                    <div key={a.id} style={{ padding: "12px 0", borderTop: "1px solid #e1e0d9", opacity: 0.7 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontWeight: 600, fontSize: 15 }}>{a.orderNumber} — {a.partName}</div>
-                          <div style={{ fontSize: 13, color: "#898781" }}>
-                            {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
-                          </div>
+                  m.history.map((a) => (
+                    <div key={a.id} className="term-order term-order-done">
+                      <div className="term-order-main">
+                        <div className="term-order-title">
+                          {a.orderNumber} — {a.partName}
                         </div>
-                        <span style={{ color: "#898781", fontSize: 13 }}>{a.workOrderStatus === "completed" ? "Kész" : "Törölve"}</span>
+                        <div className="term-sub">
+                          {a.quantity} db · {a.workOrderStatus === "completed" ? "Kész" : "Törölve"}
+                        </div>
                       </div>
                     </div>
                   ))}
               </div>
             )}
 
-            {faultCodes.length > 0 && (
-              <div style={{ marginTop: 16, borderTop: "1px solid #e1e0d9", paddingTop: 12 }}>
-                <div style={{ fontSize: 13, color: "#898781", marginBottom: 8 }}>Report a fault</div>
-                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  {faultCodes.map((fc) => (
+            {m.faultCodes.length > 0 && (
+              <div className="term-faults">
+                <div className="term-sub">Hiba jelentése</div>
+                <div className="term-fault-buttons">
+                  {m.faultCodes.map((fc) => (
                     <button
                       key={fc.id}
-                      style={faultButtonStyle}
-                      onClick={() => reportFault(machineId, fc.id, `${fc.code} — ${fc.name}`)}
+                      type="button"
+                      className="term-fault"
+                      disabled={busy}
+                      onClick={() =>
+                        act({
+                          title: `Hiba jelentése: ${fc.code} — ${fc.name}`,
+                          permission: "terminal.report_fault",
+                          run: async (w) => {
+                            const r = await terminalApi.reportFault(terminalUiId, w.ticket, m.id, fc.id);
+                            flash("ok", `Lejelentve: ${fc.code} — ${fc.name} (${w.name})`);
+                            return r.workerExpiresAt;
+                          },
+                        })
+                      }
                     >
                       {fc.code}
-                      <br />
-                      <span style={{ fontWeight: 400, fontSize: 12 }}>{fc.name}</span>
+                      <span>{fc.name}</span>
                     </button>
                   ))}
                 </div>
-              </div>
-            )}
-
-            {machineRecentReports.length > 0 && (
-              <div style={{ marginTop: 12, fontSize: 12, color: "#898781" }}>
-                Recent: {machineRecentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}
+                {m.recentReports.length > 0 && <div className="term-sub">Legutóbbi: {m.recentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}</div>}
               </div>
             )}
           </section>
         );
       })}
 
+      {pending && <TerminalPinPad title={pending.title} error={pinError} busy={pinBusy} onSubmit={(pin) => void submitPin(pin)} onCancel={() => setPending(null)} />}
+
       {viewer && (
         <InstructionViewer
-          key={`${viewer.instruction.id}:${viewer.workOrderId}`}
+          key={`${viewer.instruction.id}:${viewer.orderNumber}`}
           instruction={viewer.instruction}
           subtitle={viewer.orderNumber}
           initialTab={viewer.tab}
           labels={VIEWER_LABELS_HU}
           large
+          pdfSource={(fileId) => terminalApi.fileSource(terminalUiId, fileId)}
           onClose={() => setViewer(null)}
         />
+      )}
+    </div>
+  );
+}
+
+function OrderRow({
+  a,
+  order,
+  busy,
+  act,
+  terminalId,
+  onInstruction,
+}: {
+  a: TerminalAssignment;
+  order: TerminalState["machines"][number]["orders"][string] | undefined;
+  busy: boolean;
+  act: (action: Action) => void;
+  terminalId: string;
+  onInstruction: (instruction: WorkInstruction, tab: ViewerTab) => void;
+}) {
+  const running = a.workOrderStatus === "in_progress";
+  const progress = order?.progress;
+  const instruction = order?.instruction;
+
+  function openInstruction(tab: ViewerTab) {
+    act({
+      title: `Munkautasítás: ${a.orderNumber}`,
+      permission: "terminal.open_instructions",
+      run: async (w) => {
+        const r = await terminalApi.openInstruction(terminalId, w.ticket, a.workOrderId);
+        onInstruction(r.instruction, tab);
+        return r.workerExpiresAt;
+      },
+    });
+  }
+
+  return (
+    <div className="term-order">
+      <div className="term-order-row">
+        <div className="term-order-main">
+          <div className="term-order-title">
+            {a.orderNumber} — {a.partName}
+          </div>
+          <div className="term-sub">
+            {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
+          </div>
+          {running && progress && (
+            <div className="term-progress" data-done={progress.targetReached ? "true" : undefined}>
+              {progress.goodCount} / {progress.quantity} db kész{progress.targetReached ? " — célmennyiség elérve" : ` — ${progress.remaining} hátra`}
+              {progress.operator ? <span className="term-sub"> · indította: {progress.operator}</span> : null}
+            </div>
+          )}
+        </div>
+        {running ? (
+          <button
+            type="button"
+            className="term-btn term-btn-done"
+            disabled={busy}
+            onClick={() =>
+              act({
+                title: `Rendelés lezárása: ${a.orderNumber}`,
+                permission: "terminal.complete_work_order",
+                run: async (w) => (await terminalApi.complete(terminalId, w.ticket, a.workOrderId)).workerExpiresAt,
+              })
+            }
+          >
+            Befejezés
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="term-btn term-btn-primary"
+            disabled={busy}
+            onClick={() =>
+              act({
+                title: `Rendelés indítása: ${a.orderNumber}`,
+                permission: "terminal.start_work_order",
+                run: async (w) => (await terminalApi.start(terminalId, w.ticket, a.workOrderId)).workerExpiresAt,
+              })
+            }
+          >
+            Elkezdés
+          </button>
+        )}
+      </div>
+      {running && instruction && (
+        <div className="term-instruction">
+          <button type="button" className="term-btn term-btn-soft" disabled={busy} onClick={() => openInstruction("text")}>
+            Munkautasítás
+          </button>
+          {instruction.hasPdf && (
+            <button type="button" className="term-btn term-btn-soft" disabled={busy} onClick={() => openInstruction("pdf")}>
+              PDF megnyitása
+            </button>
+          )}
+          <span className="term-sub">
+            {instruction.partName} · v{instruction.version}
+          </span>
+        </div>
       )}
     </div>
   );

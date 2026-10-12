@@ -20,7 +20,7 @@ interface StatusDefinition {
 }
 
 export default function MachineStatusDefinitionsPanel() {
-  const { auth, logout } = useAuth();
+  const { auth, logout, can } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [definitions, setDefinitions] = useState<StatusDefinition[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -33,7 +33,7 @@ export default function MachineStatusDefinitionsPanel() {
   });
   const [submitting, setSubmitting] = useState(false);
 
-  const isAdmin = auth?.role === "admin" || auth?.role === "manager";
+  const isAdmin = can("admin.machines");
 
   function load() {
     Promise.all([

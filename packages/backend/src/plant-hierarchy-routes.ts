@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { isForeignKeyViolation, isUniqueViolation } from "./machines-repository.js";
 import {
@@ -41,7 +40,7 @@ export default async function plantHierarchyRoutes(app: FastifyInstance): Promis
   app.get("/api/plant-hierarchy", async () => getPlantHierarchy());
 
   for (const { level, path, parentField, parentLabel } of LEVELS) {
-    app.post<{ Body: Record<string, unknown> }>(path, { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    app.post<{ Body: Record<string, unknown> }>(path, async (request, reply) => {
       const name = parseName(request.body?.name);
       if (!name) {
         reply.code(400);
@@ -82,7 +81,6 @@ export default async function plantHierarchyRoutes(app: FastifyInstance): Promis
 
     app.patch<{ Params: { id: string }; Body: Record<string, unknown> }>(
       `${path}/:id`,
-      { preHandler: requireRole("admin", "manager") },
       async (request, reply) => {
         const body = request.body ?? {};
         const changes: { name?: string; parentId?: string } = {};
@@ -134,7 +132,7 @@ export default async function plantHierarchyRoutes(app: FastifyInstance): Promis
       },
     );
 
-    app.delete<{ Params: { id: string } }>(`${path}/:id`, { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+    app.delete<{ Params: { id: string } }>(`${path}/:id`, async (request, reply) => {
       try {
         const deleted = await deleteHierarchyNode(level, request.params.id);
         if (!deleted) {

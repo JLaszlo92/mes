@@ -29,7 +29,7 @@ export async function recordAuditEvent(event: AuditEventInput): Promise<void> {
   try {
     await pool.query(
       `INSERT INTO audit_log (id, actor_id, actor_email, action, target, details, ip_address)
-       VALUES ($1, $2::text, COALESCE($3::text, (SELECT email FROM users WHERE id = $2::text)), $4, $5, $6, $7)`,
+       VALUES ($1, $2::text, COALESCE($3::text, (SELECT COALESCE(email, display_name, '#' || employee_number) FROM users WHERE id = $2::text)), $4, $5, $6, $7)`,
       [
         randomUUID(),
         event.actorId ?? null,

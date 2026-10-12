@@ -327,7 +327,7 @@ export async function computeWorkOrderProgress(
   const machineName = assignmentResult.rows[0]?.machine_name ?? null;
 
   const startResult = await pool.query<{ actor_email: string | null; occurred_at: string }>(
-    `SELECT u.email AS actor_email, al.occurred_at
+    `SELECT COALESCE(u.display_name, u.email, al.actor_email) AS actor_email, al.occurred_at
      FROM audit_log al
      LEFT JOIN users u ON u.id = al.actor_id
      WHERE al.action = 'work_order_updated' AND al.target = $1 AND al.details->>'status' = 'in_progress'

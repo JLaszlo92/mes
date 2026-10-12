@@ -18,8 +18,8 @@ type UseFilter = "" | "used" | "unused";
  * tételekben van. A work orderhez rendelés a work order oldalpanelén történik.
  */
 export default function MaterialLotsPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const { auth, can } = useAuth();
+  const canEdit = can("materials.manage");
 
   const [lots, setLots] = useState<MaterialLot[]>([]);
   const [loading, setLoading] = useState(true);
@@ -104,9 +104,11 @@ export default function MaterialLotsPanel() {
         <button type="button" className="ui-btn" onClick={exportCsv} disabled={filtered.length === 0}>
           Export CSV
         </button>
-        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })}>
-          New material lot
-        </button>
+        {can("materials.receive") && (
+          <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })}>
+            New material lot
+          </button>
+        )}
       </div>
 
       <div className="ui-toolbar" role="search">

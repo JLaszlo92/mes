@@ -5,7 +5,7 @@ import { eventHub, MACHINE_EVENT } from "./hub.js";
 import { stateStore } from "./state.js";
 import { getShiftSummary } from "./shift-summary-repository.js";
 import { getMachine } from "./machines-repository.js";
-import authPlugin, { requireRole } from "./auth-plugin.js";
+import authPlugin from "./auth-plugin.js";
 import { DATABASE_UNAVAILABLE_BODY, RETRY_AFTER_SECONDS, registerDatabaseUnavailableHandler } from "./database-unavailable.js";
 import { databaseHealthy } from "./database-health.js";
 import { INGESTION_FAILING_BODY, ingestionHealth } from "./ingestion-health.js";
@@ -26,6 +26,8 @@ import {
   createTerminalUi,
   updateTerminalUi,
   deleteTerminalUi,
+  pairTerminal,
+  unpairTerminal,
   isUniqueViolation as isTerminalUiUniqueViolation,
 } from "./terminal-uis-repository.js";
 import {
@@ -142,6 +144,8 @@ import workOrderRoutes from "./work-order-routes.js";
 import maintenanceRoutes from "./maintenance-routes.js";
 import workInstructionRoutes from "./work-instruction-routes.js";
 import materialLotRoutes from "./material-lot-routes.js";
+import userAdminRoutes from "./user-admin-routes.js";
+import terminalRoutes from "./terminal-routes.js";
 
 
 export async function buildServer(): Promise<FastifyInstance> {
@@ -164,6 +168,8 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(maintenanceRoutes);
   await app.register(workInstructionRoutes);
   await app.register(materialLotRoutes);
+  await app.register(userAdminRoutes);
+  await app.register(terminalRoutes);
 
   // /health stays a pure liveness check; /health?db=1 also asks the database (the dashboard banner polls it during an outage).
   app.get<{ Querystring: { db?: string } }>("/health", async (request, reply) => {
@@ -204,7 +210,7 @@ export async function buildServer(): Promise<FastifyInstance> {
    * "előtag*"), actor (e-mail részlet), target (pontos), q (szabad szöveg),
    * limit (1–200, alap 50), offset.
    */
-  app.get<{ Querystring: Record<string, string | undefined> }>("/api/audit-log", { preHandler: requireRole("admin") }, async (request, reply) => {
+  app.get<{ Querystring: Record<string, string | undefined> }>("/api/audit-log", async (request, reply) => {
     const q = request.query;
     const paging = parsePaging(q);
     const from = parseInstant("from", q.from);
@@ -226,7 +232,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     });
   });
 
-  app.get("/api/audit-log/actions", { preHandler: requireRole("admin") }, async () => listAuditActions());
+  app.get("/api/audit-log/actions", async () => listAuditActions());
 
   app.get<{ Querystring: { from: string; to: string } }>("/api/shifts/summary", async (request, reply) => {
     const { from, to } = request.query;
@@ -304,7 +310,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   });
   app.post<{
     Body: { workOrderId: string; machineId: string; plannedStart: string; plannedEnd: string };
-  }>("/api/work-order-assignments", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  }>("/api/work-order-assignments", async (request, reply) => {
     const { workOrderId, machineId, plannedStart, plannedEnd } = request.body;
     if (!workOrderId || !machineId || !plannedStart || !plannedEnd) {
       reply.code(400);
@@ -341,7 +347,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.delete<{ Params: { id: string } }>(
     "/api/work-order-assignments/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteAssignment(request.params.id);
       if (!deleted) {
@@ -360,6 +365,29 @@ export async function buildServer(): Promise<FastifyInstance> {
   );
   app.get("/api/terminal-uis", async () => listTerminalUis());
 
+  // Pair a device with a terminal: a new device token, returned once inside the pairing link.
+  app.post<{ Params: { id: string } }>("/api/terminal-uis/:id/pair", async (request, reply) => {
+    const token = await pairTerminal(request.params.id);
+    if (!token) {
+      reply.code(404);
+      return { error: "unknown terminal UI" };
+    }
+    await recordAuditEvent({ actorId: request.user!.id, action: "terminal_paired", target: request.params.id, ipAddress: request.ip });
+    // Behind nginx (TRUST_PROXY) protocol and host are the ones the admin's browser used.
+    const path = `/terminal/${encodeURIComponent(request.params.id)}#pair=${token}`;
+    const url = `${request.protocol}://${request.host}${path}`;
+    return { token, path, url, qrCodeDataUrl: await buildQrCodeDataUrl(url) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/api/terminal-uis/:id/pair", async (request, reply) => {
+    if (!(await unpairTerminal(request.params.id))) {
+      reply.code(404);
+      return { error: "unknown terminal UI" };
+    }
+    await recordAuditEvent({ actorId: request.user!.id, action: "terminal_unpaired", target: request.params.id, ipAddress: request.ip });
+    return { success: true };
+  });
+
   app.get<{ Params: { id: string } }>("/api/terminal-uis/:id", async (request, reply) => {
     const ui = await getTerminalUi(request.params.id);
     if (!ui) {
@@ -371,7 +399,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Body: { name: string; machineIds: string[] } }>(
     "/api/terminal-uis",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const { name, machineIds } = request.body;
       if (!name) {
@@ -401,7 +428,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.put<{ Params: { id: string }; Body: { name?: string; machineIds?: string[] } }>(
     "/api/terminal-uis/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const ui = await updateTerminalUi(request.params.id, request.body);
       if (!ui) {
@@ -421,7 +447,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.delete<{ Params: { id: string } }>(
     "/api/terminal-uis/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteTerminalUi(request.params.id);
       if (!deleted) {
@@ -448,7 +473,7 @@ export async function buildServer(): Promise<FastifyInstance> {
     }
     const secret = generateSecret();
     await setPendingMfaSecret(request.user.id, secret);
-    const otpAuthUrl = buildOtpAuthUrl(request.user.email, secret);
+    const otpAuthUrl = buildOtpAuthUrl(request.user.email ?? request.user.name, secret);
     const qrCodeDataUrl = await buildQrCodeDataUrl(otpAuthUrl);
     return { secret, otpAuthUrl, qrCodeDataUrl };
   });
@@ -473,11 +498,11 @@ export async function buildServer(): Promise<FastifyInstance> {
     return { success: true };
   });
 
-  app.get("/api/alert-rules", { preHandler: requireRole("admin", "manager") }, async () => listAlertRules());
+  app.get("/api/alert-rules", async () => listAlertRules());
 
   app.post<{
     Body: { type: "machine_down" | "scrap_rate"; machineId?: string; threshold: number; notifyRoles?: string[] };
-  }>("/api/alert-rules", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  }>("/api/alert-rules", async (request, reply) => {
     const { type, threshold } = request.body;
     if (!type || threshold === undefined) {
       reply.code(400);
@@ -497,7 +522,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.put<{ Params: { id: string }; Body: { threshold?: number; notifyRoles?: string[]; isActive?: boolean } }>(
     "/api/alert-rules/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const rule = await updateAlertRule(request.params.id, request.body);
       if (!rule) {
@@ -517,7 +541,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.delete<{ Params: { id: string } }>(
     "/api/alert-rules/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteAlertRule(request.params.id);
       if (!deleted) {
@@ -589,7 +612,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.post<{ Body: { machineId: string; code: string; name: string; signalReference?: string } }>(
     "/api/fault-codes",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const { machineId, code, name } = request.body;
       if (!machineId || !code || !name) {
@@ -627,7 +649,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.delete<{ Params: { id: string } }>(
     "/api/fault-codes/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deactivated = await deactivateFaultCode(request.params.id);
       if (!deactivated) {
@@ -713,7 +734,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   app.put<{
     Params: { id: string };
     Body: { status: "confirmed" | "modified" | "rejected"; adjustedCount?: number; reviewerNote?: string };
-  }>("/api/fault-reports/:id/review", { preHandler: requireRole("manager", "admin") }, async (request, reply) => {
+  }>("/api/fault-reports/:id/review", async (request, reply) => {
     const report = await reviewFaultReport(request.params.id, request.user!.id, request.body);
     if (!report) {
       reply.code(404);
@@ -767,7 +788,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.put<{ Params: { id: string } }>(
     "/api/corrective-actions/:id/sign-off",
-    { preHandler: requireRole("supervisor", "manager", "admin") },
     async (request, reply) => {
       const action = await signOffCorrectiveAction(request.params.id, request.user!.id);
       if (!action) {
@@ -786,13 +806,12 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.get(
   "/api/preventive-schedules",
-  { preHandler: requireRole("maintenance", "manager", "admin") },
   async () => listSchedules(),
   );
 
   app.post<{
     Body: { machineId: string; triggerType: "calendar" | "usage_hours" | "part_count"; intervalValue: number; description: string };
-  }>("/api/preventive-schedules", { preHandler: requireRole("maintenance", "manager", "admin") }, async (request, reply) => {
+  }>("/api/preventive-schedules", async (request, reply) => {
     const { machineId, triggerType, intervalValue, description } = request.body;
     if (!machineId || !triggerType || !intervalValue || !description) {
       reply.code(400);
@@ -820,7 +839,6 @@ export async function buildServer(): Promise<FastifyInstance> {
 
   app.delete<{ Params: { id: string } }>(
     "/api/preventive-schedules/:id",
-    { preHandler: requireRole("maintenance", "manager", "admin") },
     async (request, reply) => {
       const deactivated = await deactivateSchedule(request.params.id);
       if (!deactivated) {
@@ -839,13 +857,12 @@ export async function buildServer(): Promise<FastifyInstance> {
   );
   app.get(
   "/api/status-definitions",
-  { preHandler: requireRole("admin", "manager") },
   async () => listStatusDefinitions(),
 );
 
 app.post<{
   Body: { machineId?: string; code: string; displayName: string; oeeCategory: "counts_as_down" | "excluded"; color?: string };
-}>("/api/status-definitions", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+}>("/api/status-definitions", async (request, reply) => {
   const { code, displayName, oeeCategory } = request.body;
   if (!code || !displayName || !oeeCategory) {
     reply.code(400);
@@ -881,7 +898,6 @@ app.post<{
 
 app.delete<{ Params: { id: string } }>(
   "/api/status-definitions/:id",
-  { preHandler: requireRole("admin", "manager") },
   async (request, reply) => {
     const deleted = await deleteStatusDefinition(request.params.id);
     if (!deleted) {
@@ -900,11 +916,10 @@ app.delete<{ Params: { id: string } }>(
   );
   // --- Admin CRUD (emberi session-token véd) ---
 
-  app.get("/api/edge-nodes", { preHandler: requireRole("admin", "manager") }, async () => listEdgeNodes());
+  app.get("/api/edge-nodes", async () => listEdgeNodes());
 
   app.post<{ Body: { name: string } }>(
     "/api/edge-nodes",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const { name } = request.body;
       if (!name) {
@@ -926,7 +941,6 @@ app.delete<{ Params: { id: string } }>(
 
   app.delete<{ Params: { id: string } }>(
     "/api/edge-nodes/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteEdgeNode(request.params.id);
       if (!deleted) {
@@ -946,7 +960,6 @@ app.delete<{ Params: { id: string } }>(
 
   app.post<{ Params: { id: string } }>(
     "/api/edge-nodes/:id/regenerate-token",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const token = await regenerateToken(request.params.id);
       if (!token) {
@@ -973,7 +986,7 @@ app.delete<{ Params: { id: string } }>(
       noSignalTimeoutSeconds?: number;
       acceptProductionWhileDown?: boolean;
     };
-  }>("/api/edge-nodes/:id/channels", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  }>("/api/edge-nodes/:id/channels", async (request, reply) => {
     const parsed = validateChannelCreate(request.body);
     if (!parsed.ok) {
       reply.code(400);
@@ -1004,7 +1017,6 @@ app.delete<{ Params: { id: string } }>(
 
   app.delete<{ Params: { channelId: string } }>(
     "/api/edge-node-channels/:channelId",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteChannel(request.params.channelId);
       if (!deleted) {
@@ -1130,7 +1142,6 @@ app.delete<{ Params: { id: string } }>(
   /** A gép mikroleállási küszöbe másodpercben (0–3600); 0 = minden leállást magyarázni kell. */
   app.put<{ Params: { id: string }; Body: { seconds?: unknown } }>(
     "/api/machine-registry/:id/micro-stop-threshold",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const seconds = request.body?.seconds;
       if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 0 || seconds > 3600) {
@@ -1224,11 +1235,10 @@ app.delete<{ Params: { id: string } }>(
     return Array.isArray(value) && value.length === 7 && value.every((d) => typeof d === "boolean");
   }
  
-  app.get("/api/shift-patterns", { preHandler: requireRole("admin", "manager") }, async () => listShiftPatterns());
+  app.get("/api/shift-patterns", async () => listShiftPatterns());
  
   app.post<{ Body: { name?: string } }>(
     "/api/shift-patterns",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const name = request.body?.name?.trim();
       if (!name) {
@@ -1250,7 +1260,6 @@ app.delete<{ Params: { id: string } }>(
  
   app.delete<{ Params: { id: string } }>(
     "/api/shift-patterns/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       try {
         const deleted = await deleteShiftPattern(request.params.id);
@@ -1278,7 +1287,6 @@ app.delete<{ Params: { id: string } }>(
  
   app.post<{ Params: { id: string }; Body: { name?: string; startTime?: string; endTime?: string } }>(
     "/api/shift-patterns/:id/shifts",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const name = request.body?.name?.trim();
       const { startTime, endTime } = request.body ?? {};
@@ -1313,7 +1321,6 @@ app.delete<{ Params: { id: string } }>(
  
   app.delete<{ Params: { shiftId: string } }>(
     "/api/shift-pattern-shifts/:shiftId",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const deleted = await deleteShift(request.params.shiftId);
       if (!deleted) {
@@ -1331,11 +1338,10 @@ app.delete<{ Params: { id: string } }>(
     },
   );
  
-  app.get("/api/calendars", { preHandler: requireRole("admin", "manager") }, async () => listCalendars());
+  app.get("/api/calendars", async () => listCalendars());
  
   app.post<{ Body: { name?: string; workingDays?: unknown } }>(
     "/api/calendars",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const name = request.body?.name?.trim();
       const workingDays = request.body?.workingDays;
@@ -1362,7 +1368,6 @@ app.delete<{ Params: { id: string } }>(
  
   app.put<{ Params: { id: string }; Body: { workingDays?: unknown } }>(
     "/api/calendars/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const workingDays = request.body?.workingDays;
       if (!isValidWorkingDays(workingDays)) {
@@ -1384,7 +1389,6 @@ app.delete<{ Params: { id: string } }>(
  
   app.delete<{ Params: { id: string } }>(
     "/api/calendars/:id",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       try {
         const deleted = await deleteCalendar(request.params.id);
@@ -1413,7 +1417,7 @@ app.delete<{ Params: { id: string } }>(
   app.put<{
     Params: { id: string };
     Body: { shiftPatternId?: string; calendarId?: string; autoOffshiftStatus?: boolean };
-  }>("/api/machine-registry/:id/scheduling", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  }>("/api/machine-registry/:id/scheduling", async (request, reply) => {
     try {
       await assignMachineScheduling(request.params.id, request.body ?? {});
     } catch (err) {
@@ -1455,7 +1459,6 @@ app.delete<{ Params: { id: string } }>(
 
   app.put<{ Params: { id: string }; Body: { machineId?: string; plannedStart?: string; plannedEnd?: string } }>(
   "/api/work-order-assignments/:id",
-  { preHandler: requireRole("admin", "manager") },
   async (request, reply) => {
     const assignment = await updateAssignment(request.params.id, request.body);
     if (!assignment) {
@@ -1492,7 +1495,7 @@ app.delete<{ Params: { id: string } }>(
    app.put<{
     Params: { id: string };
     Body: { machineId?: string; plannedStart?: string; plannedEnd?: string; durationMs?: number };
-  }>("/api/work-orders/:id/schedule", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  }>("/api/work-orders/:id/schedule", async (request, reply) => {
     const { machineId, plannedStart, plannedEnd, durationMs } = request.body ?? {};
     if (!machineId || !plannedStart) {
       reply.code(400);
@@ -1580,7 +1583,6 @@ app.delete<{ Params: { id: string } }>(
   /** Egy munkarendelés összes szegmensének törlése, atomikusan. */
   app.delete<{ Params: { id: string } }>(
     "/api/work-orders/:id/schedule",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       try {
         const previous = await clearScheduleForWorkOrder(request.params.id);

@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import {
   getChannel,
@@ -41,7 +40,6 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
 
   app.get<{ Params: { id: string } }>(
     "/api/edge-nodes/:id/settings",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const settings = await getEdgeNodeSettings(request.params.id);
       if (!settings) {
@@ -54,7 +52,6 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
 
   app.patch<{ Params: { id: string }; Body: unknown }>(
     "/api/edge-nodes/:id/settings",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const parsed = validateSettingsPatch(request.body);
       if (!parsed.ok) {
@@ -79,7 +76,6 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
 
   app.post<{ Params: { id: string } }>(
     "/api/edge-nodes/:id/restart",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       if (!(await requestRestart(request.params.id))) {
         reply.code(404);
@@ -98,7 +94,6 @@ export function registerEdgeNodeExtras(app: FastifyInstance): void {
 
   app.patch<{ Params: { channelId: string }; Body: unknown }>(
     "/api/edge-node-channels/:channelId",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const existing = await getChannel(request.params.channelId);
       if (!existing) {

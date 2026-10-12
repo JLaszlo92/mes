@@ -19,8 +19,8 @@ const OPEN: WorkOrderStatus[] = ["planned", "released", "in_progress"];
  * panel helyett) — ugyanazzal a végponttal és szabályokkal, mint a Gantt.
  */
 export default function WorkOrdersPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const { auth, can } = useAuth();
+  const canEdit = can("work_orders.manage");
   const masterDataVersion = useMasterDataVersion();
   const { isInScope } = useScope();
 

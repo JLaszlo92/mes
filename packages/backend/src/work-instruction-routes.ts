@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { parsePaging } from "./paging.js";
 import { MAX_PDF_BYTES, checkPdfUpload, parseWorkInstructionCreate, sanitizePdfFileName } from "./work-instruction-input.js";
@@ -51,7 +50,7 @@ export default async function workInstructionRoutes(app: FastifyInstance): Promi
 
   app.post(
     "/api/work-instructions/files",
-    { preHandler: requireRole("admin", "manager"), bodyLimit: MAX_PDF_BYTES },
+    { bodyLimit: MAX_PDF_BYTES },
     async (request, reply) => {
       const checked = checkPdfUpload(request.body);
       if (!checked.ok) return fail(reply, 400, checked.error, checked.field);
@@ -95,7 +94,6 @@ export default async function workInstructionRoutes(app: FastifyInstance): Promi
 
   app.get(
     "/api/work-instructions/views/log",
-    { preHandler: requireRole("admin", "manager", "supervisor") },
     async (request, reply) => {
       const query = request.query as { limit?: string; partName?: string };
       const paging = parsePaging({ limit: query.limit ?? "100" });
@@ -115,7 +113,7 @@ export default async function workInstructionRoutes(app: FastifyInstance): Promi
     listVersionsForPart(request.params.partName),
   );
 
-  app.post("/api/work-instructions", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.post("/api/work-instructions", async (request, reply) => {
     const parsed = parseWorkInstructionCreate(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     const input = parsed.value;

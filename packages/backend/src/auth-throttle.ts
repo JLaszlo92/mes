@@ -33,6 +33,9 @@ export const POLICIES = {
   account: { limit: 20, windowMinutes: 60, lockMinutes: 15 },
   ip: { limit: 30, windowMinutes: 15, lockMinutes: 15 },
   mfa: { limit: 5, windowMinutes: 15, lockMinutes: 15 },
+  // Terminál PIN: terminálonként 5 hibás kód / 15 perc → 5 perc zár. Öt
+  // számjegynél ez a fő védelem (egy támadó így óránként ~20 kódot próbálhat).
+  pin: { limit: 5, windowMinutes: 15, lockMinutes: 5 },
 } satisfies Record<string, Policy>;
 
 export type ThrottleScope = keyof typeof POLICIES;
@@ -60,6 +63,14 @@ export function mfaThrottleKeys(userId: string, ip: string): ThrottleKey[] {
     { scope: "mfa", key: `mfa:${userId}` },
     { scope: "ip", key: `ip:${ip}` },
   ];
+}
+
+export function pinThrottleKeys(terminalId: string): ThrottleKey[] {
+  return [{ scope: "pin", key: `pin:terminal:${terminalId}` }];
+}
+
+export async function clearPinThrottle(terminalId: string): Promise<void> {
+  await pool.query(`DELETE FROM auth_throttle WHERE key = $1`, [`pin:terminal:${terminalId}`]);
 }
 
 /** Zárolva van-e bármelyik kulcs? Ha igen, a leghosszabb hátralévő idő. */

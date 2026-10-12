@@ -253,9 +253,9 @@ function ResizeHandle({ side, onMouseDown }: { side: "start" | "end"; onMouseDow
 
 export default function GanttSchedulePanel() {
   const { isInScope } = useScope();
-  const { auth, logout } = useAuth();
-  const canPlanProduction = auth?.role === "admin" || auth?.role === "manager";
-  const canPlanMaintenance = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const { auth, logout, can } = useAuth();
+  const canPlanProduction = can("schedule.manage");
+  const canPlanMaintenance = can("maintenance.manage");
   const [machines, setMachines] = useState<Machine[]>([]);
   const [offShiftByMachine, setOffShiftByMachine] = useState<Record<string, OffShiftSegment[]>>({});
   const [assignments, setAssignments] = useState<Assignment[]>([]);

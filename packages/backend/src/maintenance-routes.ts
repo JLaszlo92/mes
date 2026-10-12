@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { getMachine } from "./machines-repository.js";
 import { resetSchedule } from "./preventive-maintenance-repository.js";
@@ -38,7 +37,6 @@ function fail(reply: FastifyReply, code: number, error: string, field?: string) 
   return field ? { error, field } : { error };
 }
 
-const MANAGE = { preHandler: requireRole("maintenance", "manager", "admin") };
 
 async function rejectPlanningOnInactiveMachine(machineId: string, reply: FastifyReply) {
   const machine = await getMachine(machineId);
@@ -56,11 +54,11 @@ export default async function maintenanceRoutes(app: FastifyInstance): Promise<v
     return mwo;
   });
 
-  app.get("/api/users/assignable", { preHandler: requireRole("maintenance", "supervisor", "manager", "admin") }, async () =>
+  app.get("/api/users/assignable", async () =>
     listAssignableUsers(),
   );
 
-  app.post("/api/maintenance-work-orders", MANAGE, async (request, reply) => {
+  app.post("/api/maintenance-work-orders", async (request, reply) => {
     const parsed = parseMaintenanceCreate(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     if (parsed.value.plannedStart) {
@@ -124,14 +122,13 @@ export default async function maintenanceRoutes(app: FastifyInstance): Promise<v
       throw err;
     }
   };
-  app.patch<{ Params: { id: string } }>("/api/maintenance-work-orders/:id", MANAGE, patchHandler);
-  app.put<{ Params: { id: string } }>("/api/maintenance-work-orders/:id", MANAGE, patchHandler);
+  app.patch<{ Params: { id: string } }>("/api/maintenance-work-orders/:id", patchHandler);
+  app.put<{ Params: { id: string } }>("/api/maintenance-work-orders/:id", patchHandler);
 
   app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/parts", async (request) => listParts(request.params.id));
 
   app.post<{ Params: { id: string } }>(
     "/api/maintenance-work-orders/:id/parts",
-    { preHandler: requireRole("supervisor", "maintenance", "manager", "admin") },
     async (request, reply) => {
       const parsed = parsePart(request.body);
       if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
@@ -155,7 +152,7 @@ export default async function maintenanceRoutes(app: FastifyInstance): Promise<v
 
   app.get<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/labor", async (request) => listLabor(request.params.id));
 
-  app.post<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/labor", MANAGE, async (request, reply) => {
+  app.post<{ Params: { id: string } }>("/api/maintenance-work-orders/:id/labor", async (request, reply) => {
     const parsed = parseLabor(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     try {

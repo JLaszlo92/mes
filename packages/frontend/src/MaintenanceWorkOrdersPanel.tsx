@@ -29,9 +29,9 @@ const PRIORITY_RANK = { urgent: 0, high: 1, normal: 2, low: 3 } as const;
  * előkészítése.
  */
 export default function MaintenanceWorkOrdersPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
-  const canLogParts = canEdit || auth?.role === "supervisor";
+  const { auth, can } = useAuth();
+  const canEdit = can("maintenance.manage");
+  const canLogParts = canEdit;
   const masterDataVersion = useMasterDataVersion();
   const { isInScope } = useScope();
 

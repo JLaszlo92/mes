@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { generateLotForWorkOrder } from "./lots-repository.js";
 import {
@@ -66,7 +65,7 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
     return workOrder;
   });
 
-  app.post("/api/work-orders", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.post("/api/work-orders", async (request, reply) => {
     const parsed = parseWorkOrderCreate(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     if (await unknownInstruction(parsed.value.workInstructionName)) {
@@ -92,10 +91,6 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
   const patchHandler = async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
     const parsed = parseWorkOrderPatch(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
-    // Az operátor a terminálról csak indítani/lezárni tud — törzsadatot nem módosíthat.
-    if (request.user!.role === "operator" && Object.keys(parsed.value).some((k) => k !== "status")) {
-      return fail(reply, 403, "operators can only change the status of a work order");
-    }
     if (await unknownInstruction(parsed.value.workInstructionName)) {
       return fail(reply, 400, `there is no work instruction named "${parsed.value.workInstructionName}"`, "workInstructionName");
     }
@@ -104,11 +99,10 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
     await afterChange(request, change, { ...parsed.value });
     return change.current;
   };
-  const roles = { preHandler: requireRole("admin", "manager", "operator") };
-  app.patch<{ Params: { id: string } }>("/api/work-orders/:id", roles, patchHandler);
-  app.put<{ Params: { id: string } }>("/api/work-orders/:id", roles, patchHandler);
+  app.patch<{ Params: { id: string } }>("/api/work-orders/:id", patchHandler);
+  app.put<{ Params: { id: string } }>("/api/work-orders/:id", patchHandler);
 
-  app.post("/api/work-orders/bulk", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.post("/api/work-orders/bulk", async (request, reply) => {
     const parsed = parseWorkOrderBulk(request.body);
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     const result = await bulkWorkOrderStatus(parsed.value);

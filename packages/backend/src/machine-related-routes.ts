@@ -1,13 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { pool } from "./db.js";
-import { requireRole } from "./auth-plugin.js";
 import { shapeRelated } from "./machine-related.js";
 
 /** GET /api/machine-registry/:id/related - counts of the configuration that belongs to a machine (admin/manager). */
 export function registerMachineRelated(app: FastifyInstance): void {
   app.get<{ Params: { id: string } }>(
     "/api/machine-registry/:id/related",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const id = request.params.id;
       const exists = await pool.query(`SELECT 1 FROM machines WHERE id = $1`, [id]);

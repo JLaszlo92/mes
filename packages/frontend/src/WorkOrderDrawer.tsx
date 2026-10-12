@@ -5,6 +5,7 @@ import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine } from "./master-data.js";
 import { endOfDay, formatDateTime, formatDuration, fromLocalInput, toLocalInput } from "./ui/format.js";
 import InstructionViewer from "./InstructionViewer.js";
+import { useAuth } from "./auth-context.js";
 import { instructionForOrder, listInstructions, type WorkInstruction } from "./work-instructions.js";
 
 export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
@@ -149,6 +150,7 @@ export default function WorkOrderDrawer({
   /** A frissített rendelés. "created" után a szülő szerkesztő módba vált (ütemezéshez), "saved" után bezár, "scheduled" és "materials" után nyitva marad. */
   onSaved: (wo: WorkOrder, kind: "created" | "saved" | "scheduled" | "materials") => void;
 }) {
+  const { can } = useAuth();
   const creating = target.mode === "create";
   const source = target.mode === "edit" ? target.workOrder : target.copyOf;
   const [initial] = useState(() => toDraft(source, target.mode === "create"));
@@ -262,7 +264,7 @@ export default function WorkOrderDrawer({
         ) : (
           <>
             <span className="ui-field-hint" style={{ flex: 1 }}>
-              Only admins and managers can change work orders.
+              Your role cannot change work orders.
             </span>
             <button type="button" className="ui-btn" onClick={onClose}>
               Close
@@ -359,7 +361,7 @@ export default function WorkOrderDrawer({
       {!creating && (
         <MaterialsSection
           workOrder={target.workOrder}
-          canEdit={canEdit}
+          canEdit={can("materials.assign")}
           onChanged={() => {
             void apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(target.workOrder.id)}`)
               .then((r) => readJsonOrThrow<WorkOrder>(r))
@@ -372,7 +374,7 @@ export default function WorkOrderDrawer({
         <ScheduleSection
           workOrder={target.workOrder}
           machines={machines}
-          canEdit={canEdit && !terminal}
+          canEdit={can("schedule.manage") && !terminal}
           terminal={terminal}
           onChanged={() => {
             // A gép/időpont a szerveren változott — a friss rendelést kérjük le.

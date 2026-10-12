@@ -17,7 +17,7 @@ import { alertTypeLabel, type Alert } from "./alert-types.js";
  */
 export default function AlertsPanel() {
   const { isInScope } = useScope();
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -26,7 +26,8 @@ export default function AlertsPanel() {
   const [detailsId, setDetailsId] = useState<string | null>(null);
   /** Riasztások, amelyekhez ebben a munkamenetben már készült munkarendelés — a gomb ne duplikáljon. */
   const [ticketCreatedFor, setTicketCreatedFor] = useState<Set<string>>(new Set());
-  const canCreateTicket = ["supervisor", "maintenance", "manager", "admin"].includes(auth?.role ?? "");
+  const canCreateTicket = can("maintenance.manage");
+  const canAcknowledge = can("alerts.acknowledge");
 
   function load() {
     apiFetch(`${API_BASE}/api/alerts`)
@@ -110,7 +111,7 @@ export default function AlertsPanel() {
         <span className="ui-panel-count num">{open.length}</span>
       </div>
 
-      {visibleSelected.size > 0 && (
+      {visibleSelected.size > 0 && canAcknowledge && (
         <div className="ui-bulkbar">
           <span className="ui-bulkbar-count num">{visibleSelected.size} selected</span>
           <button type="button" className="ui-btn ui-btn-primary" disabled={busy} onClick={() => void acknowledge([...visibleSelected])}>
@@ -142,7 +143,7 @@ export default function AlertsPanel() {
                 Create ticket
               </button>
             )}
-            {!a.acknowledgedAt && (
+            {!a.acknowledgedAt && canAcknowledge && (
               <button type="button" className="ui-btn ui-btn-small" disabled={busy} onClick={() => void acknowledge([a.id])}>
                 Acknowledge
               </button>

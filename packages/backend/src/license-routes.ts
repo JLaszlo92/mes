@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { countEdgeNodes, getLicenseSnapshot, refreshLicense } from "./license-service.js";
 import { licenseGuardDecision, routeKind } from "./license-policy.js";
 
@@ -35,7 +34,7 @@ function summary() {
 export function registerLicense(app: FastifyInstance): void {
   app.get("/api/license", async () => summary());
 
-  app.post("/api/license/reload", { preHandler: requireRole("admin") }, async (request) => {
+  app.post("/api/license/reload", async (request) => {
     await refreshLicense(request.log);
     return summary();
   });

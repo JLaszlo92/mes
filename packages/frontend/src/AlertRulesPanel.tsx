@@ -15,12 +15,24 @@ interface AlertRule {
   isActive: boolean;
 }
 
-const ROLES = ["operator", "supervisor", "maintenance", "manager", "admin"];
+/** Role ids and names (GET /api/role-names), loaded once per page. */
+function useRoleNames(): { id: string; name: string }[] {
+  const [roles, setRoles] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    apiFetch(`${API_BASE}/api/role-names`)
+      .then((r) => readJsonOrThrow<{ id: string; name: string }[]>(r))
+      .then(setRoles)
+      .catch(() => setRoles([]));
+  }, []);
+  return roles;
+}
 const RULE_LABEL = { machine_down: "Machine down", scrap_rate: "Scrap rate" } as const;
 const UNIT = { machine_down: "min", scrap_rate: "%" } as const;
 
 /** Riasztási szabályok táblázatban; új szabály oldalpanelben. */
 export default function AlertRulesPanel() {
+  const roleNames = useRoleNames();
+  const roleName = (id: string) => roleNames.find((r) => r.id === id)?.name ?? id;
   const { machines, isInScope } = useScope();
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +69,7 @@ export default function AlertRulesPanel() {
     { id: "type", header: "Rule", sortValue: (r) => r.type, cell: (r) => RULE_LABEL[r.type] ?? r.type },
     { id: "machine", header: "Machine", sortValue: (r) => machineName(r.machineId), cell: (r) => machineName(r.machineId) },
     { id: "threshold", header: "Threshold", align: "right", sortValue: (r) => r.threshold, cell: (r) => `${r.threshold} ${UNIT[r.type] ?? ""}` },
-    { id: "notify", header: "Notifies", cell: (r) => r.notifyRoles.join(", ") || "—" },
+    { id: "notify", header: "Notifies", cell: (r) => r.notifyRoles.map(roleName).join(", ") || "—" },
     { id: "active", header: "Status", sortValue: (r) => (r.isActive ? 0 : 1), cell: (r) => (r.isActive ? "Active" : <span className="ui-pill">Disabled</span>) },
   ];
 
@@ -105,7 +117,8 @@ export default function AlertRulesPanel() {
 }
 
 function NewRuleDrawer({ machines, onClose, onCreated }: { machines: { id: string; name: string }[]; onClose: () => void; onCreated: () => void }) {
-  const [form, setForm] = useState({ type: "machine_down" as AlertRule["type"], machineId: "", threshold: "", notifyRoles: ["supervisor", "manager"] });
+  const roleNames = useRoleNames();
+  const [form, setForm] = useState({ type: "machine_down" as AlertRule["type"], machineId: "", threshold: "", notifyRoles: ["quality_supervisor", "admin"] });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const valid = Number(form.threshold) > 0 && form.notifyRoles.length > 0;
@@ -174,7 +187,7 @@ function NewRuleDrawer({ machines, onClose, onCreated }: { machines: { id: strin
             Notify
           </p>
           <div className="ui-radio-row" style={{ margin: 0 }}>
-            {ROLES.map((role) => (
+            {roleNames.map(({ id: role, name }) => (
               <label key={role} className="ui-check">
                 <input
                   type="checkbox"
@@ -183,7 +196,7 @@ function NewRuleDrawer({ machines, onClose, onCreated }: { machines: { id: strin
                     setForm((f) => ({ ...f, notifyRoles: f.notifyRoles.includes(role) ? f.notifyRoles.filter((r) => r !== role) : [...f.notifyRoles, role] }))
                   }
                 />
-                {role}
+                {name}
               </label>
             ))}
           </div>

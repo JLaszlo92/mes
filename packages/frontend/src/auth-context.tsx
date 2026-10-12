@@ -3,7 +3,15 @@ import { API_BASE, setApiToken, setUnauthorizedHandler } from "./api.js";
 
 interface AuthState {
   token: string;
+  /** Role id (admin, planner, operator, …). */
   role: string;
+  roleName?: string;
+  name?: string;
+  userId?: string;
+  /** What this user may do; the backend enforces the same list (permissions.ts). */
+  permissions: string[];
+  /** false until the server confirmed the permissions (an older stored session has none). */
+  permissionsKnown: boolean;
 }
 
 interface AuthContextValue {
@@ -14,6 +22,8 @@ interface AuthContextValue {
   submitMfaCode: (code: string) => Promise<void>;
   completeMfaSetup: () => void;
   logout: () => void;
+  /** Does the signed-in user hold this permission? */
+  can: (permission: string) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -25,8 +35,9 @@ function readStoredAuth(): AuthState | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AuthState>;
+    // Older stored sessions have no permission list: it is fetched right after start (/api/auth/me).
     return typeof parsed.token === "string" && typeof parsed.role === "string"
-      ? { token: parsed.token, role: parsed.role }
+      ? { token: parsed.token, role: parsed.role, roleName: parsed.roleName, name: parsed.name, userId: parsed.userId, permissions: Array.isArray(parsed.permissions) ? parsed.permissions : [], permissionsKnown: Array.isArray(parsed.permissions) }
       : null;
   } catch {
     // Sérült localStorage érték ne akassza meg az egész alkalmazást.
@@ -85,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setMfaPendingToken(data.pendingToken);
         return;
       }
-      applyAuth({ token: data.token, role: data.role });
+      applyAuth(fromResponse(data.token, data));
       setMfaSetupRequired(Boolean(data.mfaSetupRequired));
     },
     [applyAuth],
@@ -104,10 +115,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       const data = await res.json();
       setMfaPendingToken(null);
-      applyAuth({ token: data.token, role: data.role });
+      applyAuth(fromResponse(data.token, data));
     },
     [mfaPendingToken, applyAuth],
   );
+
+  // The role's permissions can change while signed in (Admin → Roles): fetched
+  // at start, every 5 minutes and when the tab comes back.
+  const token = auth?.token;
+  useEffect(() => {
+    if (!token) return;
+    let alive = true;
+    const refresh = () => {
+      fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization: `Bearer ${token}` } })
+        .then(async (res) => {
+          if (!alive) return;
+          if (res.status === 401) {
+            applyAuth(null);
+            return;
+          }
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!alive) return;
+          applyAuth(fromResponse(token, data));
+          if (data.mfaSetupRequired) setMfaSetupRequired(true);
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const timer = setInterval(refresh, 5 * 60_000);
+    const onVisible = () => document.visibilityState === "visible" && refresh();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [token, applyAuth]);
+
+  const can = useCallback((permission: string) => auth?.permissions.includes(permission) ?? false, [auth]);
 
   const completeMfaSetup = useCallback(() => setMfaSetupRequired(false), []);
 
@@ -125,11 +171,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ auth, mfaPendingToken, mfaSetupRequired, login, submitMfaCode, completeMfaSetup, logout }}
+      value={{ auth, mfaPendingToken, mfaSetupRequired, login, submitMfaCode, completeMfaSetup, logout, can }}
     >
       {children}
     </AuthContext.Provider>
   );
+}
+
+function fromResponse(token: string, data: { role: string; roleName?: string; name?: string; userId?: string; permissions?: string[] }): AuthState {
+  return { token, role: data.role, roleName: data.roleName, name: data.name, userId: data.userId, permissions: Array.isArray(data.permissions) ? data.permissions : [], permissionsKnown: true };
 }
 
 export function useAuth(): AuthContextValue {

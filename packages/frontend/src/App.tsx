@@ -19,6 +19,8 @@ import FaultReportsPanel from "./FaultReportsPanel";
 import MaterialLotsPanel from "./MaterialLotsPanel";
 import LotsPanel from "./LotsPanel";
 import WorkInstructionsPanel from "./WorkInstructionsPanel.js";
+import UsersPanel from "./UsersPanel.js";
+import RolesPanel from "./RolesPanel.js";
 import MaintenanceWorkOrdersPanel from "./MaintenanceWorkOrdersPanel.js";
 import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
@@ -50,21 +52,16 @@ const WS_CLOSE_REAUTH = 4000;
 const RETRY_BASE_MS = 2000;
 const RETRY_MAX_MS = 30_000;
 
-type Role = "admin" | "manager" | "supervisor" | "maintenance" | "operator" | string;
-
 interface ViewDef {
   id: string;
   label: string;
-  /** Ha meg van adva, csak ezek a szerepkörök látják (a backend is ezt kényszeríti ki). */
-  roles?: Role[];
+  /** Ha meg van adva, csak az látja, akinek ez a jogosultsága megvan (a backend is ezt kényszeríti ki, permissions.ts). */
+  permission?: string;
 }
 
 interface GroupDef extends Omit<NavGroup, "items" | "badge"> {
-  roles?: Role[];
   items: ViewDef[];
 }
-
-const MANAGERS: Role[] = ["admin", "manager"];
 
 /**
  * A navigáció: modul → nézet. Minden nézet egy URL (/modul/nézet), és egyszerre
@@ -98,7 +95,7 @@ const NAV: GroupDef[] = [
     items: [
       { id: "fault-reports", label: "Fault reports" },
       { id: "downtime", label: "Downtime" },
-      { id: "work-instructions", label: "Work instructions", roles: MANAGERS },
+      { id: "work-instructions", label: "Work instructions", permission: "instructions.manage" },
     ],
   },
   {
@@ -107,7 +104,7 @@ const NAV: GroupDef[] = [
     icon: "maintenance",
     items: [
       { id: "work-orders", label: "Work orders" },
-      { id: "preventive", label: "Preventive schedules", roles: ["maintenance", "manager", "admin"] },
+      { id: "preventive", label: "Preventive schedules", permission: "maintenance.plan" },
     ],
   },
   {
@@ -117,31 +114,30 @@ const NAV: GroupDef[] = [
     items: [
       { id: "all", label: "Active" },
       { id: "history", label: "History" },
-      { id: "rules", label: "Rules", roles: MANAGERS },
+      { id: "rules", label: "Rules", permission: "alerts.rules" },
     ],
   },
   {
     id: "admin",
     label: "Admin",
     icon: "admin",
-    roles: MANAGERS,
     items: [
-      { id: "machines", label: "Machines" },
-      { id: "plant", label: "Sites, areas and lines" },
-      { id: "shifts", label: "Shifts and calendars" },
-      { id: "statuses", label: "Status definitions" },
-      { id: "fault-codes", label: "Fault codes" },
-      { id: "terminals", label: "Terminals" },
-      { id: "edge-nodes", label: "Edge nodes" },
-      { id: "audit-log", label: "Audit log", roles: ["admin"] },
+      { id: "users", label: "Users", permission: "admin.users" },
+      { id: "roles", label: "Roles and permissions", permission: "admin.users" },
+      { id: "machines", label: "Machines", permission: "admin.machines" },
+      { id: "plant", label: "Sites, areas and lines", permission: "admin.machines" },
+      { id: "shifts", label: "Shifts and calendars", permission: "admin.machines" },
+      { id: "statuses", label: "Status definitions", permission: "admin.machines" },
+      { id: "fault-codes", label: "Fault codes", permission: "admin.machines" },
+      { id: "terminals", label: "Terminals", permission: "admin.terminals" },
+      { id: "edge-nodes", label: "Edge nodes", permission: "admin.edge_nodes" },
+      { id: "audit-log", label: "Audit log", permission: "admin.audit" },
     ],
   },
 ];
 
-function navForRole(role: Role): NavGroup[] {
-  return NAV.filter((g) => !g.roles || g.roles.includes(role))
-    .map((g) => ({ ...g, items: g.items.filter((i) => !i.roles || i.roles.includes(role)) }))
-    .filter((g) => g.items.length > 0);
+function navFor(permissions: string[]): NavGroup[] {
+  return NAV.map((g) => ({ ...g, items: g.items.filter((i) => !i.permission || permissions.includes(i.permission)) })).filter((g) => g.items.length > 0);
 }
 
 /** Nyugtázatlan, nyitott riasztások száma az oldalsávhoz — 15 mp-enként frissül, és azonnal, ha az Alerts oldalon nyugtáznak. */
@@ -204,6 +200,10 @@ function renderView(groupId: string, viewId: string, liveState: Record<string, M
       return <AlertHistoryPanel />;
     case "alerts/rules":
       return <AlertRulesPanel />;
+    case "admin/users":
+      return <UsersPanel />;
+    case "admin/roles":
+      return <RolesPanel />;
     case "admin/machines":
       return <MachineRegistryPanel />;
     case "admin/plant":
@@ -331,8 +331,8 @@ export default function App() {
     };
   }, [token]);
 
-  const role = auth?.role;
-  const groups = useMemo(() => (role ? navForRole(role) : []), [role]);
+  const permissions = auth?.permissions;
+  const groups = useMemo(() => (permissions ? navFor(permissions) : []), [permissions]);
   const path = usePath();
   const [, groupId = "", viewId = ""] = path.split("/");
   const activeGroup = groups.find((g) => g.id === groupId);
@@ -341,7 +341,8 @@ export default function App() {
 
   // "/" vagy ismeretlen / nem engedélyezett útvonal → az első elérhető nézet.
   useEffect(() => {
-    if (auth && groups.length > 0 && !activeView) navigate(pathOf(groups[0]!, groups[0]!.items[0]!), { replace: true });
+    // Not before the permissions are known: a deep link to an admin page would otherwise be bounced at start.
+    if (auth?.permissionsKnown && groups.length > 0 && !activeView) navigate(pathOf(groups[0]!, groups[0]!.items[0]!), { replace: true });
   }, [auth, groups, activeView]);
 
   if (mfaSetupRequired) {
@@ -362,7 +363,7 @@ export default function App() {
         activeItemId={activeView?.id ?? ""}
         connected={connected}
         connectionLost={connectionLost}
-        role={auth.role}
+        role={auth.name ? `${auth.name} · ${auth.roleName ?? auth.role}` : (auth.roleName ?? auth.role)}
         onSignOut={logout}
         topBarControls={<ScopeSelector />}
       >

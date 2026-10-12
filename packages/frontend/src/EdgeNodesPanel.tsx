@@ -250,7 +250,7 @@ function NodeSettings(props: { node: EdgeNode; onSaved: () => void }) {
 // --------------------------------------------------------------------- panel
 
 export default function EdgeNodesPanel() {
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [nodes, setNodes] = useState<EdgeNode[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -262,7 +262,7 @@ export default function EdgeNodesPanel() {
   const [formError, setFormError] = useState<{ message: string; field?: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const isAdmin = auth?.role === "admin" || auth?.role === "manager";
+  const isAdmin = can("admin.edge_nodes");
 
   function load() {
     Promise.all([

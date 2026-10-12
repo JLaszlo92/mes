@@ -29,8 +29,8 @@ function plural(n: number, word: string) {
  * sor gépei vele mennek) és üres elem törlése.
  */
 export default function PlantHierarchyPanel() {
-  const { auth } = useAuth();
-  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+  const { auth, can } = useAuth();
+  const canEdit = can("admin.machines");
   const version = useMasterDataVersion();
   const [hierarchy, setHierarchy] = useState<PlantHierarchy>({ sites: [], areas: [], lines: [] });
   const [siteId, setSiteId] = useState<string | null>(null);

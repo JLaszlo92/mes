@@ -210,7 +210,7 @@ export default function MachineEditorDrawer({
         readOnly ? (
           <>
             <span className="ui-field-hint" style={{ flex: 1 }}>
-              Only admins and managers can change machines.
+              Your role cannot change machines.
             </span>
             <button type="button" className="ui-btn" onClick={onClose}>
               Close

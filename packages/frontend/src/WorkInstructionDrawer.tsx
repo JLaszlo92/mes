@@ -191,7 +191,7 @@ export default function WorkInstructionDrawer({
           ) : (
             <>
               <span className="ui-field-hint" style={{ flex: 1 }}>
-                Only admins and managers can change work instructions.
+                Your role cannot change work instructions.
               </span>
               <button type="button" className="ui-btn" onClick={onClose}>
                 Close

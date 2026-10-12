@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { requireRole } from "./auth-plugin.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { getLotForWorkOrder, listLots } from "./lots-repository.js";
 import { localToday, parseMaterialLotCreate, parseMaterialLotPatch } from "./material-lot-input.js";
@@ -83,7 +82,7 @@ export default async function materialLotRoutes(app: FastifyInstance): Promise<v
     }
   });
 
-  app.patch<{ Params: { id: string } }>("/api/material-lots/:id", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.patch<{ Params: { id: string } }>("/api/material-lots/:id", async (request, reply) => {
     const parsed = parseMaterialLotPatch(request.body, localToday());
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     try {
@@ -105,7 +104,7 @@ export default async function materialLotRoutes(app: FastifyInstance): Promise<v
     }
   });
 
-  app.delete<{ Params: { id: string } }>("/api/material-lots/:id", { preHandler: requireRole("admin", "manager") }, async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/api/material-lots/:id", async (request, reply) => {
     const result = await deleteMaterialLotIfUnused(request.params.id);
     if (result === "not_found") return fail(reply, 404, "unknown material lot");
     if ("inUse" in result) {
@@ -149,7 +148,6 @@ export default async function materialLotRoutes(app: FastifyInstance): Promise<v
 
   app.delete<{ Params: { id: string; materialLotId: string } }>(
     "/api/work-orders/:id/material-consumption/:materialLotId",
-    { preHandler: requireRole("admin", "manager") },
     async (request, reply) => {
       const removed = await removeConsumption(request.params.id, request.params.materialLotId);
       if (!removed) return fail(reply, 404, "this material lot is not recorded on this work order");

@@ -237,9 +237,11 @@ export interface AssignableUser {
 /** Akikhez karbantartási munka rendelhető. */
 export async function listAssignableUsers(): Promise<AssignableUser[]> {
   const result = await pool.query<AssignableUser>(
-    `SELECT id, email, role FROM users
-     WHERE is_active AND role IN ('maintenance', 'supervisor', 'manager', 'admin')
-     ORDER BY role = 'maintenance' DESC, email`,
+    `SELECT u.id, COALESCE(u.display_name, u.email, '#' || u.employee_number) AS email, u.role
+     FROM users u
+     WHERE u.is_active
+       AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM role_permissions rp WHERE rp.role_id = u.role AND rp.permission = 'maintenance.manage'))
+     ORDER BY u.role = 'admin', lower(COALESCE(u.display_name, u.email, u.employee_number))`,
   );
   return result.rows;
 }

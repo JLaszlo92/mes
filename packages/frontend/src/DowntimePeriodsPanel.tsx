@@ -93,7 +93,7 @@ function ThresholdInput({ summary, onSave }: { summary: DowntimeSummary; onSave:
 
 export default function DowntimePeriodsPanel() {
   const { isInScope } = useScope();
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
   const [periods, setPeriods] = useState<DowntimePeriod[]>([]);
   const [faultCodes, setFaultCodes] = useState<FaultCode[]>([]);
   const [summary, setSummary] = useState<DowntimeSummary[]>([]);
@@ -102,7 +102,7 @@ export default function DowntimePeriodsPanel() {
   const [explainingId, setExplainingId] = useState<string | null>(null);
   const [machineFilter, setMachineFilter] = useState("");
 
-  const canEditThreshold = auth?.role === "admin" || auth?.role === "manager";
+  const canEditThreshold = can("admin.machines");
 
   // A token hozzáadását és a 401-es kiléptetést az apiFetch végzi.
   async function load() {
@@ -198,6 +198,7 @@ export default function DowntimePeriodsPanel() {
       cell: (p) => {
         const codes = faultCodes.filter((fc) => fc.machineId === p.machineId && fc.isActive);
         if (explainingId === p.id) return <span className="ui-sub">Saving…</span>;
+        if (!can("downtime.explain")) return <span className="ui-sub">Your role cannot give reasons</span>;
         if (codes.length === 0) return <span className="ui-sub">No fault codes for this machine</span>;
         return (
           <select

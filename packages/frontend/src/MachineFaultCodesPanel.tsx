@@ -19,7 +19,7 @@ interface FaultCode {
 }
 
 export default function MachineFaultCodesPanel() {
-  const { auth, logout } = useAuth();
+  const { auth, logout, can } = useAuth();
   const [machines, setMachines] = useState<Machine[]>([]);
   const [selectedMachineId, setSelectedMachineId] = useState("");
   const [faultCodes, setFaultCodes] = useState<FaultCode[]>([]);
@@ -27,7 +27,7 @@ export default function MachineFaultCodesPanel() {
   const [form, setForm] = useState({ code: "", name: "", signalReference: "" });
   const [submitting, setSubmitting] = useState(false);
 
-  const isAdmin = auth?.role === "admin" || auth?.role === "manager";
+  const isAdmin = can("admin.machines");
 
   useEffect(() => {
     apiFetch(`${API_BASE}/api/machine-registry?active=true`)

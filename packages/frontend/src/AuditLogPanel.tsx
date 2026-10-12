@@ -30,7 +30,7 @@ const ALARM_ACTIONS = new Set(["login_failed", "login_locked", "mfa_failed", "mf
  * bejegyzés, a változások előtte–utána értékeivel.
  */
 export default function AuditLogPanel() {
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
   const [range, setRange] = useState<RangePreset>("7d");
   const [action, setAction] = useState("");
   const [actor, setActor] = useState("");
@@ -58,10 +58,10 @@ export default function AuditLogPanel() {
   const list = useServerList<AuditEntry, { entries: AuditEntry[]; total: number }>(
     "/api/audit-log",
     { from, action: action || undefined, actor: actor.trim() || undefined, target: target.trim() || undefined, q: query.trim() || undefined },
-    { toPage: (r) => ({ rows: r.entries, total: r.total }), enabled: auth?.role === "admin" },
+    { toPage: (r) => ({ rows: r.entries, total: r.total }), enabled: can("admin.audit") },
   );
 
-  if (auth?.role !== "admin") return null;
+  if (!can("admin.audit")) return null;
 
   const prefixes = [...new Set(actions.map((a) => a.action.split("_")[0]))].filter((p) => actions.filter((a) => a.action.startsWith(`${p}_`)).length > 1);
   const filtersActive = range !== "7d" || action !== "" || actor !== "" || target !== "" || query !== "";

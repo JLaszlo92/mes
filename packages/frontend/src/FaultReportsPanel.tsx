@@ -53,7 +53,7 @@ const STATUS_LABEL: Record<ReportStatus, string> = { pending: "Pending review", 
  * az oldalpanelben.
  */
 export default function FaultReportsPanel() {
-  const { auth } = useAuth();
+  const { auth, can } = useAuth();
   const { isFiltered, machines, isInScope } = useScope();
   const [status, setStatus] = useState<ReportStatus | "reviewed" | "">("pending");
   const [query, setQuery] = useState("");
@@ -89,7 +89,7 @@ export default function FaultReportsPanel() {
         <h2 className="ui-panel-title">Fault reports</h2>
         <span className="ui-panel-count num">{list.total.toLocaleString()}</span>
         <span className="ui-toolbar-spacer" />
-        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setReporting(true)} disabled={!auth}>
+        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setReporting(true)} disabled={!can("faults.report")} title={can("faults.report") ? undefined : "Your role cannot report faults"}>
           Report a fault
         </button>
       </div>
@@ -121,7 +121,7 @@ export default function FaultReportsPanel() {
       {open && (
         <FaultReportDrawer
           report={open}
-          role={auth?.role ?? ""}
+          can={can}
           onClose={() => setOpen(null)}
           onChanged={(r, message) => {
             setOpen(r);
@@ -145,10 +145,11 @@ export default function FaultReportsPanel() {
   );
 }
 
-function FaultReportDrawer({ report, role, onClose, onChanged }: { report: FaultReport; role: string; onClose: () => void; onChanged: (r: FaultReport, message: string) => void }) {
-  const canReview = role === "manager" || role === "admin";
-  const canSignOff = ["supervisor", "manager", "admin"].includes(role);
-  const canCreateTicket = ["supervisor", "maintenance", "manager", "admin"].includes(role);
+function FaultReportDrawer({ report, can, onClose, onChanged }: { report: FaultReport; can: (permission: string) => boolean; onClose: () => void; onChanged: (r: FaultReport, message: string) => void }) {
+  const canReview = can("faults.review");
+  const canSignOff = can("corrective.sign_off");
+  const canCreateTicket = can("maintenance.manage");
+  const canLog = can("corrective.log");
   const [actions, setActions] = useState<CorrectiveAction[]>([]);
   const [count, setCount] = useState(String(report.occurrenceCount));
   const [note, setNote] = useState("");
@@ -318,7 +319,7 @@ function FaultReportDrawer({ report, role, onClose, onChanged }: { report: Fault
             }}
           >
             <input className="ui-input" style={{ flex: 1, minWidth: 200 }} placeholder="What was done about it" value={draft} onChange={(e) => setDraft(e.target.value)} aria-label="Corrective action" />
-            <button type="submit" className="ui-btn" disabled={busy || !draft.trim()}>
+            <button type="submit" className="ui-btn" disabled={busy || !draft.trim() || !canLog} title={canLog ? undefined : "Your role cannot log corrective actions"}>
               Log action
             </button>
           </form>

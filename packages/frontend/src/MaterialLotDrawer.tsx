@@ -195,7 +195,7 @@ export default function MaterialLotDrawer({
         ) : (
           <>
             <span className="ui-field-hint" style={{ flex: 1 }}>
-              Only admins and managers can change a material lot.
+              Your role cannot change material lots.
             </span>
             <button type="button" className="ui-btn" onClick={onClose}>
               Close

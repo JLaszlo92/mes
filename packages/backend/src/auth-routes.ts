@@ -4,6 +4,7 @@ import { findUserByEmail, getUserById } from "./users-repository.js";
 import { createSession } from "./sessions-repository.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import { recordAuditEvent } from "./audit-repository.js";
+import { requiresMfa } from "./permissions.js";
 import { createPendingLogin, consumePendingLogin, getMfaSecret, verifyToken } from "./mfa-repository.js";
 import {
   checkThrottle,
@@ -81,10 +82,10 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     const session = await createSession(user.id);
     await recordAuditEvent({ actorId: user.id, actorEmail: user.email, action: "login_success", ipAddress: request.ip });
 
-    // PRD 8.3: admin/manager esetén kötelező az MFA — ha még nincs
+    // PRD 8.3: adminisztrációs jogosultsággal kötelező az MFA — ha még nincs
     // beállítva, jelezzük, hogy a kliensnek azonnal be kell állítania.
-    const mfaSetupRequired = (user.role === "admin" || user.role === "manager") && !user.mfaEnabled;
-    return { token: session.token, role: user.role, expiresAt: session.expiresAt, mfaSetupRequired };
+    const mfaSetupRequired = requiresMfa(user.permissions) && !user.mfaEnabled;
+    return { token: session.token, expiresAt: session.expiresAt, mfaSetupRequired, ...sessionUser(user) };
   });
 
   app.post<{ Body: { pendingToken?: unknown; code?: unknown } }>("/api/auth/mfa/login", async (request, reply) => {
@@ -128,8 +129,22 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     await clearMfaThrottle(user.id);
     const session = await createSession(user.id);
     await recordAuditEvent({ actorId: user.id, actorEmail: user.email, action: "login_success", ipAddress: request.ip });
-    return { token: session.token, role: user.role, expiresAt: session.expiresAt };
+    return { token: session.token, expiresAt: session.expiresAt, ...sessionUser(user) };
   });
+
+  // Who am I, with my current permissions (a role's permissions may change while signed in).
+  app.get("/api/auth/me", async (request, reply) => {
+    const user = request.user ? await getUserById(request.user.id) : undefined;
+    if (!user) {
+      reply.code(401);
+      return { error: "authentication required" };
+    }
+    return { ...sessionUser(user), mfaSetupRequired: requiresMfa(user.permissions) && !user.mfaEnabled };
+  });
+}
+
+function sessionUser(user: { id: string; name: string; email: string | null; role: string; roleName: string; permissions: string[] }) {
+  return { userId: user.id, name: user.name, email: user.email, role: user.role, roleName: user.roleName, permissions: user.permissions };
 }
 
 /** A zárolás MEGTÖRTÉNTE kerül az audit logba (a zárolás alatti kérések csak a journalba). */

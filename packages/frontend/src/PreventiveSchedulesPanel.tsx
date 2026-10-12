@@ -29,8 +29,8 @@ const TRIGGER_LABEL: Record<TriggerType, string> = { calendar: "Calendar", usage
  * "Preventive schedule" forrással); annak lezárása indítja újra a számlálót.
  */
 export default function PreventiveSchedulesPanel() {
-  const { auth } = useAuth();
-  const canManage = auth?.role === "maintenance" || auth?.role === "manager" || auth?.role === "admin";
+  const { auth, can } = useAuth();
+  const canManage = can("maintenance.plan");
   const version = useMasterDataVersion();
   const [schedules, setSchedules] = useState<PreventiveSchedule[]>([]);
   const [machines, setMachines] = useState<Machine[]>([]);
