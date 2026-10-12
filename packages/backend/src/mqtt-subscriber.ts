@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { insertEvent } from "./events-repository.js";
 import { decideCount, decideSignal, endManualStatus, getActiveManualStatus, recordBlockedCount, recordSuppressedSignal, type SignalDecision } from "./manual-status.js";
 import { publishToHub } from "./hub.js";
+import { holdForMachine, raiseDueSpotChecks, type Hold } from "./quality-repository.js";
 import { stateStore } from "./state.js";
 import { checkAndAutoCompleteWorkOrders } from "./work-order-completion-service.js";
 import { pool } from "./db.js";
@@ -119,10 +120,17 @@ async function handleMessage(
   // either end it (running) or are kept as signals only, and its parts either end
   // it too or, under a status that blocks production, are not counted (manual-status.ts).
   let decision: SignalDecision = "apply";
+  let qualityHold: Hold | undefined;
   if (event.type === "machine_status" || event.type === "production_count") {
     try {
       const manual = await getActiveManualStatus(event.machineId);
       decision = event.type === "machine_status" ? decideSignal(manual, event) : decideCount(manual, event);
+      // A quality check holds the count: the first piece is not measured yet, or a measurement failed (quality-repository.ts).
+      if (event.type === "production_count" && decision !== "block") {
+        qualityHold = await holdForMachine(event.machineId);
+        if (qualityHold && new Date(event.timestamp).getTime() >= new Date(qualityHold.since).getTime()) decision = "block";
+        else qualityHold = undefined;
+      }
     } catch (err) {
       ingestionHealth.recordFailure(err);
       log.error({ err }, "manual status lookup failed — NOT acking, edge agent will retry");
@@ -132,6 +140,7 @@ async function handleMessage(
   if ((decision === "suppress" && event.type === "machine_status") || (decision === "block" && event.type === "production_count")) {
     try {
       if (event.type === "machine_status") await recordSuppressedSignal(event);
+      else if (qualityHold) await recordBlockedCount(event, "quality", { qualityCheckId: qualityHold.checkId });
       else await recordBlockedCount(event);
       ingestionHealth.recordSuccess();
     } catch (err) {
@@ -173,6 +182,10 @@ async function handleMessage(
         void checkAndAutoCompleteWorkOrders(event.machineId).catch((err) =>
           log.error({ err, machineId: event.machineId }, "auto-complete check failed"),
         );
+      }
+      // Every N parts a spot check is due (quality plan of the running order).
+      if (event.type === "production_count") {
+        void raiseDueSpotChecks(event.machineId).catch((err) => log.error({ err, machineId: event.machineId }, "spot check trigger failed"));
       }
     }
   } catch (err) {

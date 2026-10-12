@@ -1,6 +1,7 @@
 import { computeWorkOrderProgress, updateWorkOrder, findAutoCompleteCandidates } from "./work-orders-repository.js";
 import { generateLotForWorkOrder } from "./lots-repository.js";
 import { recordAuditEvent } from "./audit-repository.js";
+import { lastPieceGate, onWorkOrderClosed } from "./quality-repository.js";
 
 /**
  * Ellenőrzi (egy adott gépre, vagy ha nincs megadva, mindegyikre), hogy
@@ -14,9 +15,13 @@ export async function checkAndAutoCompleteWorkOrders(machineId?: string): Promis
   for (const candidate of candidates) {
     const progress = await computeWorkOrderProgress(candidate.id, candidate.quantity, candidate.countOverproduction);
     if (!progress.targetReached) continue;
+    // A last-piece check opens at the target; a gating one has to pass before the order closes (the next run retries).
+    const gate = await lastPieceGate(candidate.id);
+    if (!gate.ok && gate.gating) continue;
 
     await updateWorkOrder(candidate.id, { status: "completed" });
     await generateLotForWorkOrder(candidate.id);
+    await onWorkOrderClosed(candidate.id);
     await recordAuditEvent({
       actorId: null,
       actorEmail: "system",

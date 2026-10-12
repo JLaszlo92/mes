@@ -198,9 +198,16 @@ export async function recordSuppressedSignal(event: MachineEvent & { type: "mach
   return outcome;
 }
 
-/** A part made while a blocking manual status holds: kept as data, never counted. */
-export async function recordBlockedCount(event: MachineEvent & { type: "production_count" }): Promise<"inserted" | "duplicate"> {
-  return insertEvent({ ...event, type: "production_count_blocked" } as unknown as MachineEvent);
+/**
+ * A part made while production is blocked — by a blocking manual status or by a quality check (first piece not
+ * passed yet, or a failed measurement): kept as data, never counted.
+ */
+export async function recordBlockedCount(
+  event: MachineEvent & { type: "production_count" },
+  blockedBy: "manual_status" | "quality" = "manual_status",
+  extra: Record<string, unknown> = {},
+): Promise<"inserted" | "duplicate"> {
+  return insertEvent({ ...event, type: "production_count_blocked", blockedBy, ...extra } as unknown as MachineEvent);
 }
 
 /** The current status of a machine and since when (the latest machine_status event). */

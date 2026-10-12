@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import InstructionViewer, { VIEWER_LABELS_HU, type ViewerTab } from "./InstructionViewer.js";
 import TerminalPinPad from "./TerminalPinPad.js";
 import TerminalChoiceSheet from "./TerminalChoiceSheet.js";
+import TerminalQualityFlow, { type FlowPurpose } from "./TerminalQualityFlow.js";
+import { KIND_LABEL_HU } from "./quality.js";
 import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
 import type { WorkInstruction } from "./work-instructions.js";
 
@@ -26,6 +28,8 @@ const PERMISSION_TEXT: Record<string, string> = {
   "terminal.report_fault": "hibát jelenteni",
   "terminal.open_instructions": "munkautasítást megnyitni",
   "terminal.set_status": "gépállapotot állítani",
+  "quality.measure": "mérést rögzíteni",
+  "quality.release": "minőségellenőrzést feloldani",
 };
 
 /** Built-in statuses (the rest come with their own name from Status definitions). */
@@ -70,6 +74,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [viewer, setViewer] = useState<{ instruction: WorkInstruction; orderNumber: string; tab: ViewerTab } | null>(null);
   const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
   const [sheet, setSheet] = useState<{ kind: "fault" | "status"; machineId: string } | null>(null);
+  const [flow, setFlow] = useState<{ checkId: string; orderNumber: string; purpose: FlowPurpose } | null>(null);
   const messageTimer = useRef<number | undefined>(undefined);
 
   const loading = useRef(false);
@@ -123,7 +128,9 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
 
   async function execute(action: Action, as: Worker) {
     if (!as.permissions.includes(action.permission)) {
-      flash("error", `${as.name} nem jogosult ${PERMISSION_TEXT[action.permission] ?? "erre"}. Másik dolgozó kódjával próbáld.`);
+      // Another worker may do it (e.g. the quality operator measures while the operator is signed in): ask their code.
+      setPending(action);
+      setPinError(`${as.name} nem jogosult ${PERMISSION_TEXT[action.permission] ?? "erre"}. Add meg egy jogosult dolgozó kódját.`);
       return;
     }
     setBusy(true);
@@ -267,7 +274,16 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
 
             {m.current.length === 0 && <p className="term-sub">Nincs ütemezett rendelés.</p>}
             {m.current.map((a) => (
-              <OrderRow key={a.id} a={a} order={m.orders[a.workOrderId]} busy={busy} act={act} terminalId={terminalUiId} onInstruction={(instruction, tab) => setViewer({ instruction, orderNumber: a.orderNumber, tab })} />
+              <OrderRow
+                key={a.id}
+                a={a}
+                order={m.orders[a.workOrderId]}
+                busy={busy}
+                act={act}
+                terminalId={terminalUiId}
+                onInstruction={(instruction, tab) => setViewer({ instruction, orderNumber: a.orderNumber, tab })}
+                onQuality={(checkId, purpose) => setFlow({ checkId, orderNumber: a.orderNumber, purpose })}
+              />
             ))}
 
             {m.history.length > 0 && (
@@ -297,6 +313,22 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       })}
 
       {sheet && state && <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} />}
+
+      {flow && (
+        <TerminalQualityFlow
+          key={flow.checkId}
+          terminalId={terminalUiId}
+          checkId={flow.checkId}
+          orderNumber={flow.orderNumber}
+          purpose={flow.purpose}
+          busy={busy}
+          act={act}
+          onClose={() => {
+            setFlow(null);
+            load();
+          }}
+        />
+      )}
 
       {pending && <TerminalPinPad title={pending.title} error={pinError} busy={pinBusy} onSubmit={(pin) => void submitPin(pin)} onCancel={() => setPending(null)} />}
 
@@ -442,6 +474,7 @@ function OrderRow({
   act,
   terminalId,
   onInstruction,
+  onQuality,
 }: {
   a: TerminalAssignment;
   order: TerminalState["machines"][number]["orders"][string] | undefined;
@@ -449,10 +482,12 @@ function OrderRow({
   act: (action: Action) => void;
   terminalId: string;
   onInstruction: (instruction: WorkInstruction, tab: ViewerTab) => void;
+  onQuality: (checkId: string, purpose: FlowPurpose) => void;
 }) {
   const running = a.workOrderStatus === "in_progress";
   const progress = order?.progress;
   const instruction = order?.instruction;
+  const quality = order?.quality ?? null;
 
   function openInstruction(tab: ViewerTab) {
     act({
@@ -492,7 +527,18 @@ function OrderRow({
               act({
                 title: `Rendelés lezárása: ${a.orderNumber}`,
                 permission: "terminal.complete_work_order",
-                run: async (w) => (await terminalApi.complete(terminalId, w.ticket, a.workOrderId)).workerExpiresAt,
+                run: async (w) => {
+                  try {
+                    return (await terminalApi.complete(terminalId, w.ticket, a.workOrderId)).workerExpiresAt;
+                  } catch (err) {
+                    // A last-piece check comes first: the measurement opens; it closes the order at the end.
+                    if (err instanceof TerminalError && (err.code === "quality_check_required" || err.code === "quality_check_offered") && typeof err.data.checkId === "string") {
+                      onQuality(err.data.checkId, { kind: "complete", workOrderId: a.workOrderId, gating: err.code === "quality_check_required" });
+                      return;
+                    }
+                    throw err;
+                  }
+                },
               })
             }
           >
@@ -515,6 +561,58 @@ function OrderRow({
           </button>
         )}
       </div>
+      {running && quality && (
+        <div className="term-quality">
+          {quality.hold && (
+            <div className="term-quality-hold" role="status">
+              {quality.hold.reason === "first_piece" ? "Első darab mérés szükséges — addig a darabok nem számítanak" : "Tűrésen kívüli mérés — a darabszámlálás szünetel, amíg az újramérés meg nem felel"}
+            </div>
+          )}
+          <div className="term-quality-row">
+            {quality.checks.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className="term-btn term-quality-btn"
+                data-state={c.status === "failed" ? "fail" : c.overdue ? "late" : "due"}
+                disabled={busy}
+                onClick={() => onQuality(c.id, { kind: "check" })}
+              >
+                Mérés: {KIND_LABEL_HU[c.kind]}
+                <small>
+                  {c.passedCount} / {c.total} kész{c.status === "failed" ? " · tűrésen kívül" : c.overdue ? " · késésben" : ""}
+                </small>
+              </button>
+            ))}
+            {quality.planVersion !== null && !quality.checks.some((c) => c.kind === "spot") && (
+              <button
+                type="button"
+                className="term-btn term-btn-soft"
+                disabled={busy}
+                onClick={() =>
+                  act({
+                    title: `Szúrópróba most: ${a.orderNumber}`,
+                    permission: "quality.measure",
+                    run: async (w) => {
+                      const r = await terminalApi.requestSpotCheck(terminalId, w.ticket, a.workOrderId);
+                      onQuality(r.checkId, { kind: "check" });
+                      return r.workerExpiresAt;
+                    },
+                  })
+                }
+              >
+                Szúrópróba most
+              </button>
+            )}
+            {quality.checks.length === 0 && (
+              <span className="term-sub">
+                Minőség: rendben
+                {quality.spot?.enabled ? ` · szúrópróba ${[quality.spot.everyParts && `${quality.spot.everyParts} db`, quality.spot.maxMinutes && `legkésőbb ${quality.spot.maxMinutes} perc`].filter(Boolean).join(" / ")}` : ""}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
       {running && instruction && (
         <div className="term-instruction">
           <button type="button" className="term-btn term-btn-soft" disabled={busy} onClick={() => openInstruction("text")}>

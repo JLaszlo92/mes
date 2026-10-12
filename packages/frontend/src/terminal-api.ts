@@ -5,6 +5,7 @@
  */
 import { API_BASE } from "./api.js";
 import type { WorkInstruction } from "./work-instructions.js";
+import type { CheckDetail, CheckKind, QualityCheck } from "./quality.js";
 
 const KEY = (terminalId: string) => `mes-terminal-device:${terminalId}`;
 
@@ -41,6 +42,8 @@ export class TerminalError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
+    /** The rest of the error body (e.g. checkId of a quality check that has to be done first). */
+    readonly data: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -58,7 +61,7 @@ async function request<T>(terminalId: string, path: string, init: { method?: str
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
   });
   const data = (await res.json().catch(() => ({}))) as { error?: string; code?: string };
-  if (!res.ok) throw new TerminalError(data.error ?? `${res.status} ${res.statusText}`, res.status, data.code);
+  if (!res.ok) throw new TerminalError(data.error ?? `${res.status} ${res.statusText}`, res.status, data.code, data as Record<string, unknown>);
   return data as T;
 }
 
@@ -96,10 +99,23 @@ export interface TerminalMachine {
     {
       progress: { goodCount: number; scrapCount: number; quantity: number; remaining: number; targetReached: boolean; operator: string | null } | null;
       instruction: { partName: string; version: number; hasPdf: boolean } | null;
+      quality: OrderQuality | null;
     }
   >;
   faultCodes: { id: string; code: string; name: string }[];
   recentReports: { id: string; faultCode: string; status: string }[];
+}
+
+export interface OrderQuality {
+  planVersion: number | null;
+  firstPiece: { enabled: boolean; gatesCounting: boolean } | null;
+  lastPiece: { enabled: boolean; gatesCompletion: boolean } | null;
+  spot: { enabled: boolean; everyParts: number | null; maxMinutes: number | null } | null;
+  lastPieceDone: boolean;
+  /** Parts are not counted: the first piece is not measured yet, or a measurement failed. */
+  hold: { checkId: string; kind: CheckKind; reason: "first_piece" | "failed"; since: string } | null;
+  /** Open and failed checks of the order. */
+  checks: QualityCheck[];
 }
 
 export interface TerminalState {
@@ -124,8 +140,15 @@ export const terminalApi = {
   lock: (id: string, ticket: string) => request(id, "/lock", { method: "POST", body: {}, ticket }).catch(() => undefined),
   start: (id: string, ticket: string, workOrderId: string) =>
     request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/start`, { method: "POST", body: {}, ticket }),
-  complete: (id: string, ticket: string, workOrderId: string) =>
-    request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, { method: "POST", body: {}, ticket }),
+  complete: (id: string, ticket: string, workOrderId: string, skipLastPiece = false) =>
+    request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, { method: "POST", body: skipLastPiece ? { skipLastPiece: true } : {}, ticket }),
+  qualityCheck: (id: string, checkId: string) => request<CheckDetail>(id, `/quality-checks/${encodeURIComponent(checkId)}`),
+  measure: (id: string, ticket: string, checkId: string, body: { characteristicId: string; value?: number; ok?: boolean; comment?: string }) =>
+    request<{ passed: boolean; status: string; check: CheckDetail; workerExpiresAt: number }>(id, `/quality-checks/${encodeURIComponent(checkId)}/measurements`, { method: "POST", body, ticket }),
+  releaseCheck: (id: string, ticket: string, checkId: string, reason: string) =>
+    request<{ workerExpiresAt: number }>(id, `/quality-checks/${encodeURIComponent(checkId)}/release`, { method: "POST", body: { reason }, ticket }),
+  requestSpotCheck: (id: string, ticket: string, workOrderId: string) =>
+    request<{ checkId: string; workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/spot-check`, { method: "POST", body: {}, ticket }),
   reportFault: (id: string, ticket: string, machineId: string, faultCodeId: string) =>
     request<{ workerExpiresAt: number }>(id, "/fault-reports", { method: "POST", body: { machineId, faultCodeId }, ticket }),
   setStatus: (id: string, ticket: string, machineId: string, code: string) =>

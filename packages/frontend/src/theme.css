@@ -1683,3 +1683,424 @@ body {
   font-weight: 600;
   color: var(--c-alarm);
 }
+
+/* ---- Minőség: terv-szerkesztő, ellenőrzés részletei ---- */
+.q-check-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--c-border);
+}
+.q-check-block:last-of-type {
+  border-bottom: none;
+}
+.q-sub-option {
+  margin-left: 26px;
+}
+.q-spot-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-left: 26px;
+}
+.q-char {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-surface-sunken);
+}
+.q-char-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 150px auto;
+  gap: 8px;
+  align-items: center;
+}
+.q-char-no {
+  font-weight: 600;
+  color: var(--c-text-muted);
+  text-align: center;
+}
+.q-char-tools {
+  display: inline-flex;
+  gap: 2px;
+}
+.q-limits {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.q-char-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.q-in {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--text-s);
+  color: var(--c-text-muted);
+}
+.q-pdf {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  font-size: var(--text-s);
+}
+.q-versions {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-s);
+}
+.q-versions li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--c-border);
+}
+.q-pdf-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-surface);
+}
+.q-pdf-overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--c-border);
+}
+.q-measure-table td {
+  vertical-align: top;
+}
+.q-measure-table td.q-fail {
+  background: var(--c-alarm-soft);
+}
+.q-char-row .ui-input {
+  width: 100%;
+}
+.q-result {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.q-result .ui-sub {
+  flex-basis: 100%;
+}
+.q-bar {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--c-alarm-soft);
+}
+.q-bar-zone {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 20%;
+  width: 60%;
+  background: var(--c-border-strong);
+  border-radius: 2px;
+}
+.q-bar-mark {
+  position: absolute;
+  top: -3px;
+  width: 3px;
+  height: 14px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--c-text);
+}
+.q-bar-mark[data-inside="false"] {
+  background: var(--c-alarm);
+}
+.q-wo-checks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.q-wo-checks li {
+  border-bottom: 1px solid var(--c-border);
+}
+.q-wo-check {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.q-wo-check-body {
+  padding-bottom: 8px;
+}
+
+/* Terminál: minőség a rendelésnél és a mérési folyamat */
+.term-quality {
+  margin-top: var(--space-3);
+}
+.term-quality-hold {
+  margin-bottom: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-l);
+  background: var(--c-alarm-soft);
+  color: var(--c-alarm);
+  font-size: 16px;
+  font-weight: 700;
+}
+.term-quality-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.term-quality-btn {
+  display: inline-flex;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+  border-width: 2px;
+  border-color: #9a5b00;
+  color: #7a4700;
+  background: #fff6e5;
+}
+.term-quality-btn small {
+  font-size: 13px;
+  font-weight: 500;
+}
+.term-quality-btn[data-state="fail"],
+.term-quality-btn[data-state="late"] {
+  border-color: var(--c-alarm);
+  color: var(--c-alarm);
+  background: var(--c-alarm-soft);
+}
+.term-qf {
+  position: fixed;
+  inset: 0;
+  z-index: 75; /* a PIN-pad (80) fölötte marad */
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) var(--space-6);
+  overflow: auto;
+  background: var(--c-surface);
+  color: var(--c-text);
+  font-family: var(--font-sans);
+}
+.term-qf-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.term-qf-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: var(--space-3);
+}
+.term-qf-step {
+  padding: 4px 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  font-size: 14px;
+  color: var(--c-text-muted);
+}
+.term-qf-step[data-state="current"] {
+  border-color: var(--c-text);
+  color: var(--c-text);
+  font-weight: 700;
+}
+.term-qf-step[data-state="ok"] {
+  border-color: #0b7d33;
+  color: #0b5d27;
+}
+.term-qf-step[data-state="fail"] {
+  border-color: var(--c-alarm);
+  color: var(--c-alarm);
+}
+.term-qf-result {
+  margin-bottom: var(--space-3);
+  padding: 12px 16px;
+  border-radius: var(--radius-l);
+  font-size: 18px;
+  font-weight: 700;
+}
+.term-qf-result-ok {
+  background: #e6f4ea;
+  color: #0b5d27;
+}
+.term-qf-result-fail {
+  background: var(--c-alarm-soft);
+  color: var(--c-alarm);
+}
+.term-qf-body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 520px);
+  justify-content: center;
+  gap: var(--space-6);
+  min-height: 0;
+}
+.term-qf-body[data-pdf="true"] {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
+}
+.term-qf-pdf {
+  display: flex;
+  flex-direction: column;
+  min-height: 420px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-l);
+  overflow: hidden;
+}
+.term-qf-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.term-qf-name {
+  margin: 0;
+  font-size: 28px;
+}
+.term-qf-limits {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.term-qf-limits span {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--c-surface-sunken);
+  font-size: 22px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.term-qf-limits small {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--c-text-muted);
+}
+.term-qf-entry {
+  padding: 12px 16px;
+  border: 2px solid var(--c-text);
+  border-radius: 12px;
+  font-size: 40px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.term-qf-entry[data-empty="true"] {
+  border-color: var(--c-border-strong);
+  color: var(--c-text-faint);
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 48px;
+}
+.term-qf-entry small {
+  font-size: 20px;
+  color: var(--c-text-muted);
+}
+.term-qf-keys {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.term-key {
+  height: 60px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 12px;
+  background: var(--c-surface-sunken);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 26px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.term-key:active {
+  background: var(--c-accent-soft);
+}
+.term-qf-submit {
+  grid-column: span 2;
+  min-height: 60px;
+  font-size: 20px;
+}
+.term-qf-attr {
+  display: flex;
+  gap: 10px;
+}
+.term-qf-attr > * {
+  flex: 1;
+}
+.term-qf-big {
+  min-height: 72px;
+  font-size: 22px;
+}
+.term-qf-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.term-qf-release {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius-l);
+}
+.term-textarea {
+  min-height: 80px;
+  padding: 10px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 10px;
+  font: inherit;
+  font-size: 17px;
+}
+.term-qf-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-8) 0;
+  text-align: center;
+}
+@media (max-width: 900px) {
+  .term-qf-body[data-pdf="true"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .term-qf-pdf {
+    min-height: 50vh;
+  }
+}
+.q-measure-table th,
+.q-measure-table td {
+  white-space: normal;
+}
+.q-measure-table td:first-child {
+  width: 34%;
+}
+.q-result {
+  white-space: nowrap;
+}

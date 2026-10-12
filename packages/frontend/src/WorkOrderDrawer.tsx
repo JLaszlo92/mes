@@ -1,4 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
+import WorkOrderQualitySection from "./WorkOrderQualitySection.js";
 import Drawer from "./ui/Drawer.js";
 import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -384,6 +385,7 @@ export default function WorkOrderDrawer({
           }}
         />
       )}
+      {!creating && <WorkOrderQualitySection workOrderId={target.workOrder.id} />}
       {preview && <InstructionViewer instruction={preview} subtitle="Preview: what the operator sees" onClose={() => setPreview(null)} />}
     </Drawer>
   );

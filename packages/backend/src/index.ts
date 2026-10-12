@@ -20,6 +20,7 @@ import { startDiskSpaceEvaluator } from "./disk-health-evaluator.js";
 import { startIngestionEvaluator } from "./ingestion-health-evaluator.js";
 import { startEdgeDiskEvaluator } from "./edge-disk-health-evaluator.js";
 import { startDataGapEvaluator } from "./data-gap-health-evaluator.js";
+import { startQualityEvaluator } from "./quality-evaluator.js";
 import { startEdgeCertEvaluator } from "./edge-cert-health-evaluator.js";
 import { startEdgeOfflineEvaluator } from "./edge-offline-health-evaluator.js";
 
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   startIngestionEvaluator(app.log);
   startEdgeDiskEvaluator(app.log);
   startDataGapEvaluator(app.log);
+  startQualityEvaluator(app.log);
   startEdgeCertEvaluator(app.log);
   startEdgeOfflineEvaluator(app.log);
 }

@@ -11,6 +11,7 @@ import {
   type WorkOrderChange,
 } from "./work-orders-repository.js";
 import { getCurrentInstructionForPart } from "./work-instructions-repository.js";
+import { lastPieceGate, onWorkOrderClosed, onWorkOrderStarted } from "./quality-repository.js";
 import { parseWorkOrderBulk, parseWorkOrderCreate, parseWorkOrderPatch } from "./work-order-input.js";
 
 /**
@@ -48,6 +49,10 @@ async function afterChange(request: FastifyRequest, change: WorkOrderChange, det
   });
   if (change.changes.status && change.current.status === "completed") {
     await generateLotForWorkOrder(change.current.id);
+  }
+  if (change.changes.status) {
+    if (change.current.status === "in_progress") await onWorkOrderStarted(change.current.id);
+    if (change.current.status === "completed" || change.current.status === "cancelled") await onWorkOrderClosed(change.current.id);
   }
 }
 
@@ -93,6 +98,20 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
     if (!parsed.ok) return fail(reply, 400, parsed.error, parsed.field);
     if (await unknownInstruction(parsed.value.workInstructionName)) {
       return fail(reply, 400, `there is no work instruction named "${parsed.value.workInstructionName}"`, "workInstructionName");
+    }
+    if (parsed.value.status === "completed") {
+      const before = await getWorkOrder(request.params.id);
+      if (before && before.status !== "completed") {
+        const gate = await lastPieceGate(request.params.id);
+        if (!gate.ok && gate.gating) {
+          reply.code(409);
+          return {
+            error: "The last-piece quality check has not passed. Measure it at the terminal, or release it in Quality → Quality checks.",
+            code: "quality_check_required",
+            checkId: gate.checkId,
+          };
+        }
+      }
     }
     const change = await patchWorkOrder(request.params.id, parsed.value);
     if (!change) return fail(reply, 404, "unknown work order");

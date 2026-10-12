@@ -1731,6 +1731,58 @@ Migration **049**. Backend and frontend.
   Chromium on the terminal (badge, fault list with code, status list, manual badge kept against a `down` signal, end,
   portrait 800×1280). `pnpm test`: backend 321 (326 after 050).
 
+## Quality: plans, first / last piece, spot checks, measurements at the terminal — Oct 12 (evening)
+
+Migration **051**. Backend (`quality-input.ts`, `quality-repository.ts`, `quality-routes.ts`, `quality-evaluator.ts`, hooks in
+`mqtt-subscriber.ts`, `terminal-routes.ts`, `work-order-routes.ts`, `work-order-completion-service.ts`) and frontend
+(`QualityPlansPanel` / `QualityPlanDrawer`, `QualityChecksPanel` / `QualityCheckDetail`, `WorkOrderQualitySection`,
+`TerminalQualityFlow`).
+
+- **Quality plan per part** (Quality → Quality plans), by `work_orders.part_name` like work instructions, **versioned**
+  (saving = new version; a check keeps pointing at the version it used; "Turn off" archives the part's plan). Three optional
+  checks: **first piece** (opens when the order starts; option: parts are not counted until it passes), **last piece**
+  (opens when the order is completed; option: the order cannot be completed until it passes, otherwise it can be skipped
+  — logged), **spot check** (every N parts and/or at the latest every M minutes, counted from the start / the first piece /
+  the previous spot check; not while the first piece is open). **Measurements** (characteristics) in order: name, measured
+  value (lower / nominal / upper limit, one-sided allowed, unit) or **OK / not OK** (visual, go/no-go gauge), gauge / method,
+  a **PDF** (drawing; same file store as the instructions), and which of the three checks it belongs to.
+- **Rules**: a value inside the limits (limits included) passes. **Any out-of-tolerance measurement stops the part count**
+  of the machine (parts stored as `production_count_blocked` with `blockedBy = "quality"` and the check id) until the same
+  measurement is taken again and passes, or a **quality supervisor releases** the check with a reason (deviation). Every
+  attempt is kept with the limits as they were, who, when, which terminal. **One measurement at a time**: the next one is the
+  first not passed; a failed one stays next. An open spot check older than its grace time (default 15 min) raises **one
+  system alert** (`quality_check_overdue`) but does not stop the count. Checks still open when an order closes are
+  recorded as **missed** ("Not done"). The dashboard completion (`PATCH status=completed`) and the auto-complete obey the
+  last-piece gate too (409 `quality_check_required`; auto-complete waits).
+- **Permissions** (new, granted once by marker `051_quality_permissions`): `quality.measure` (Quality operátor, Quality
+  supervisor), `quality.release` and `quality.plans` (Quality supervisor). They are offered at the terminal next to the
+  `terminal.*` ones. At the terminal, if the signed-in worker lacks the permission (e.g. the operator started the order and
+  the quality operator measures), the PIN pad now asks for another worker's code instead of an error.
+- **Terminal**: a running order shows the hold ("Első darab mérés szükséges…" / "Tűrésen kívüli mérés…"), a button per open
+  check ("Mérés: Első darab 0 / 2 kész", amber; red when failed or overdue) and **"Szúrópróba most"** (an extra spot check,
+  e.g. after a tool change). The measurement screen: steps on top, the PDF on the left (can be hidden), the limits, a big
+  number pad (decimal comma), OK / not OK for attributes, the result after each entry, **Feloldás** with a reason. "Befejezés"
+  opens the last-piece check first and closes the order at its end ("Kihagyás és lezárás" when not gating).
+- **Dashboard**: Quality → **Quality checks** (server-paged, scope-aware; search order / part / machine; status incl. "open or
+  failed"; kind; CSV export of the page) with every attempt in the side panel and release; the **work order's side panel**
+  lists its checks with the same details.
+- **API**: `GET/POST /api/quality-plans`, `GET /api/quality-plans/by-id/:id`, `GET /api/quality-plans/:partName/versions`,
+  `POST /api/quality-plans/:partName/archive`, `POST /api/quality-plans/files` (PDF), `GET /api/quality-checks`,
+  `GET /api/quality-checks/:id`, `POST /api/quality-checks/:id/release`, `GET /api/work-orders/:id/quality-checks`; terminal:
+  `GET …/quality-checks/:checkId`, `POST …/quality-checks/:checkId/measurements`, `POST …/quality-checks/:checkId/release`,
+  `POST …/work-orders/:workOrderId/spot-check`, and `complete` takes `{ skipLastPiece: true }`. Audit: `quality_plan_saved`,
+  `quality_plan_archived`, `quality_measurement_failed`, `quality_check_passed`, `quality_check_released`,
+  `quality_check_skipped`, `quality_check_requested`.
+- Tested: unit tests (plan input, limits, order of measurements, spot due, alert text; backend 338); live with the local
+  broker: plan versions, first piece holding the count (2 parts blocked), operator refused, out-of-order refused, fail →
+  re-measure → pass, spot check after 3 counted parts, failed spot blocking, release refused for the quality operator and
+  without a reason, supervisor release, completion blocked at the terminal and in the dashboard until the last piece passed,
+  full trace in the API; time-triggered spot check, overdue alert raised and resolved; Chromium: plan editor with PDF, the
+  terminal flow (PDF, number pad, fail, re-measure, attribute, last piece and completion), checks list and detail, work order
+  panel.
+- Not done yet (ideas): measurements entered in the dashboard (a lab PC), SPC chart / Cpk per characteristic, a check
+  bound to a specific machine or shift change, a picture as evidence.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

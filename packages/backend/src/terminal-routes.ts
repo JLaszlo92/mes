@@ -14,6 +14,10 @@ import { getWorkOrderProgress, patchWorkOrder } from "./work-orders-repository.j
 import { workerTickets } from "./terminal-workers.js";
 import { listStatusDefinitions } from "./machine-status-definitions-repository.js";
 import { currentStatus, endManualStatus, getActiveManualStatus, setManualStatus } from "./manual-status.js";
+import { ensureCheck, getCheck, getCheckDetail, lastPieceGate, onWorkOrderClosed, onWorkOrderStarted, orderQuality, QualityError, recordMeasurement, releaseCheck, skipCheck } from "./quality-repository.js";
+
+/** Permissions outside "terminal." that are used at the terminal (quality measurements). */
+const TERMINAL_EXTRA_PERMISSIONS: readonly string[] = ["quality.measure", "quality.release"];
 
 /**
  * A gép melletti terminál API-ja.
@@ -31,7 +35,7 @@ import { currentStatus, endManualStatus, getActiveManualStatus, setManualStatus 
  * hitelesítést ez a fájl végzi, nem a dashboard sessionje.
  */
 
-type TerminalRequest = FastifyRequest<{ Params: { terminalId: string; workOrderId?: string; fileId?: string } }>;
+type TerminalRequest = FastifyRequest<{ Params: { terminalId: string; workOrderId?: string; fileId?: string; checkId?: string } }>;
 
 function fail(reply: FastifyReply, code: number, error: string, extra: Record<string, unknown> = {}) {
   reply.code(code);
@@ -104,17 +108,20 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
         const done = (s: string) => s === "completed" || s === "cancelled";
         const current = assignments.filter((a) => !done(a.workOrderStatus));
         const history = assignments.filter((a) => done(a.workOrderStatus)).slice(-HISTORY_PER_MACHINE).reverse();
-        const running = [...new Set(current.filter((a) => a.workOrderStatus === "in_progress").map((a) => a.workOrderId))];
+        const runningAssignments = current.filter((a) => a.workOrderStatus === "in_progress");
+        const running = [...new Set(runningAssignments.map((a) => a.workOrderId))];
         const orders = Object.fromEntries(
           await Promise.all(
             running.map(async (id) => {
-              const [progress, instruction] = await Promise.all([getWorkOrderProgress(id), getInstructionForWorkOrder(id)]);
+              const partName = runningAssignments.find((a) => a.workOrderId === id)!.partName;
+              const [progress, instruction, quality] = await Promise.all([getWorkOrderProgress(id), getInstructionForWorkOrder(id), orderQuality(id, partName, machineId)]);
               return [
                 id,
                 {
                   progress: progress ? { goodCount: progress.goodCount, scrapCount: progress.scrapCount, quantity: progress.quantity, remaining: progress.remaining, targetReached: progress.targetReached, operator: progress.operatorEmail } : null,
                   // Only what the buttons need; the text and the file come when it is opened (and logged).
                   instruction: instruction ? { partName: instruction.partName, version: instruction.version, hasPdf: instruction.pdfFileId !== null } : null,
+                  quality,
                 },
               ] as const;
             }),
@@ -162,7 +169,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       return fail(reply, 401, "wrong code", { code: "wrong_pin" });
     }
     await clearPinThrottle(terminal.id);
-    const terminalPermissions = user.permissions.filter((p) => p.startsWith("terminal."));
+    const terminalPermissions = user.permissions.filter((p) => p.startsWith("terminal.") || TERMINAL_EXTRA_PERMISSIONS.includes(p));
     if (terminalPermissions.length === 0) {
       return fail(reply, 403, `${user.name} has no permission to work at the terminal`, { code: "permission" });
     }
@@ -198,6 +205,24 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
     if (!allowedFrom.includes(assignment.workOrderStatus)) {
       return fail(reply, 409, to === "in_progress" ? "this work order cannot be started (it is not planned or released)" : "only a running work order can be completed");
     }
+    if (to === "completed") {
+      // The last-piece check: a gating one must pass first; an optional one is offered and may be skipped.
+      const gate = await lastPieceGate(workOrderId, assignment.machineId);
+      if (!gate.ok) {
+        const skip = (request.body as { skipLastPiece?: unknown } | undefined)?.skipLastPiece === true;
+        if (gate.gating) return fail(reply, 409, "the last-piece check has to pass before this order can be completed", { code: "quality_check_required", checkId: gate.checkId });
+        if (!skip) return fail(reply, 409, "a last-piece check is planned for this order", { code: "quality_check_offered", checkId: gate.checkId });
+        await skipCheck(gate.checkId, { id: worker.user.id, name: worker.user.name });
+        await recordAuditEvent({
+          actorId: worker.user.id,
+          actorEmail: worker.user.name,
+          action: "quality_check_skipped",
+          target: gate.checkId,
+          details: { workOrderId, kind: "last_piece", terminalId: terminal.id, terminal: terminal.name },
+          ipAddress: request.ip,
+        });
+      }
+    }
     const change = await patchWorkOrder(workOrderId, { status: to });
     if (!change) return fail(reply, 404, "unknown work order");
     // computeWorkOrderProgress reads the start from this event (details.status = in_progress).
@@ -209,7 +234,12 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       details: { status: to, changes: change.changes, terminalId: terminal.id, terminal: terminal.name },
       ipAddress: request.ip,
     });
-    if (to === "completed") await generateLotForWorkOrder(workOrderId);
+    if (to === "completed") {
+      await generateLotForWorkOrder(workOrderId);
+      await onWorkOrderClosed(workOrderId);
+    } else {
+      await onWorkOrderStarted(workOrderId, assignment.machineId);
+    }
     return { success: true, status: to, workerExpiresAt: worker.expiresAt };
   }
 
@@ -311,5 +341,114 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       .header("X-Content-Type-Options", "nosniff")
       .header("Content-Security-Policy", "default-src 'none'; sandbox")
       .send(file.content);
+  });
+
+  // ---- quality checks at the terminal ----
+
+  /** The check, if it belongs to one of this terminal's machines. */
+  async function checkOnTerminal(terminal: TerminalUi, checkId: string) {
+    const check = await getCheck(checkId);
+    return check && check.machineId && terminal.machineIds.includes(check.machineId) ? check : undefined;
+  }
+
+  function qualityFail(reply: FastifyReply, err: unknown) {
+    if (err instanceof QualityError) return fail(reply, err.httpStatus, err.message, { code: err.code });
+    throw err;
+  }
+
+  // The check to measure: its characteristics in order, with the attempts so far and the one that is next.
+  app.get<{ Params: { terminalId: string; checkId: string } }>("/api/terminal/:terminalId/quality-checks/:checkId", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    if (!(await checkOnTerminal(terminal, request.params.checkId))) return fail(reply, 404, "this check is not on this terminal's machines");
+    return getCheckDetail(request.params.checkId);
+  });
+
+  app.post<{ Params: { terminalId: string; checkId: string } }>("/api/terminal/:terminalId/quality-checks/:checkId/measurements", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request, reply, terminal.id, "quality.measure");
+    if (!worker) return reply;
+    const check = await checkOnTerminal(terminal, request.params.checkId);
+    if (!check) return fail(reply, 404, "this check is not on this terminal's machines");
+    const body = (request.body ?? {}) as { characteristicId?: unknown; value?: unknown; ok?: unknown; comment?: unknown };
+    if (typeof body.characteristicId !== "string") return fail(reply, 400, "which measurement?");
+    const value = typeof body.value === "number" ? body.value : typeof body.value === "string" && body.value.trim() !== "" ? Number(body.value.replace(",", ".")) : null;
+    if (value !== null && !Number.isFinite(value)) return fail(reply, 400, "the value is not a number", { code: "value_required" });
+    const comment = typeof body.comment === "string" && body.comment.trim() ? body.comment.trim().slice(0, 500) : null;
+    try {
+      const result = await recordMeasurement({
+        checkId: check.id,
+        characteristicId: body.characteristicId,
+        value,
+        ok: typeof body.ok === "boolean" ? body.ok : null,
+        comment,
+        userId: worker.user.id,
+        userName: worker.user.name,
+        terminalId: terminal.id,
+        terminalName: terminal.name,
+      });
+      if (!result.passed || result.status === "passed") {
+        await recordAuditEvent({
+          actorId: worker.user.id,
+          actorEmail: worker.user.name,
+          action: result.passed ? "quality_check_passed" : "quality_measurement_failed",
+          target: check.id,
+          details: { workOrderId: check.workOrderId, orderNumber: check.orderNumber, kind: check.kind, characteristicId: body.characteristicId, value, ok: body.ok, terminalId: terminal.id, terminal: terminal.name },
+          ipAddress: request.ip,
+        });
+      }
+      reply.code(201);
+      return { ...result, check: await getCheckDetail(check.id), workerExpiresAt: worker.expiresAt };
+    } catch (err) {
+      return qualityFail(reply, err);
+    }
+  });
+
+  app.post<{ Params: { terminalId: string; checkId: string } }>("/api/terminal/:terminalId/quality-checks/:checkId/release", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request, reply, terminal.id, "quality.release");
+    if (!worker) return reply;
+    const check = await checkOnTerminal(terminal, request.params.checkId);
+    if (!check) return fail(reply, 404, "this check is not on this terminal's machines");
+    const reason = (request.body as { reason?: unknown } | undefined)?.reason;
+    if (typeof reason !== "string" || reason.trim().length < 3) return fail(reply, 400, "give the reason of the release", { code: "reason_required" });
+    try {
+      const released = await releaseCheck(check.id, reason.trim().slice(0, 500), { id: worker.user.id, name: worker.user.name });
+      await recordAuditEvent({
+        actorId: worker.user.id,
+        actorEmail: worker.user.name,
+        action: "quality_check_released",
+        target: check.id,
+        details: { workOrderId: check.workOrderId, orderNumber: check.orderNumber, kind: check.kind, from: check.status, reason: reason.trim(), terminalId: terminal.id, terminal: terminal.name },
+        ipAddress: request.ip,
+      });
+      return { check: released, workerExpiresAt: worker.expiresAt };
+    } catch (err) {
+      return qualityFail(reply, err);
+    }
+  });
+
+  // An extra spot check now (e.g. after a tool change), whether or not the plan has regular ones.
+  app.post<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/spot-check", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request, reply, terminal.id, "quality.measure");
+    if (!worker) return reply;
+    const assignment = await orderOnTerminal(terminal, request.params.workOrderId);
+    if (!assignment) return fail(reply, 404, "this work order is not scheduled on this terminal's machines");
+    if (assignment.workOrderStatus !== "in_progress") return fail(reply, 409, "only a running work order can be checked");
+    const checkId = await ensureCheck({ workOrderId: assignment.workOrderId, kind: "spot", trigger: "manual", machineId: assignment.machineId });
+    if (!checkId) return fail(reply, 409, "the quality plan of this part has no spot-check measurements", { code: "no_spot_plan" });
+    await recordAuditEvent({
+      actorId: worker.user.id,
+      actorEmail: worker.user.name,
+      action: "quality_check_requested",
+      target: checkId,
+      details: { workOrderId: assignment.workOrderId, orderNumber: assignment.orderNumber, kind: "spot", terminalId: terminal.id, terminal: terminal.name },
+      ipAddress: request.ip,
+    });
+    return { checkId, workerExpiresAt: worker.expiresAt };
   });
 }
