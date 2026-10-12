@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 9, 2026 (evening)
+**Last updated:** October 12, 2026
 
 ## Where things stand
 
@@ -1580,6 +1580,35 @@ frontend, restart `mes-backend`, copy `dist/` to `/var/www/mes/`, hard reload.
 - **There is no CSV import for work orders** (only "Export CSV"). The export's column order would be the natural
   import format if one is built.
 
+## Lots and material lots as tables, traceability both ways — Oct 12
+
+No migration. Deploy: build backend and frontend, restart `mes-backend`, copy `dist/`, hard reload.
+
+- **Lots** (`LotsPanel.tsx`): table with search (lot, order, part, machine, operator, material lot, supplier), period
+  (7 / 30 / 90 days / all, default 30), "Material not recorded" filter with a count, CSV export, and the global
+  site/area/line scope (lots were not scoped before). Columns: lot + order, part, machine, good of planned, scrap with
+  rate, material (a **Not recorded** pill when the order had none), completed + operator. Row → read-only drawer:
+  production facts (good / planned, scrap rate, machine, who started it, start, completion, duration) and the material
+  lots with supplier and receipt date; **Where else used** opens that material lot.
+- **Material lots** (`MaterialLotsPanel.tsx`, `MaterialLotDrawer.tsx`): table with work order and finished lot counts
+  and last use, search, used / unused filter, CSV export, **New material lot** (any signed-in role, as before: goods
+  receipt). Material names are suggested from the existing ones (datalist) so the same material is not spelled two ways.
+  Row → drawer: edit (admin/manager; `PATCH /api/material-lots/:id`, audited `material_lot_updated` with the diff), and
+  **Where used**: every work order with its finished lot, counts and machine (`GET /api/material-lots/:id/usage`), each
+  with **Open lot**. **Delete** only while unused (`DELETE`, admin/manager, 409 otherwise): the consumption FK is
+  `ON DELETE CASCADE`, so deleting a used lot would silently erase the traceability link; the check runs on a locked row.
+  The old "Record consumption" form is gone (it lives in the work order drawer since Oct 9).
+- Cross-links use `?open=` (`traceability.ts`: `openLot`, `openMaterialLot`, `takeOpenParam`), removed from the address
+  bar once read.
+- Backend: lots, material lot and consumption routes moved from `server.ts` to `material-lot-routes.ts`; validation in
+  `material-lot-input.ts` (trimmed, lengths, unknown fields, a real date not in the future, duplicate = 409 with
+  `field: "lotNumber"`). Before, a material lot accepted any body and a duplicate came back without a field.
+  `GET /api/lots` now carries `partName`, `quantity` and `materials`; `GET /api/material-lots` the usage counts.
+- `pnpm test`: backend 303. Tested in Chromium on a local database: both directions of the trace, create / duplicate /
+  edit / delete, delete refused for a used lot, operator can add but not edit.
+- Not done: quantities (stock stays in the ERP), more than one finished lot per work order (per shift / per day), a
+  label print of the lot number, server-side paging of lots (client-side is fine for the pilot volume).
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
@@ -1724,7 +1753,6 @@ frontend, restart `mes-backend`, copy `dist/` to `/var/www/mes/`, hard reload.
   it's clear no integration needs them.
 - Cleanup: 25 frontend files each recompute `WS_URL` / `API_BASE`;
   `api.ts` now exports `API_BASE`, so these can become imports.
-- Work instructions follow-ups: the Material lots and Lots pages are still the old card lists; the terminal does not
-  show the order's material; instructions cannot be retired or renamed; no CSV import for work orders.
+- Work instructions follow-ups: the terminal does not show the order's material; instructions cannot be retired or renamed; no CSV import for work orders.
 - "Additional MES ideas" floated earlier (CSV/PDF export, an andon board,
   downtime Pareto analysis, multilingual work instructions) — not started.

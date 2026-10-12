@@ -1,213 +1,181 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import { readJsonOrThrow } from "./master-data.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { downloadCsv } from "./ui/csv.js";
+import { formatDate, formatDateTime } from "./ui/format.js";
+import { usePolling } from "./ui/usePolling.js";
+import MaterialLotDrawer, { type MaterialLotTarget } from "./MaterialLotDrawer.js";
+import { takeOpenParam, type MaterialLot } from "./traceability.js";
 
-interface MaterialLot {
-  id: string;
-  materialName: string;
-  lotNumber: string;
-  supplier: string | null;
-  receivedAt: string | null;
-}
+type UseFilter = "" | "used" | "unused";
 
-interface WorkOrder {
-  id: string;
-  orderNumber: string;
-}
-
-interface Consumption {
-  materialLotId: string;
-  materialName: string;
-  lotNumber: string;
-  recordedAt: string;
-}
-
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-
+/**
+ * Alapanyag-tételek: a beérkező szállítások nyilvántartása (nem készlet —
+ * mennyiséget az ERP vezet). Táblázat a felhasználás számaival; sorra
+ * kattintva szerkeszthető, és látszik, mely work orderekben és késztermék-
+ * tételekben van. A work orderhez rendelés a work order oldalpanelén történik.
+ */
 export default function MaterialLotsPanel() {
-  const { auth, logout } = useAuth();
-  const [materialLots, setMaterialLots] = useState<MaterialLot[]>([]);
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [consumptionByWorkOrder, setConsumptionByWorkOrder] = useState<Record<string, Consumption[]>>({});
+  const { auth } = useAuth();
+  const canEdit = auth?.role === "admin" || auth?.role === "manager";
+
+  const [lots, setLots] = useState<MaterialLot[]>([]);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [lotForm, setLotForm] = useState({ materialName: "", lotNumber: "", supplier: "", receivedAt: "" });
-  const [consumeForm, setConsumeForm] = useState({ workOrderId: "", materialLotId: "" });
-  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [useFilter, setUseFilter] = useState<UseFilter>("");
+  const [editor, setEditor] = useState<MaterialLotTarget | null>(null);
+  const [openId, setOpenId] = useState<string | null>(() => takeOpenParam());
 
   function load() {
-    Promise.all([
-      apiFetch(`${API_BASE}/api/material-lots`, { headers: { Authorization: `Bearer ${auth?.token}` } }).then((res) => {
-        if (res.status === 401) {
-          logout();
-          throw new Error("session expired — please sign in again");
-        }
-        return res.json();
-      }),
-      apiFetch(`${API_BASE}/api/work-orders`).then((r) => r.json()),
-    ])
-      .then(([ml, wo]) => {
-        setMaterialLots(ml);
-        setWorkOrders(wo);
+    return apiFetch(`${API_BASE}/api/material-lots`)
+      .then((r) => readJsonOrThrow<MaterialLot[]>(r))
+      .then((rows) => {
+        setLots(rows);
         setError(null);
+        return rows;
       })
-      .catch((err) => setError(String(err)));
-  }
-
-  useEffect(load, []);
-
-  async function loadConsumption(workOrderId: string) {
-    if (!workOrderId) return;
-    const res = await apiFetch(`${API_BASE}/api/work-orders/${encodeURIComponent(workOrderId)}/material-consumption`, {
-      headers: { Authorization: `Bearer ${auth?.token}` },
-    });
-    if (res.ok) {
-      const data = await res.json();
-      setConsumptionByWorkOrder((prev) => ({ ...prev, [workOrderId]: data }));
-    }
-  }
-
-  async function handleAddLot(e: FormEvent) {
-    e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await apiFetch(`${API_BASE}/api/material-lots`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-        body: JSON.stringify({
-          materialName: lotForm.materialName.trim(),
-          lotNumber: lotForm.lotNumber.trim(),
-          supplier: lotForm.supplier.trim() || undefined,
-          receivedAt: lotForm.receivedAt || undefined,
-        }),
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err));
+        return [] as MaterialLot[];
       });
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      setLotForm({ materialName: "", lotNumber: "", supplier: "", receivedAt: "" });
-      load();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSubmitting(false);
-    }
   }
 
-  async function handleConsume(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    try {
-      const res = await apiFetch(
-        `${API_BASE}/api/work-orders/${encodeURIComponent(consumeForm.workOrderId)}/material-consumption`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
-          body: JSON.stringify({ materialLotId: consumeForm.materialLotId }),
-        },
-      );
-      if (res.status === 401) {
-        logout();
-        throw new Error("session expired — please sign in again");
-      }
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-      }
-      loadConsumption(consumeForm.workOrderId);
-    } catch (err) {
-      setError(String(err));
-    }
+  useEffect(() => {
+    void load().finally(() => setLoading(false));
+  }, []);
+  usePolling(() => void load(), 30_000, editor === null);
+
+  // Opened from a lot ("Where else used"): show that material lot's drawer.
+  useEffect(() => {
+    if (!openId || loading) return;
+    const lot = lots.find((l) => l.id === openId);
+    if (lot) setEditor({ mode: "edit", lot });
+    else setError("That material lot no longer exists.");
+    setOpenId(null);
+  }, [openId, loading, lots]);
+
+  const materialNames = useMemo(() => [...new Set(lots.map((l) => l.materialName))].sort((a, b) => a.localeCompare(b)), [lots]);
+
+  const filtered = useMemo(() => {
+    const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    return lots.filter((l) => {
+      if (useFilter === "used" && l.workOrderCount === 0) return false;
+      if (useFilter === "unused" && l.workOrderCount > 0) return false;
+      if (words.length === 0) return true;
+      const haystack = [l.materialName, l.lotNumber, l.supplier].filter(Boolean).join(" ").toLowerCase();
+      return words.every((w) => haystack.includes(w));
+    });
+  }, [lots, query, useFilter]);
+
+  const filtersActive = query !== "" || useFilter !== "";
+  function clearFilters() {
+    setQuery("");
+    setUseFilter("");
   }
+
+  function exportCsv() {
+    downloadCsv(
+      `material-lots-${new Date().toISOString().slice(0, 10)}.csv`,
+      ["Material", "Lot number", "Supplier", "Received", "Work orders", "Finished lots", "Last used", "Registered"],
+      filtered.map((l) => [l.materialName, l.lotNumber, l.supplier, l.receivedAt, l.workOrderCount, l.finishedLotCount, l.lastUsedAt, l.createdAt]),
+    );
+  }
+
+  const columns: Column<MaterialLot>[] = [
+    { id: "material", header: "Material", sortValue: (l) => l.materialName, cell: (l) => l.materialName },
+    { id: "lot", header: "Lot number", sortValue: (l) => l.lotNumber, cell: (l) => l.lotNumber },
+    { id: "supplier", header: "Supplier", sortValue: (l) => l.supplier, cell: (l) => l.supplier ?? <span className="ui-sub">—</span> },
+    { id: "received", header: "Received", sortValue: (l) => l.receivedAt, cell: (l) => formatDate(l.receivedAt) },
+    { id: "orders", header: "Work orders", align: "right", width: 110, sortValue: (l) => l.workOrderCount, cell: (l) => l.workOrderCount },
+    { id: "lots", header: "Finished lots", align: "right", width: 110, sortValue: (l) => l.finishedLotCount, cell: (l) => l.finishedLotCount },
+    { id: "used", header: "Last used", sortValue: (l) => l.lastUsedAt, cell: (l) => formatDateTime(l.lastUsedAt) },
+  ];
 
   return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Material lots</h2>
-
-      <form onSubmit={handleAddLot} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Material<br />
-          <input required value={lotForm.materialName} onChange={(e) => setLotForm((f) => ({ ...f, materialName: e.target.value }))} placeholder="Aluminium sheet" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Lot number<br />
-          <input required value={lotForm.lotNumber} onChange={(e) => setLotForm((f) => ({ ...f, lotNumber: e.target.value }))} placeholder="AL-2026-0091" style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Supplier<br />
-          <input value={lotForm.supplier} onChange={(e) => setLotForm((f) => ({ ...f, supplier: e.target.value }))} style={inputStyle} />
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Received<br />
-          <input type="date" value={lotForm.receivedAt} onChange={(e) => setLotForm((f) => ({ ...f, receivedAt: e.target.value }))} style={inputStyle} />
-        </label>
-        <button type="submit" disabled={submitting} style={buttonStyle}>
-          {submitting ? "Adding…" : "Add material lot"}
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Material lots</h2>
+        <span className="ui-panel-count num">{filtered.length === lots.length ? lots.length : `${filtered.length} of ${lots.length}`}</span>
+        <span className="ui-toolbar-spacer" />
+        <button type="button" className="ui-btn" onClick={exportCsv} disabled={filtered.length === 0}>
+          Export CSV
         </button>
-      </form>
-
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-
-      {materialLots.map((ml) => (
-        <div key={ml.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center" }}>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Material</div><div style={{ fontWeight: 600 }}>{ml.materialName}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Lot #</div><div>{ml.lotNumber}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Supplier</div><div>{ml.supplier ?? "—"}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Received</div><div>{ml.receivedAt ?? "—"}</div></div>
-        </div>
-      ))}
-
-      <h3 style={{ fontSize: 14, marginTop: 24 }}>Record consumption for a work order</h3>
-      <form onSubmit={handleConsume} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Work order<br />
-          <select
-            required
-            value={consumeForm.workOrderId}
-            onChange={(e) => {
-              setConsumeForm((f) => ({ ...f, workOrderId: e.target.value }));
-              loadConsumption(e.target.value);
-            }}
-            style={inputStyle}
-          >
-            <option value="" disabled>select…</option>
-            {workOrders.map((wo) => (
-              <option key={wo.id} value={wo.id}>{wo.orderNumber}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ fontSize: 12 }}>
-          Material lot<br />
-          <select required value={consumeForm.materialLotId} onChange={(e) => setConsumeForm((f) => ({ ...f, materialLotId: e.target.value }))} style={inputStyle}>
-            <option value="" disabled>select…</option>
-            {materialLots.map((ml) => (
-              <option key={ml.id} value={ml.id}>{ml.materialName} — {ml.lotNumber}</option>
-            ))}
-          </select>
-        </label>
-        <button type="submit" style={buttonStyle}>
-          Record
+        <button type="button" className="ui-btn ui-btn-primary" onClick={() => setEditor({ mode: "create" })}>
+          New material lot
         </button>
-      </form>
+      </div>
 
-      {consumeForm.workOrderId && consumptionByWorkOrder[consumeForm.workOrderId] && (
-        <div style={{ fontSize: 13 }}>
-          Consumed so far:{" "}
-          {consumptionByWorkOrder[consumeForm.workOrderId].map((c) => `${c.materialName} (${c.lotNumber})`).join(", ") || "none yet"}
-        </div>
+      <div className="ui-toolbar" role="search">
+        <input
+          className="ui-input ui-search"
+          type="search"
+          placeholder="Search material, lot number, supplier…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label="Search material lots"
+        />
+        <select className="ui-select" value={useFilter} onChange={(e) => setUseFilter(e.target.value as UseFilter)} aria-label="Use">
+          <option value="">Used and unused</option>
+          <option value="used">Used on work orders</option>
+          <option value="unused">Not used yet</option>
+        </select>
+        {filtersActive && (
+          <button type="button" className="ui-btn ui-btn-ghost" onClick={clearFilters}>
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {error && <p className="ui-message ui-message-error">{error}</p>}
+      {notice && <p className="ui-message ui-message-info">{notice}</p>}
+
+      {loading && lots.length === 0 ? (
+        <p className="ui-message ui-message-info">Loading material lots…</p>
+      ) : (
+        <DataTable
+          ariaLabel="Material lots"
+          rows={filtered}
+          columns={columns}
+          getRowId={(l) => l.id}
+          onRowClick={(l) => setEditor({ mode: "edit", lot: l })}
+          initialSort={{ columnId: "received", dir: "desc" }}
+          emptyText={
+            lots.length === 0 ? (
+              "No material lots yet. Register each delivery when it arrives, then choose it on the work orders that use it."
+            ) : (
+              <>
+                No material lots match these filters.{" "}
+                <button type="button" className="ui-btn ui-btn-small ui-btn-ghost" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              </>
+            )
+          }
+        />
+      )}
+
+      {editor && (
+        <MaterialLotDrawer
+          key={editor.mode === "edit" ? editor.lot.id : "new"}
+          target={editor}
+          canEdit={canEdit}
+          materialNames={materialNames}
+          onClose={() => setEditor(null)}
+          onSaved={(lot, created) => {
+            setEditor(null);
+            setNotice(created ? `${lot.materialName} · ${lot.lotNumber} added.` : `${lot.materialName} · ${lot.lotNumber} saved.`);
+            void load();
+          }}
+          onDeleted={(lot) => {
+            setEditor(null);
+            setNotice(`${lot.materialName} · ${lot.lotNumber} deleted.`);
+            void load();
+          }}
+        />
       )}
     </section>
   );

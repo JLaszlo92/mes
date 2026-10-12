@@ -14,6 +14,19 @@ export interface Lot {
   completedAt: string;
   goodCount: number;
   scrapCount: number;
+  partName: string;
+  /** Planned quantity of the work order. */
+  quantity: number;
+  /** Material lots recorded on the work order. */
+  materials: LotMaterial[];
+}
+
+export interface LotMaterial {
+  materialLotId: string;
+  materialName: string;
+  lotNumber: string;
+  supplier: string | null;
+  receivedAt: string | null;
 }
 
 type LotRow = {
@@ -28,6 +41,9 @@ type LotRow = {
   completed_at: string;
   good_count: number;
   scrap_count: number;
+  part_name: string;
+  quantity: number;
+  materials: LotMaterial[] | null;
 };
 
 function toLot(row: LotRow): Lot {
@@ -43,14 +59,26 @@ function toLot(row: LotRow): Lot {
     completedAt: row.completed_at,
     goodCount: row.good_count,
     scrapCount: row.scrap_count,
+    partName: row.part_name,
+    quantity: row.quantity,
+    materials: row.materials ?? [],
   };
 }
 
 const SELECT_JOINED = `
-  SELECT l.*, wo.order_number, m.name AS machine_name
+  SELECT l.*, wo.order_number, wo.part_name, wo.quantity, m.name AS machine_name, mat.materials
   FROM lots l
   JOIN work_orders wo ON wo.id = l.work_order_id
   LEFT JOIN machines m ON m.id = l.machine_id
+  LEFT JOIN LATERAL (
+    SELECT json_agg(json_build_object(
+             'materialLotId', ml.id, 'materialName', ml.material_name, 'lotNumber', ml.lot_number,
+             'supplier', ml.supplier, 'receivedAt', ml.received_at
+           ) ORDER BY c.recorded_at, ml.id) AS materials
+    FROM work_order_material_consumption c
+    JOIN material_lots ml ON ml.id = c.material_lot_id
+    WHERE c.work_order_id = l.work_order_id
+  ) mat ON true
 `;
 
 export async function listLots(): Promise<Lot[]> {
