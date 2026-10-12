@@ -12,3 +12,4 @@ __pycache__/
 *.pyc
 sbom-out/
 *.tar.gz
+packages/frontend/tsconfig.tsbuildinfo
