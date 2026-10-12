@@ -78,13 +78,14 @@ export interface StatusOption {
   label: string;
   oeeCategory: string;
   color: string | null;
+  blocksProduction: boolean;
 }
 
 export interface TerminalMachine {
   id: string;
   name: string;
   /** The current status (latest status event) and, if a worker set it, who and when. */
-  status: { code: string; since: string; manual: { code: string; setBy: string | null; setAt: string } | null } | null;
+  status: { code: string; since: string; manual: { code: string; setBy: string | null; setAt: string; blocksProduction: boolean } | null } | null;
   /** What a worker may set (Admin → Status definitions). */
   statusOptions: StatusOption[];
   shift: { shiftName: string; goodCount: number; scrapCount: number; oee: number | null } | null;

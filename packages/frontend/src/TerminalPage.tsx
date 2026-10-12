@@ -48,7 +48,8 @@ function clock(iso: string): string {
   return today ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
 }
 
-const POLL_MS = 5000;
+/** How often the screen asks for the state; a request still running is not doubled, a hidden tab does not ask. */
+const POLL_MS = 2000;
 /** Same as the server (terminal-workers.ts). Counted on this device's clock: a tablet with a wrong clock still counts right; the server decides anyway. */
 const WORKER_IDLE_MS = 60_000;
 
@@ -71,7 +72,10 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [sheet, setSheet] = useState<{ kind: "fault" | "status"; machineId: string } | null>(null);
   const messageTimer = useRef<number | undefined>(undefined);
 
+  const loading = useRef(false);
   const load = useCallback(() => {
+    if (loading.current) return;
+    loading.current = true;
     terminalApi
       .state(terminalUiId)
       .then((s) => {
@@ -83,14 +87,22 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
           forgetDeviceToken(terminalUiId);
           setPaired(false);
         } else setLoadError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        loading.current = false;
       });
   }, [terminalUiId]);
 
   useEffect(() => {
     if (!paired) return;
     load();
-    const timer = setInterval(load, POLL_MS);
-    return () => clearInterval(timer);
+    const timer = setInterval(() => document.visibilityState === "visible" && load(), POLL_MS);
+    const onVisible = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [paired, load]);
 
   // The countdown of the signed-in worker; at zero the terminal locks itself.
@@ -317,6 +329,7 @@ function StatusBadge({ m }: { m: TerminalMachine }) {
           · {clock(m.status.since)} óta
           {m.status.manual ? ` · kézzel: ${m.status.manual.setBy ?? "?"}` : ""}
         </span>
+        {m.status.manual?.blocksProduction && <span className="term-status-block">Gyártás tiltva — a darabok nem számítanak</span>}
       </span>
     </span>
   );
@@ -370,12 +383,16 @@ function MachineSheet({
   return (
     <TerminalChoiceSheet
       title={`Státusz — ${m.name}`}
-      subtitle={manual ? "A kézi állapot addig marad, amíg a gép újra nem termel, vagy le nem zárod." : "A kiválasztott állapot addig marad, amíg a gép újra nem termel."}
+      subtitle={
+        manual
+          ? "A kézi állapot addig marad, amíg le nem zárod; ha nem tiltja a gyártást, a gép első gyártási jelére is véget ér."
+          : "Ha az állapot nem tiltja a gyártást, a gép első gyártási jelére véget ér; ha tiltja, csak lezárással."
+      }
       emptyText="Nincs beállítható állapot (Admin → Status definitions)."
       choices={m.statusOptions.map((o) => ({
         key: o.code,
         label: o.label,
-        sub: o.oeeCategory === "excluded" ? "tervezett, nem rontja az OEE-t" : "leállásnak számít",
+        sub: `${o.oeeCategory === "excluded" ? "tervezett, nem rontja az OEE-t" : "leállásnak számít"}${o.blocksProduction ? " · gyártás tiltva" : ""}`,
         color: o.color,
       }))}
       footer={

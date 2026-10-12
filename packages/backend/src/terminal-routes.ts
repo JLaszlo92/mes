@@ -76,13 +76,13 @@ const HISTORY_PER_MACHINE = 10;
  * off_shift is left out: the shift calendar sets it, not the operator.
  */
 function statusOptionsFor(
-  definitions: { machineId: string | null; code: string; displayName: string; oeeCategory: string; color: string | null }[],
+  definitions: { machineId: string | null; code: string; displayName: string; oeeCategory: string; color: string | null; blocksProduction: boolean }[],
   machineId: string,
-): { code: string; label: string; oeeCategory: string; color: string | null }[] {
+): { code: string; label: string; oeeCategory: string; color: string | null; blocksProduction: boolean }[] {
   definitions = definitions.filter((d) => d.code !== "off_shift");
   const own = definitions.filter((d) => d.machineId === machineId);
   const global = definitions.filter((d) => d.machineId === null && !own.some((o) => o.code === d.code));
-  return [...own, ...global].map((d) => ({ code: d.code, label: d.displayName, oeeCategory: d.oeeCategory, color: d.color }));
+  return [...own, ...global].map((d) => ({ code: d.code, label: d.displayName, oeeCategory: d.oeeCategory, color: d.color, blocksProduction: d.blocksProduction }));
 }
 
 export default async function terminalRoutes(app: FastifyInstance): Promise<void> {
@@ -127,7 +127,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
             ? {
                 code: status.status,
                 since: status.since,
-                manual: manual ? { code: manual.statusCode, setBy: manual.setByName, setAt: manual.setAt } : null,
+                manual: manual ? { code: manual.statusCode, setBy: manual.setByName, setAt: manual.setAt, blocksProduction: manual.blocksProduction } : null,
               }
             : null,
           statusOptions: statusOptionsFor(definitions, machineId),
@@ -279,7 +279,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       actorEmail: worker.user.name,
       action: "machine_status_set",
       target: machineId,
-      details: { status: option.code, label: option.label, oeeCategory: option.oeeCategory, terminalId: terminal.id, terminal: terminal.name },
+      details: { status: option.code, label: option.label, oeeCategory: option.oeeCategory, blocksProduction: option.blocksProduction, terminalId: terminal.id, terminal: terminal.name },
       ipAddress: request.ip,
     });
     return { success: true, workerExpiresAt: worker.expiresAt };

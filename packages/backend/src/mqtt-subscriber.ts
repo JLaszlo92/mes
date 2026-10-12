@@ -5,7 +5,7 @@ import { ackTopic, EVENT_TOPIC_WILDCARD, safeParseMachineEvent } from "@mes/shar
 import type { FastifyBaseLogger } from "fastify";
 import { config } from "./config.js";
 import { insertEvent } from "./events-repository.js";
-import { decideSignal, endManualStatus, getActiveManualStatus, recordSuppressedSignal, type SignalDecision } from "./manual-status.js";
+import { decideCount, decideSignal, endManualStatus, getActiveManualStatus, recordBlockedCount, recordSuppressedSignal, type SignalDecision } from "./manual-status.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
 import { checkAndAutoCompleteWorkOrders } from "./work-order-completion-service.js";
@@ -116,20 +116,23 @@ async function handleMessage(
   }
 
   // While a status set at the terminal is active, the machine's own status events
-  // either end it (running) or are kept as signals only (manual-status.ts).
+  // either end it (running) or are kept as signals only, and its parts either end
+  // it too or, under a status that blocks production, are not counted (manual-status.ts).
   let decision: SignalDecision = "apply";
-  if (event.type === "machine_status") {
+  if (event.type === "machine_status" || event.type === "production_count") {
     try {
-      decision = decideSignal(await getActiveManualStatus(event.machineId), event);
+      const manual = await getActiveManualStatus(event.machineId);
+      decision = event.type === "machine_status" ? decideSignal(manual, event) : decideCount(manual, event);
     } catch (err) {
       ingestionHealth.recordFailure(err);
       log.error({ err }, "manual status lookup failed — NOT acking, edge agent will retry");
       return;
     }
   }
-  if (decision === "suppress" && event.type === "machine_status") {
+  if ((decision === "suppress" && event.type === "machine_status") || (decision === "block" && event.type === "production_count")) {
     try {
-      await recordSuppressedSignal(event);
+      if (event.type === "machine_status") await recordSuppressedSignal(event);
+      else await recordBlockedCount(event);
       ingestionHealth.recordSuccess();
     } catch (err) {
       ingestionHealth.recordFailure(err);
@@ -144,6 +147,10 @@ async function handleMessage(
     if (decision === "apply_and_end") {
       await endManualStatus(event.machineId, "signal_running");
       log.info({ machineId: event.machineId }, "manual status ended: the machine runs again");
+    }
+    if (decision === "count_and_run") {
+      await endManualStatus(event.machineId, "production", null, event.timestamp);
+      log.info({ machineId: event.machineId }, "manual status ended: a part was made");
     }
     const outcome = await insertEvent(event, (info) =>
       log.warn({ machineId: event.machineId, sourceEventId: event.sourceEventId, ...info }, "event timestamp is in the future — stored with the receive time"),

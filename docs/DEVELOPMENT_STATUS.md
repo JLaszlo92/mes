@@ -1707,13 +1707,29 @@ Migration **049**. Backend and frontend.
   ticket and permission **`terminal.set_status`** (new; granted once by marker `049_terminal_set_status` to Operátor,
   Karbantartó, Karbantartó supervisor, Quality operátor, Quality supervisor). Audit `machine_status_set` /
   `machine_status_ended`. The `state` response carries `status` and `statusOptions` per machine.
+- **Oct 12 evening, migration 050 — "Blocks production"** (Admin → Status definitions, a checkbox per status, also in the
+  add form; `PATCH /api/status-definitions/:id` with `blocksProduction` / `displayName` / `oeeCategory` / `color`, audit
+  `status_definition_updated` with the changes). Found live: a machine that was already running sends no new `running`
+  signal, only parts, so a manual status stayed in place while the count went up. Now, while a manual status holds:
+  - **does not block** (default): the first `running` signal **or the first part** ends it and the machine goes to
+    `running` at the part's time (`end_reason = 'production'`, a `machine_status` event with `source = "production"`); the
+    part counts.
+  - **blocks**: a `running` signal is kept as a signal only, and parts are stored as **`production_count_blocked`**
+    events: not in the rollups, shift summary, work order progress, alerts or auto-complete. The status ends only by the
+    worker (back to the last signal, e.g. `running`), another manual status or the end of the shift. The terminal badge says
+    "Gyártás tiltva — a darabok nem számítanak", the status list marks such statuses.
+  - The flag is read live from the definition (the machine's own, else the global one), so changing it also affects a
+    manual status that is already active. A part older than the manual status counts as before.
+  - Not shown yet: the number of blocked parts anywhere in the dashboard (they are in `events`).
+- **Terminal refresh**: every **2 s** (was 5 s); a request still running is not doubled, a hidden tab does not poll and
+  reloads when shown again. Measured: a change made elsewhere showed up on the screen in about 2 s.
 - **Known gap**: the downtime evaluator only opens downtime periods for `down`, so a manual status with
   `counts_as_down` (e.g. "Anyagra vár") does not create a downtime period to explain; machine history OEE does count it
   as down. To be decided whether manual `counts_as_down` statuses should open downtime periods with the reason pre-filled.
 - Tested: `decideSignal` unit test; live with a local broker: set, a `down` signal kept as signal, replace, end by worker
   (back to `down`), set again and a `running` signal ends it, wrong code / `off_shift` 400, ending twice 409, audit;
   Chromium on the terminal (badge, fault list with code, status list, manual badge kept against a `down` signal, end,
-  portrait 800×1280). `pnpm test`: backend 321.
+  portrait 800×1280). `pnpm test`: backend 321 (326 after 050).
 
 ## Practical notes for whoever (or whatever session) picks this up
 

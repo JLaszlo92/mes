@@ -146,6 +146,7 @@ export const ROUTE_PERMISSIONS: Record<string, Requirement> = {
   ),
   "GET /api/status-definitions": "admin.machines",
   "POST /api/status-definitions": "admin.machines",
+  "PATCH /api/status-definitions/:id": "admin.machines",
   "DELETE /api/status-definitions/:id": "admin.machines",
   "POST /api/fault-codes": "admin.machines",
   "DELETE /api/fault-codes/:id": "admin.machines",

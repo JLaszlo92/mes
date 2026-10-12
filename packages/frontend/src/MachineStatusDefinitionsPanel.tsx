@@ -17,6 +17,7 @@ interface StatusDefinition {
   displayName: string;
   oeeCategory: "counts_as_down" | "excluded";
   color: string | null;
+  blocksProduction: boolean;
 }
 
 export default function MachineStatusDefinitionsPanel() {
@@ -30,7 +31,9 @@ export default function MachineStatusDefinitionsPanel() {
     displayName: "",
     oeeCategory: "counts_as_down" as "counts_as_down" | "excluded",
     color: "#898781",
+    blocksProduction: false,
   });
+  const [savingId, setSavingId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const isAdmin = can("admin.machines");
@@ -72,6 +75,7 @@ export default function MachineStatusDefinitionsPanel() {
           displayName: form.displayName.trim(),
           oeeCategory: form.oeeCategory,
           color: form.color,
+          blocksProduction: form.blocksProduction,
         }),
       });
       if (res.status === 401) {
@@ -82,12 +86,41 @@ export default function MachineStatusDefinitionsPanel() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? `${res.status} ${res.statusText}`);
       }
-      setForm({ machineId: "", code: "", displayName: "", oeeCategory: "counts_as_down", color: "#898781" });
+      setForm({ machineId: "", code: "", displayName: "", oeeCategory: "counts_as_down", color: "#898781", blocksProduction: false });
       load();
     } catch (err) {
       setError(String(err));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function setBlocks(d: StatusDefinition, blocksProduction: boolean) {
+    setSavingId(d.id);
+    setError(null);
+    // Shown at once; put back if the server refuses.
+    setDefinitions((list) => list.map((x) => (x.id === d.id ? { ...x, blocksProduction } : x)));
+    try {
+      const res = await apiFetch(`${API_BASE}/api/status-definitions/${encodeURIComponent(d.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${auth?.token}` },
+        body: JSON.stringify({ blocksProduction }),
+      });
+      if (res.status === 401) {
+        logout();
+        return;
+      }
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+      }
+      const updated: StatusDefinition = await res.json();
+      setDefinitions((list) => list.map((x) => (x.id === updated.id ? updated : x)));
+    } catch (err) {
+      setDefinitions((list) => list.map((x) => (x.id === d.id ? { ...x, blocksProduction: d.blocksProduction } : x)));
+      setError(String(err));
+    } finally {
+      setSavingId(null);
     }
   }
 
@@ -127,6 +160,26 @@ export default function MachineStatusDefinitionsPanel() {
       sortValue: (d) => d.oeeCategory,
       cell: (d) => (d.oeeCategory === "counts_as_down" ? "Counts as down" : "Excluded (planned)"),
     },
+    {
+      id: "blocks",
+      header: "Blocks production",
+      sortValue: (d) => (d.blocksProduction ? 1 : 0),
+      cell: (d) =>
+        d.code === "off_shift" ? (
+          <span className="ui-field-hint">—</span>
+        ) : (
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={d.blocksProduction}
+              disabled={savingId === d.id}
+              onChange={(e) => setBlocks(d, e.target.checked)}
+              aria-label={`${d.code} blocks production`}
+            />
+            {d.blocksProduction ? "Yes — no running, no counting" : "No — first part returns to running"}
+          </label>
+        ),
+    },
   ];
 
   return (
@@ -137,6 +190,10 @@ export default function MachineStatusDefinitionsPanel() {
       </div>
       <p className="ui-field-hint" style={{ marginTop: 0 }}>
         "running" and "down" are always built in. Add any additional status your machines can report — each one needs an OEE classification.
+        <br />
+        <strong>Blocks production</strong> applies when the status is set by hand at a terminal: if it blocks, the machine stays in that status
+        and parts made meanwhile are not counted until a worker ends it; if not, the first running signal or part puts the machine back to
+        running at once.
       </p>
 
       <form onSubmit={handleSubmit} className="ui-inline-form" style={{ marginBottom: 12 }}>
@@ -166,6 +223,12 @@ export default function MachineStatusDefinitionsPanel() {
         </Field>
         <Field label="Color">
           <input type="color" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} style={{ width: 50, height: 32, padding: 2, border: "1px solid var(--c-border-strong)", borderRadius: 6 }} />
+        </Field>
+        <Field label="Blocks production">
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, height: 32 }}>
+            <input type="checkbox" checked={form.blocksProduction} onChange={(e) => setForm((f) => ({ ...f, blocksProduction: e.target.checked }))} />
+            No running, no counting
+          </label>
         </Field>
         <button type="submit" className="ui-btn ui-btn-primary" disabled={submitting}>
           {submitting ? "Adding…" : "Add status"}

@@ -73,6 +73,7 @@ import {
   listStatusDefinitions,
   createStatusDefinition,
   deleteStatusDefinition,
+  updateStatusDefinition,
   isForeignKeyViolation as isStatusDefForeignKeyViolation,
   isUniqueViolation as isStatusDefUniqueViolation,
 } from "./machine-status-definitions-repository.js";
@@ -861,7 +862,7 @@ export async function buildServer(): Promise<FastifyInstance> {
 );
 
 app.post<{
-  Body: { machineId?: string; code: string; displayName: string; oeeCategory: "counts_as_down" | "excluded"; color?: string };
+  Body: { machineId?: string; code: string; displayName: string; oeeCategory: "counts_as_down" | "excluded"; color?: string; blocksProduction?: boolean };
 }>("/api/status-definitions", async (request, reply) => {
   const { code, displayName, oeeCategory } = request.body;
   if (!code || !displayName || !oeeCategory) {
@@ -871,6 +872,10 @@ app.post<{
   if (code === "running" || code === "down") {
     reply.code(400);
     return { error: "'running' and 'down' are built-in and cannot be redefined" };
+  }
+  if (request.body.blocksProduction !== undefined && typeof request.body.blocksProduction !== "boolean") {
+    reply.code(400);
+    return { error: "blocksProduction must be true or false" };
   }
   try {
     const def = await createStatusDefinition(request.body);
@@ -894,6 +899,52 @@ app.post<{
     }
     throw err;
   }
+});
+
+app.patch<{
+  Params: { id: string };
+  Body: { displayName?: unknown; oeeCategory?: unknown; color?: unknown; blocksProduction?: unknown };
+}>("/api/status-definitions/:id", async (request, reply) => {
+  const body = request.body ?? {};
+  const { displayName, oeeCategory, color, blocksProduction } = body;
+  if (displayName !== undefined && (typeof displayName !== "string" || !displayName.trim())) {
+    reply.code(400);
+    return { error: "displayName must be a non-empty text" };
+  }
+  if (oeeCategory !== undefined && oeeCategory !== "counts_as_down" && oeeCategory !== "excluded") {
+    reply.code(400);
+    return { error: "oeeCategory must be counts_as_down or excluded" };
+  }
+  if (color !== undefined && color !== null && (typeof color !== "string" || !/^#[0-9a-fA-F]{6}$/.test(color))) {
+    reply.code(400);
+    return { error: "color must be #rrggbb" };
+  }
+  if (blocksProduction !== undefined && typeof blocksProduction !== "boolean") {
+    reply.code(400);
+    return { error: "blocksProduction must be true or false" };
+  }
+  const updated = await updateStatusDefinition(request.params.id, {
+    displayName: typeof displayName === "string" ? displayName.trim() : undefined,
+    oeeCategory: oeeCategory as "counts_as_down" | "excluded" | undefined,
+    color: color as string | null | undefined,
+    blocksProduction: blocksProduction as boolean | undefined,
+  });
+  if (!updated) {
+    reply.code(404);
+    return { error: "unknown status definition" };
+  }
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  for (const key of ["displayName", "oeeCategory", "color", "blocksProduction"] as const) {
+    if (updated.before[key] !== updated.after[key]) changes[key] = { from: updated.before[key], to: updated.after[key] };
+  }
+  await recordAuditEvent({
+    actorId: request.user!.id,
+    action: "status_definition_updated",
+    target: request.params.id,
+    details: { code: updated.after.code, changes },
+    ipAddress: request.ip,
+  });
+  return updated.after;
 });
 
 app.delete<{ Params: { id: string } }>(

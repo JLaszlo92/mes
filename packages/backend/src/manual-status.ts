@@ -9,8 +9,11 @@ import { stateStore } from "./state.js";
  * Kézzel beállított gépállapot (terminál → "Státusz").
  *
  * Szabály: a kézi állapot addig érvényes, amíg
- *  - a gép jele újra "running" lesz (a gép termel: egy elfelejtett
- *    "Beállítás" így nem maradhat bent gyártás közben),
+ *  - a gép újra termel: "running" jel vagy egy darab érkezik (egy
+ *    elfelejtett "Beállítás" így nem maradhat bent gyártás közben) —
+ *    KIVÉVE, ha az állapot blokkolja a gyártást (Status definitions →
+ *    blocks_production): akkor a running jel csak jelként tárolódik, a
+ *    darabok pedig production_count_blocked eseményként (nem számítanak),
  *  - a dolgozó le nem zárja (a gép jelére áll vissza),
  *  - a műszak véget nem ér (off-shift),
  *  - vagy egy másik kézi állapot le nem váltja.
@@ -27,6 +30,8 @@ export interface ManualStatus {
   setByName: string | null;
   setAt: string;
   signalStatus: string | null;
+  /** From the status definition (the machine's own, else the global one), read live. */
+  blocksProduction: boolean;
 }
 
 type Row = {
@@ -36,6 +41,7 @@ type Row = {
   set_by_name: string | null;
   set_at: string | Date;
   signal_status: string | null;
+  blocks_production: boolean | null;
 };
 
 function toManual(r: Row): ManualStatus {
@@ -46,11 +52,19 @@ function toManual(r: Row): ManualStatus {
     setByName: r.set_by_name,
     setAt: new Date(r.set_at).toISOString(),
     signalStatus: r.signal_status,
+    blocksProduction: r.blocks_production === true,
   };
 }
 
 export async function getActiveManualStatus(machineId: string): Promise<ManualStatus | undefined> {
-  const result = await pool.query<Row>(`SELECT * FROM machine_manual_status WHERE machine_id = $1 AND ended_at IS NULL`, [machineId]);
+  const result = await pool.query<Row>(
+    `SELECT m.*,
+            (SELECT d.blocks_production FROM machine_status_definitions d
+             WHERE d.code = m.status_code AND (d.machine_id = m.machine_id OR d.machine_id IS NULL)
+             ORDER BY d.machine_id NULLS LAST LIMIT 1) AS blocks_production
+     FROM machine_manual_status m WHERE m.machine_id = $1 AND m.ended_at IS NULL`,
+    [machineId],
+  );
   return result.rows[0] ? toManual(result.rows[0]) : undefined;
 }
 
@@ -61,21 +75,36 @@ export type SignalDecision =
   | "history"
   /** The machine runs again: the manual status ends and the signal is the status. */
   | "apply_and_end"
+  /** A part while a non-blocking manual status holds: it ends, the machine goes to running, the part counts. */
+  | "count_and_run"
+  /** A part while a blocking manual status holds: stored as production_count_blocked, not counted. */
+  | "block"
   /** Kept as a signal only (machine_status_signal); the manual status stays. */
   | "suppress";
 
 /** Pure: what a machine_status event from the machine means while a manual status may be active. */
-export function decideSignal(manual: Pick<ManualStatus, "setAt"> | undefined, event: { status: string; timestamp: string }): SignalDecision {
+export function decideSignal(
+  manual: Pick<ManualStatus, "setAt" | "blocksProduction"> | undefined,
+  event: { status: string; timestamp: string },
+): SignalDecision {
   if (!manual) return "apply";
   if (new Date(event.timestamp).getTime() <= new Date(manual.setAt).getTime()) return "history";
-  if (event.status === "running") return "apply_and_end";
+  if (event.status === "running" && !manual.blocksProduction) return "apply_and_end";
   return "suppress";
 }
 
-async function emitStatus(machineId: string, status: string, extra: Record<string, unknown>): Promise<MachineEvent> {
+/** Pure: what a production_count event means while a manual status may be active. */
+export function decideCount(manual: Pick<ManualStatus, "setAt" | "blocksProduction"> | undefined, event: { timestamp: string }): SignalDecision {
+  if (!manual) return "apply";
+  // A buffered part from before the manual status was set: it was made then, it counts.
+  if (new Date(event.timestamp).getTime() <= new Date(manual.setAt).getTime()) return "apply";
+  return manual.blocksProduction ? "block" : "count_and_run";
+}
+
+async function emitStatus(machineId: string, status: string, extra: Record<string, unknown>, timestamp?: string): Promise<MachineEvent> {
   const event = {
     machineId,
-    timestamp: new Date().toISOString(),
+    timestamp: timestamp ?? new Date().toISOString(),
     sourceEventId: randomUUID(),
     type: "machine_status" as const,
     status,
@@ -133,12 +162,14 @@ export async function setManualStatus(input: { machineId: string; statusCode: st
 /**
  * Ends the active manual status. For the operator and the end of a shift the
  * machine goes back to what its signal last said (a machine_status event);
- * for "signal_running" the incoming running event is that status already.
+ * for "signal_running" the incoming running event is that status already;
+ * for "production" (a part arrived) the machine goes to running at the part's time.
  */
 export async function endManualStatus(
   machineId: string,
-  reason: "operator" | "signal_running" | "off_shift",
+  reason: "operator" | "signal_running" | "production" | "off_shift",
   userId: string | null = null,
+  at?: string,
 ): Promise<ManualStatus | undefined> {
   const result = await pool.query<Row>(
     `UPDATE machine_manual_status SET ended_at = now(), end_reason = $2, ended_by = $3
@@ -148,6 +179,11 @@ export async function endManualStatus(
   const ended = result.rows[0] ? toManual(result.rows[0]) : undefined;
   if (ended && reason === "operator" && ended.signalStatus) {
     await emitStatus(machineId, ended.signalStatus, { source: "manual_end" });
+  }
+  if (ended && reason === "production") {
+    // Not earlier than the manual status itself, so the timeline stays in order.
+    const ts = at && new Date(at).getTime() > new Date(ended.setAt).getTime() ? at : new Date().toISOString();
+    await emitStatus(machineId, "running", { source: "production" }, ts);
   }
   return ended;
 }
@@ -160,6 +196,11 @@ export async function recordSuppressedSignal(event: MachineEvent & { type: "mach
     await pool.query(`UPDATE machine_manual_status SET signal_status = $2 WHERE machine_id = $1 AND ended_at IS NULL`, [event.machineId, event.status]);
   }
   return outcome;
+}
+
+/** A part made while a blocking manual status holds: kept as data, never counted. */
+export async function recordBlockedCount(event: MachineEvent & { type: "production_count" }): Promise<"inserted" | "duplicate"> {
+  return insertEvent({ ...event, type: "production_count_blocked" } as unknown as MachineEvent);
 }
 
 /** The current status of a machine and since when (the latest machine_status event). */
