@@ -153,6 +153,7 @@ export default function WorkInstructionsPanel() {
         <p className="ui-message ui-message-info">Loading work instructions…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, docFilter] }}
           ariaLabel="Work instructions"
           rows={filtered}
           columns={columns}

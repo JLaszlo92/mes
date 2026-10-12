@@ -376,6 +376,7 @@ export default function MachineRegistryPanel() {
         <p className="ui-message ui-message-info">Loading machines…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, siteId, areaId, lineId, status] }}
           ariaLabel="Machines"
           rows={filtered}
           columns={columns}

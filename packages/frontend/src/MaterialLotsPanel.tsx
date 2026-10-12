@@ -137,6 +137,7 @@ export default function MaterialLotsPanel() {
         <p className="ui-message ui-message-info">Loading material lots…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, useFilter] }}
           ariaLabel="Material lots"
           rows={filtered}
           columns={columns}

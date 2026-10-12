@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import { formatDateTime } from "./ui/format.js";
 
 interface DowntimePeriod {
   id: string;
@@ -34,18 +36,6 @@ interface DowntimeSummary {
 
 const SUMMARY_HOURS = 24;
 
-const secondaryButtonStyle = {
-  padding: "8px 14px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 8,
-  background: "#fff",
-  color: "#0b0b0b",
-  cursor: "pointer",
-  fontSize: 13,
-  fontWeight: 600,
-};
-const cell = { padding: "6px 10px", fontSize: 13, borderBottom: "1px solid #f0efeb", textAlign: "right" as const };
-const headCell = { ...cell, fontSize: 11, color: "#898781", fontWeight: 600, borderBottom: "1px solid #e1e0d9" };
 
 function formatDuration(seconds: number): string {
   const total = Math.round(seconds);
@@ -94,7 +84,8 @@ function ThresholdInput({ summary, onSave }: { summary: DowntimeSummary; onSave:
       onKeyDown={(e) => {
         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
       }}
-      style={{ width: 64, padding: 4, border: "1px solid #e1e0d9", borderRadius: 6, textAlign: "right" }}
+      className="ui-input num"
+      style={{ width: 72, height: 28, textAlign: "right" }}
       title="Micro-stop threshold in seconds — shorter stops are summarized, not listed for explanation"
     />
   );
@@ -109,6 +100,7 @@ export default function DowntimePeriodsPanel() {
   const [error, setError] = useState<string | null>(null);
   /** A mentés alatt álló periódus — addig a gombjai zárolva vannak (dupla kattintás ellen). */
   const [explainingId, setExplainingId] = useState<string | null>(null);
+  const [machineFilter, setMachineFilter] = useState("");
 
   const canEditThreshold = auth?.role === "admin" || auth?.role === "manager";
 
@@ -167,88 +159,114 @@ export default function DowntimePeriodsPanel() {
     await load();
   }
 
-  return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Downtime — last {SUMMARY_HOURS} hours</h2>
-      <p style={{ fontSize: 12, color: "#898781" }}>
-        Stops shorter than a machine's micro-stop threshold are counted here but don't need a reason.
-        Longer stops are listed below for explanation.
-      </p>
+  const scopedSummary = summary.filter((s) => isInScope(s.machineId));
+  const scopedPeriods = periods.filter((p) => isInScope(p.machineId) && (machineFilter === "" || p.machineId === machineFilter));
+  const periodMachines = [...new Map(periods.filter((p) => isInScope(p.machineId)).map((p) => [p.machineId, p.machineName])).entries()].sort((a, b) =>
+    a[1].localeCompare(b[1]),
+  );
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
+  const summaryColumns: Column<DowntimeSummary>[] = [
+    { id: "machine", header: "Machine", sortValue: (s) => s.machineName, cell: (s) => s.machineName },
+    { id: "stops", header: "Stops", align: "right", sortValue: (s) => s.stops, cell: (s) => s.stops },
+    { id: "stopTime", header: "Stop time", align: "right", sortValue: (s) => s.stopSeconds, cell: (s) => formatDuration(s.stopSeconds) },
+    { id: "micro", header: "Micro-stops", align: "right", sortValue: (s) => s.microStops, cell: (s) => s.microStops },
+    { id: "microTime", header: "Micro-stop time", align: "right", sortValue: (s) => s.microStopSeconds, cell: (s) => formatDuration(s.microStopSeconds) },
+    {
+      id: "unexplained",
+      header: "To explain",
+      align: "right",
+      sortValue: (s) => s.unexplained,
+      cell: (s) => (s.unexplained > 0 ? <span className="ui-pill ui-pill-warning">{s.unexplained}</span> : 0),
+    },
+    {
+      id: "threshold",
+      header: "Threshold (s)",
+      align: "right",
+      sortValue: (s) => s.microStopThresholdSeconds,
+      cell: (s) => (canEditThreshold ? <ThresholdInput summary={s} onSave={(seconds) => saveThreshold(s.machineId, seconds)} /> : s.microStopThresholdSeconds),
+    },
+  ];
 
-      {summary.length > 0 && (
-        <div style={{ overflowX: "auto", border: "1px solid #e1e0d9", borderRadius: 10 }}>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
-            <thead>
-              <tr>
-                <th style={{ ...headCell, textAlign: "left" }}>Machine</th>
-                <th style={headCell}>Stops</th>
-                <th style={headCell}>Stop time</th>
-                <th style={headCell}>Micro-stops</th>
-                <th style={headCell}>Micro-stop time</th>
-                <th style={headCell}>To explain</th>
-                <th style={headCell}>Threshold (s)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.filter((s) => isInScope(s.machineId)).map((s) => (
-                <tr key={s.machineId}>
-                  <td style={{ ...cell, textAlign: "left", fontWeight: 600 }}>{s.machineName}</td>
-                  <td style={cell}>{s.stops}</td>
-                  <td style={cell}>{formatDuration(s.stopSeconds)}</td>
-                  <td style={cell}>{s.microStops}</td>
-                  <td style={cell}>{formatDuration(s.microStopSeconds)}</td>
-                  <td style={{ ...cell, color: s.unexplained > 0 ? "#b36b00" : undefined, fontWeight: s.unexplained > 0 ? 600 : 400 }}>
-                    {s.unexplained}
-                  </td>
-                  <td style={cell}>
-                    {canEditThreshold ? (
-                      <ThresholdInput summary={s} onSave={(seconds) => saveThreshold(s.machineId, seconds)} />
-                    ) : (
-                      s.microStopThresholdSeconds
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <h3 style={{ fontSize: 14, marginTop: 24 }}>Unexplained downtime</h3>
-      {periods.length === 0 && <p style={{ color: "#898781" }}>No unexplained downtime.</p>}
-
-      {periods.filter((p) => isInScope(p.machineId)).map((p) => {
+  const periodColumns: Column<DowntimePeriod>[] = [
+    { id: "machine", header: "Machine", sortValue: (p) => p.machineName, cell: (p) => p.machineName },
+    { id: "started", header: "Started", sortValue: (p) => p.startedAt, cell: (p) => formatDateTime(p.startedAt) },
+    { id: "ended", header: "Ended", sortValue: (p) => p.endedAt, cell: (p) => formatDateTime(p.endedAt) },
+    { id: "duration", header: "Duration", align: "right", sortValue: (p) => p.durationSeconds, cell: (p) => formatDuration(p.durationSeconds) },
+    {
+      id: "reason",
+      header: "Reason",
+      cell: (p) => {
         const codes = faultCodes.filter((fc) => fc.machineId === p.machineId && fc.isActive);
-        const busy = explainingId !== null;
+        if (explainingId === p.id) return <span className="ui-sub">Saving…</span>;
+        if (codes.length === 0) return <span className="ui-sub">No fault codes for this machine</span>;
         return (
-          <div key={p.id} style={{ border: "1px solid #eda100", borderRadius: 10, padding: 12, marginTop: 8, opacity: explainingId === p.id ? 0.6 : 1 }}>
-            <div style={{ display: "flex", gap: 16, alignItems: "center" }}>
-              <div style={{ fontWeight: 600 }}>{p.machineName}</div>
-              <div style={{ fontSize: 12, color: "#898781" }}>
-                {new Date(p.startedAt).toLocaleString()} — {formatDuration(p.durationSeconds)}
-              </div>
-              {explainingId === p.id && <span style={{ fontSize: 12, color: "#898781" }}>Saving…</span>}
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
-              {codes.map((fc) => (
-                <button
-                  key={fc.id}
-                  style={{ ...secondaryButtonStyle, cursor: busy ? "progress" : "pointer" }}
-                  disabled={busy}
-                  onClick={() => void explain(p.id, fc.id)}
-                >
-                  {fc.code} — {fc.name}
-                </button>
-              ))}
-              {codes.length === 0 && (
-                <span style={{ fontSize: 12, color: "#898781" }}>No fault codes configured for this machine.</span>
-              )}
-            </div>
-          </div>
+          <select
+            className="ui-select"
+            value=""
+            disabled={explainingId !== null}
+            onChange={(e) => {
+              if (e.target.value) void explain(p.id, e.target.value);
+            }}
+            aria-label={`Reason for the stop of ${p.machineName} at ${formatDateTime(p.startedAt)}`}
+          >
+            <option value="">Choose a reason…</option>
+            {codes.map((fc) => (
+              <option key={fc.id} value={fc.id}>
+                {fc.code} — {fc.name}
+              </option>
+            ))}
+          </select>
         );
-      })}
-    </section>
+      },
+    },
+  ];
+
+  return (
+    <>
+      <section className="ui-panel" style={{ marginTop: 8 }}>
+        <div className="ui-panel-head">
+          <h2 className="ui-panel-title">Downtime — last {SUMMARY_HOURS} hours</h2>
+          <span className="ui-panel-count num">{scopedSummary.length}</span>
+        </div>
+        <p className="ui-field-hint" style={{ marginTop: 0 }}>
+          Stops shorter than a machine's micro-stop threshold are counted here but don't need a reason. Longer stops are listed below for explanation.
+        </p>
+        {error && <p className="ui-message ui-message-error">{error}</p>}
+        <DataTable
+          ariaLabel="Downtime summary"
+          rows={scopedSummary}
+          columns={summaryColumns}
+          getRowId={(s) => s.machineId}
+          initialSort={{ columnId: "unexplained", dir: "desc" }}
+          emptyText="No machines in the current scope."
+        />
+      </section>
+
+      <section className="ui-panel" style={{ marginTop: 24 }}>
+        <div className="ui-panel-head">
+          <h2 className="ui-panel-title">Unexplained downtime</h2>
+          <span className="ui-panel-count num">{scopedPeriods.length}</span>
+        </div>
+        <div className="ui-toolbar">
+          <select className="ui-select" value={machineFilter} onChange={(e) => setMachineFilter(e.target.value)} aria-label="Machine">
+            <option value="">All machines</option>
+            {periodMachines.map(([id, name]) => (
+              <option key={id} value={id}>
+                {name}
+              </option>
+            ))}
+          </select>
+        </div>
+        <DataTable
+          ariaLabel="Unexplained downtime"
+          paging={{ resetKey: [machineFilter] }}
+          rows={scopedPeriods}
+          columns={periodColumns}
+          getRowId={(p) => p.id}
+          initialSort={{ columnId: "started", dir: "desc" }}
+          emptyText="No unexplained downtime."
+        />
+      </section>
+    </>
   );
 }

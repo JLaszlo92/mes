@@ -56,7 +56,8 @@ export default function AlertHistoryPanel() {
       </div>
       {list.error && <p className="ui-message ui-message-error">{list.error}</p>}
       {details && <AlertDetailsDrawer alert={details} onClose={() => setDetails(null)} />}
-      <DataTable ariaLabel="Alert history" onRowClick={setDetails} rows={list.rows} columns={columns} getRowId={(a) => a.id} emptyText={list.loading ? "Loading…" : "No alerts in this period."} />
+      <DataTable
+        paging={false} ariaLabel="Alert history" onRowClick={setDetails} rows={list.rows} columns={columns} getRowId={(a) => a.id} emptyText={list.loading ? "Loading…" : "No alerts in this period."} />
       <Pager offset={list.offset} limit={list.limit} total={list.total} onChange={list.setPage} />
     </section>
   );

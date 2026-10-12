@@ -204,6 +204,7 @@ export default function LotsPanel() {
         <p className="ui-message ui-message-info">Loading lots…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, period, withoutMaterial] }}
           ariaLabel="Lots"
           rows={filtered}
           columns={columns}

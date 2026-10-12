@@ -107,6 +107,7 @@ export default function FaultReportsPanel() {
       {list.error && <p className="ui-message ui-message-error">{list.error}</p>}
       {notice && <p className="ui-message ui-message-info">{notice}</p>}
       <DataTable
+        paging={false}
         ariaLabel="Fault reports"
         rows={list.rows}
         columns={columns}

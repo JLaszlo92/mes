@@ -1609,6 +1609,26 @@ No migration. Deploy: build backend and frontend, restart `mes-backend`, copy `d
 - Not done: quantities (stock stays in the ERP), more than one finished lot per work order (per shift / per day), a
   label print of the lot number, server-side paging of lots (client-side is fine for the pilot volume).
 
+## Every list table pages and scrolls like the audit log — Oct 12
+
+Frontend only. `ui/DataTable.tsx` now pages **client-side by default**: 50 rows, the same `ui/Pager.tsx` as the
+server-paged lists (rows per page 25 / 50 / 100 / 200, remembered per table in `localStorage` under
+`mes-page-size:<ariaLabel>`), back to page 1 when the sort or the caller's `paging.resetKey` (its filter state) changes,
+and clamped to the last page when rows disappear (a 15 s refresh never jumps the page). The table body scrolls inside
+`.ui-table-wrap` (70vh) with a sticky header; changing the page scrolls back to the top. The header checkbox selects the
+rows of the current page. The server-paged lists (audit log, alert history, fault reports) pass `paging={false}` and keep
+their own pager. The pager is hidden while a table is empty.
+
+Moved onto `DataTable` (they were card lists or a hand-made table): **Downtime** (summary per machine with the threshold
+input in the row, and unexplained stops with a machine filter and a "Choose a reason…" select instead of a row of
+buttons), **Fault codes**, **Status definitions**, **Terminals** (the kiosk address is a link). Removing a fault code,
+status or terminal now asks first. Not tables, left as they are: Overview tiles, Gantt, Machine history (timeline),
+Shift summary (cards), Downtime Pareto (bars), Edge nodes (cards with channels), Sites/areas/lines (three columns),
+Shifts and calendars.
+
+**New list pages:** use `DataTable` and pass `paging={{ resetKey: [filters…] }}`; only a server-paged list passes
+`paging={false}` and renders `Pager` itself.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

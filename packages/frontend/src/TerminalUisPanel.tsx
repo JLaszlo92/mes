@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
+import DataTable, { type Column } from "./ui/DataTable.js";
+import Field from "./ui/Field.js";
 
 interface Machine {
   id: string;
@@ -13,18 +15,6 @@ interface TerminalUi {
   machineIds: string[];
   machineNames: string[];
 }
-
-const inputStyle = { padding: 6, border: "1px solid #e1e0d9", borderRadius: 6 };
-const buttonStyle = {
-  padding: "6px 12px",
-  border: "1px solid #0b0b0b",
-  borderRadius: 6,
-  background: "#0b0b0b",
-  color: "#fff",
-  cursor: "pointer",
-  fontSize: 13,
-};
-const dangerButtonStyle = { ...buttonStyle, background: "#fff", color: "#d03b3b", borderColor: "#d03b3b" };
 
 export default function TerminalUisPanel() {
   const { auth, logout } = useAuth();
@@ -103,44 +93,67 @@ export default function TerminalUisPanel() {
     }
   }
 
-  return (
-    <section style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16 }}>Terminal UIs</h2>
+  const columns: Column<TerminalUi>[] = [
+    { id: "name", header: "Name", sortValue: (ui) => ui.name, cell: (ui) => ui.name },
+    {
+      id: "machines",
+      header: "Machines",
+      sortValue: (ui) => ui.machineNames.length,
+      cell: (ui) => (ui.machineNames.length === 0 ? <span className="ui-sub">—</span> : <span title={ui.machineNames.join(", ")}>{ui.machineNames.join(", ")}</span>),
+    },
+    {
+      id: "url",
+      header: "Kiosk address",
+      cell: (ui) => (
+        <a href={`/terminal/${ui.id}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+          /terminal/{ui.id}
+        </a>
+      ),
+    },
+  ];
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start", marginBottom: 16 }}>
-        <label style={{ fontSize: 12 }}>
-          Name<br />
-          <input required value={name} onChange={(e) => setName(e.target.value)} placeholder="Line 1 terminal" style={inputStyle} />
-        </label>
-        <div style={{ fontSize: 12 }}>
-          Machines<br />
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 4 }}>
+  return (
+    <section className="ui-panel" style={{ marginTop: 8 }}>
+      <div className="ui-panel-head">
+        <h2 className="ui-panel-title">Terminal UIs</h2>
+        <span className="ui-panel-count num">{uis.length}</span>
+      </div>
+
+      <form onSubmit={handleSubmit} className="ui-inline-form" style={{ marginBottom: 12, alignItems: "flex-start" }}>
+        <Field label="Name">
+          <input className="ui-input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Line 1 terminal" />
+        </Field>
+        <fieldset style={{ border: "none", margin: 0, padding: 0, minWidth: 0 }}>
+          <legend className="ui-field-label">Machines</legend>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", maxWidth: 640, marginTop: 4 }}>
             {machines.map((m) => (
-              <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <label key={m.id} className="ui-check">
                 <input type="checkbox" checked={selectedMachineIds.includes(m.id)} onChange={() => toggleMachine(m.id)} />
                 {m.name}
               </label>
             ))}
           </div>
-        </div>
-        <button type="submit" disabled={submitting} style={{ ...buttonStyle, alignSelf: "flex-end" }}>
+        </fieldset>
+        <button type="submit" className="ui-btn ui-btn-primary" disabled={submitting} style={{ alignSelf: "flex-end" }}>
           {submitting ? "Adding…" : "Add terminal UI"}
         </button>
       </form>
 
-      {error && <p style={{ color: "#d03b3b", fontSize: 13 }}>{error}</p>}
-      {uis.length === 0 && <p style={{ color: "#898781" }}>No terminal UIs yet.</p>}
+      {error && <p className="ui-message ui-message-error">{error}</p>}
 
-      {uis.map((ui) => (
-        <div key={ui.id} style={{ border: "1px solid #e1e0d9", borderRadius: 10, padding: 12, marginTop: 8, display: "flex", gap: 20, alignItems: "center" }}>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Name</div><div style={{ fontWeight: 600 }}>{ui.name}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>Machines</div><div>{ui.machineNames.join(", ") || "—"}</div></div>
-          <div><div style={{ fontSize: 12, color: "#898781" }}>URL</div><code style={{ fontSize: 12 }}>/terminal/{ui.id}</code></div>
-          <button type="button" onClick={() => remove(ui.id)} style={{ ...dangerButtonStyle, marginLeft: "auto" }}>
+      <DataTable
+        ariaLabel="Terminal UIs"
+        rows={uis}
+        columns={columns}
+        getRowId={(ui) => ui.id}
+        initialSort={{ columnId: "name", dir: "asc" }}
+        rowActions={(ui) => (
+          <button type="button" className="ui-btn ui-btn-small ui-btn-danger" onClick={() => window.confirm(`Remove terminal UI ${ui.name}? Its kiosk address stops working.`) && void remove(ui.id)}>
             Remove
           </button>
-        </div>
-      ))}
+        )}
+        emptyText="No terminal UIs yet."
+      />
     </section>
   );
 }

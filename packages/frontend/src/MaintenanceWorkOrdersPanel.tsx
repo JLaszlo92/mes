@@ -231,6 +231,7 @@ export default function MaintenanceWorkOrdersPanel() {
         <p className="ui-message ui-message-info">Loading maintenance work orders…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, status, machineFilter, planFilter] }}
           ariaLabel="Maintenance work orders"
           rows={filtered}
           columns={columns}

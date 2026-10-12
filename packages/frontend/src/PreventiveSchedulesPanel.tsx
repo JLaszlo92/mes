@@ -97,6 +97,7 @@ export default function PreventiveSchedulesPanel() {
       </div>
       {error && <p className="ui-message ui-message-error">{error}</p>}
       <DataTable
+          paging={{ resetKey: [query] }}
         ariaLabel="Preventive schedules"
         rows={rows}
         columns={columns}

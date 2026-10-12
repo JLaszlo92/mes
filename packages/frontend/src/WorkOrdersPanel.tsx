@@ -287,6 +287,7 @@ export default function WorkOrdersPanel() {
         <p className="ui-message ui-message-info">Loading work orders…</p>
       ) : (
         <DataTable
+          paging={{ resetKey: [query, status, machineFilter, lateOnly] }}
           ariaLabel="Work orders"
           rows={filtered}
           columns={columns}

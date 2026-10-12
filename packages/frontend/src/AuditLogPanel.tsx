@@ -145,6 +145,7 @@ export default function AuditLogPanel() {
 
       {list.error && <p className="ui-message ui-message-error">{list.error}</p>}
       <DataTable
+        paging={false}
         ariaLabel="Audit log"
         rows={list.rows}
         columns={columns}

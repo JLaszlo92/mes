@@ -1,4 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Pager from "./Pager.js";
 
 /**
  * Közös táblázat minden listához (gépek, és a többi panel fokozatosan).
@@ -11,8 +12,12 @@ import { useMemo, useState, type ReactNode } from "react";
  * adja át. Így ugyanez a komponens működik kliensoldali szűréssel (néhány száz
  * gép) és később szerveroldali lapozással (audit log, leállások) is.
  *
- * Nagyon sok sornál (több ezer) virtualizáció kell majd — addig a sima
- * render gyorsabb és egyszerűbb.
+ * Lapozás: alapból kliensoldali, 50 soros oldalakkal, ugyanazzal a lapozóval
+ * (ui/Pager.tsx), mint a szerveroldalon lapozott listák (audit log, riasztás-
+ * előzmények, hibajelentések) — azok `paging={false}`-t adnak, és maguk
+ * rakják alá a Pagert. A választott oldalméretet táblázatonként megjegyzi
+ * (localStorage, az ariaLabel a kulcs). A táblázat magassága korlátos
+ * (.ui-table-wrap, 70vh), a fejléc görgetéskor fent marad.
  */
 
 export interface Column<T> {
@@ -40,6 +45,23 @@ interface DataTableProps<T> {
   initialSort?: SortState;
   emptyText?: ReactNode;
   ariaLabel: string;
+  /**
+   * false: no paging here (the caller pages on the server). Otherwise
+   * `resetKey` sends the table back to the first page when it changes; pass
+   * the filter state, so a new search does not land on page 4 of the result.
+   */
+  paging?: false | { resetKey?: unknown; pageSize?: number };
+}
+
+const PAGE_SIZES = [25, 50, 100, 200];
+
+function storedPageSize(key: string, fallback: number): number {
+  try {
+    const n = Number(localStorage.getItem(key));
+    return PAGE_SIZES.includes(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
@@ -62,8 +84,17 @@ export default function DataTable<T>({
   initialSort = null,
   emptyText = "Nothing to show.",
   ariaLabel,
+  paging = {},
 }: DataTableProps<T>) {
   const [sort, setSort] = useState<SortState>(initialSort);
+  const sizeKey = `mes-page-size:${ariaLabel}`;
+  const [limit, setLimit] = useState(() => (paging ? storedPageSize(sizeKey, paging.pageSize ?? 50) : Infinity));
+  const [offset, setOffset] = useState(0);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // New filters or another sort order: back to the first page.
+  const resetKey = paging ? JSON.stringify(paging.resetKey ?? null) : "";
+  useEffect(() => setOffset(0), [resetKey, sort?.columnId, sort?.dir]);
 
   const sortedRows = useMemo(() => {
     if (!sort) return rows;
@@ -81,8 +112,26 @@ export default function DataTable<T>({
     });
   }, [rows, columns, sort]);
 
+  // Rows vanished (a refresh, a filter): stay on the last page that still exists.
+  const total = sortedRows.length;
+  const safeOffset = !paging || offset < total ? offset : Math.max(0, Math.floor((total - 1) / limit) * limit);
+  const pageRows = paging ? sortedRows.slice(safeOffset, safeOffset + limit) : sortedRows;
+
+  function changePage(next: { offset: number; limit: number }) {
+    setOffset(next.offset);
+    if (next.limit !== limit) {
+      setLimit(next.limit);
+      try {
+        localStorage.setItem(sizeKey, String(next.limit));
+      } catch {
+        // A blocked storage only costs remembering the choice.
+      }
+    }
+    wrapRef.current?.scrollTo({ top: 0 });
+  }
+
   const selectable = selected !== undefined && onSelectedChange !== undefined;
-  const visibleIds = sortedRows.map(getRowId);
+  const visibleIds = pageRows.map(getRowId);
   const selectedVisible = selectable ? visibleIds.filter((id) => selected.has(id)).length : 0;
   const allSelected = selectable && visibleIds.length > 0 && selectedVisible === visibleIds.length;
 
@@ -114,7 +163,8 @@ export default function DataTable<T>({
   const colSpan = columns.length + (selectable ? 1 : 0) + (rowActions ? 1 : 0);
 
   return (
-    <div className="ui-table-wrap">
+    <>
+    <div className="ui-table-wrap" ref={wrapRef}>
       <table className="ui-table" aria-label={ariaLabel}>
         <thead>
           <tr>
@@ -157,14 +207,14 @@ export default function DataTable<T>({
           </tr>
         </thead>
         <tbody>
-          {sortedRows.length === 0 && (
+          {pageRows.length === 0 && (
             <tr>
               <td colSpan={colSpan} className="ui-table-empty">
                 {emptyText}
               </td>
             </tr>
           )}
-          {sortedRows.map((row) => {
+          {pageRows.map((row) => {
             const id = getRowId(row);
             const isSelected = selectable && selected.has(id);
             return (
@@ -200,5 +250,7 @@ export default function DataTable<T>({
         </tbody>
       </table>
     </div>
+    {paging && total > 0 && <Pager offset={safeOffset} limit={limit} total={total} onChange={changePage} pageSizes={PAGE_SIZES} />}
+    </>
   );
 }
