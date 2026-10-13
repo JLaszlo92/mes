@@ -1,3 +1,4 @@
+import { goodCountSql, scrapCountSql } from "./count-sql.js";
 import type { FastifyBaseLogger } from "fastify";
 import { pool } from "./db.js";
 
@@ -21,8 +22,8 @@ export async function recomputeProductionCounts(from: Date, to?: Date): Promise<
     SELECT
       e.machine_id,
       date_trunc('hour', e."timestamp") AS bucket_start,
-      COUNT(*) FILTER (WHERE e.payload->>'result' = 'good'),
-      COUNT(*) FILTER (WHERE e.payload->>'result' = 'scrap'),
+      ${goodCountSql("e")},
+      ${scrapCountSql("e")},
       now()
     FROM events e
     JOIN machines m ON m.id = e.machine_id

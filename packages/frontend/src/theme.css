@@ -3521,3 +3521,127 @@ body {
 .tx-worker-text {
   white-space: nowrap;
 }
+
+/* Terminál: selejt lejelentése */
+.tx-scrap {
+  width: min(820px, 96vw);
+}
+.tx-scrap-label {
+  margin: 16px 0 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--c-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.tx-scrap-reason[data-selected="true"] {
+  border: 2px solid var(--c-text);
+  background: var(--c-surface-sunken);
+}
+.tx-scrap-qty {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.tx-scrap-step {
+  width: 72px;
+  height: 72px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 14px;
+  background: var(--c-surface-sunken);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 36px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.tx-scrap-value {
+  min-width: 140px;
+  text-align: center;
+  font-family: "Barlow Condensed", "Barlow", sans-serif;
+  font-size: 56px;
+  font-weight: 700;
+}
+.tx-scrap-value small {
+  font-size: 24px;
+  color: var(--c-text-muted);
+}
+.tx-scrap-quick {
+  height: 56px;
+  padding: 0 18px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--c-text);
+  font: inherit;
+  font-size: 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.tx-scrap-submit {
+  width: 100%;
+  min-height: 68px;
+  margin-top: 16px;
+  font-size: 21px;
+}
+
+/* ---- Selejt (dashboard) ---- */
+.sc-pareto {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sc-pareto-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr) 70px 90px;
+  gap: 12px;
+  align-items: center;
+  min-height: 34px;
+  font-size: var(--text-s);
+}
+.sc-pareto-head {
+  min-height: 24px;
+  font-size: var(--text-xs);
+  color: var(--c-text-faint);
+}
+.sc-pareto-row > :nth-child(3),
+.sc-pareto-row > :nth-child(4) {
+  text-align: right;
+}
+.sc-pareto-name {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+  min-width: 0;
+}
+.sc-pareto-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.sc-bar {
+  display: block;
+  height: 18px;
+  min-width: 2px;
+  border-radius: 0 4px 4px 0;
+  background: var(--c-accent);
+}
+.sc-bar[data-none="true"] {
+  background: var(--c-text-faint);
+}
+.sc-bookings {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-s);
+}
+.sc-bookings li {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--c-border);
+}
+.sc-bookings .ui-sub {
+  display: inline;
+  margin-left: 6px;
+}

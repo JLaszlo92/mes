@@ -705,7 +705,7 @@ export async function raiseDueSpotChecks(machineId?: string, now = new Date()): 
     let parts = 0;
     if (plan.spot.everyParts !== null) {
       const counted = await pool.query<{ n: string }>(
-        `SELECT count(*) AS n FROM events WHERE machine_id = $1 AND type = 'production_count' AND "timestamp" >= $2`,
+        `SELECT count(*) AS n FROM events WHERE machine_id = $1 AND type = 'production_count' AND "timestamp" >= $2 AND COALESCE(payload->>'reclassified', 'false') <> 'true'`,
         [order.machineId, anchor],
       );
       parts = Number(counted.rows[0]?.n ?? 0);

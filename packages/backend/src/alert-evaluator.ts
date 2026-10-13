@@ -1,3 +1,4 @@
+import { goodCountSql } from "./count-sql.js";
 import type { FastifyBaseLogger } from "fastify";
 import { pool } from "./db.js";
 import { stateStore } from "./state.js";
@@ -40,7 +41,7 @@ async function evaluateScrapRateRule(rule: AlertRule, log: FastifyBaseLogger): P
   const result = await pool.query<{ machine_id: string; good_count: string; scrap_count: string }>(
     `SELECT
        machine_id,
-       COUNT(*) FILTER (WHERE payload->>'result' = 'good') AS good_count,
+       ${goodCountSql()} AS good_count,
        COUNT(*) FILTER (WHERE payload->>'result' = 'scrap') AS scrap_count
      FROM events
      WHERE type = 'production_count'

@@ -14,6 +14,7 @@ import { getInstructionFile, getInstructionForWorkOrder, instructionFileExists, 
 import { getWorkOrderProgress, patchWorkOrder } from "./work-orders-repository.js";
 import { workerTickets } from "./terminal-workers.js";
 import { listStatusDefinitions } from "./machine-status-definitions-repository.js";
+import { bookScrap, getScrapMode, listScrapReasons, MAX_BOOKING_QUANTITY, reasonsForMachine } from "./scrap-repository.js";
 import { currentStatus, endManualStatus, getActiveManualStatus, setManualStatus } from "./manual-status.js";
 import { ensureCheck, getCheck, getCheckDetail, lastPieceGate, onWorkOrderClosed, onWorkOrderStarted, orderQuality, QualityError, recordMeasurement, releaseCheck, skipCheck } from "./quality-repository.js";
 
@@ -118,7 +119,11 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
   app.get<{ Params: { terminalId: string } }>("/api/terminal/:terminalId/state", async (request, reply) => {
     const terminal = await terminalOf(request, reply);
     if (!terminal) return reply;
-    const definitions = await listStatusDefinitions();
+    const [definitions, scrapReasons, scrapModes] = await Promise.all([
+      listStatusDefinitions(),
+      listScrapReasons(),
+      pool.query<{ id: string; scrap_booking_mode: string }>(`SELECT id, scrap_booking_mode FROM machines WHERE id = ANY($1)`, [terminal.machineIds]),
+    ]);
     const machines = await Promise.all(
       terminal.machineIds.map(async (machineId, i) => {
         const [assignments, codes, reports, shift, status, manual, rate] = await Promise.all([
@@ -170,6 +175,8 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
               }
             : null,
           statusOptions: statusOptionsFor(definitions, machineId),
+          scrapReasons: reasonsForMachine(scrapReasons, machineId).map((r) => ({ id: r.id, code: r.code, name: r.name })),
+          scrapMode: scrapModes.rows.find((r) => r.id === machineId)?.scrap_booking_mode ?? "reclassify",
           shift: shift ?? null,
           rate,
           current,
@@ -483,5 +490,52 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       ipAddress: request.ip,
     });
     return { checkId, workerExpiresAt: worker.expiresAt };
+  });
+
+  // Scrap with a reason: on the machine's running order (or the one given), counted as the machine is set up (scrap-repository.ts).
+  app.post<{ Params: { terminalId: string; machineId: string } }>("/api/terminal/:terminalId/machines/:machineId/scrap", async (request, reply) => {
+    const terminal = await terminalOf(request as unknown as TerminalRequest, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request as unknown as TerminalRequest, reply, terminal.id, "terminal.report_scrap");
+    if (!worker) return reply;
+    const machineId = request.params.machineId;
+    if (!terminal.machineIds.includes(machineId)) return fail(reply, 400, "this machine is not on this terminal");
+    const body = (request.body ?? {}) as { reasonId?: unknown; quantity?: unknown; workOrderId?: unknown; note?: unknown };
+    const quantity = typeof body.quantity === "number" ? body.quantity : Number(body.quantity);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_BOOKING_QUANTITY) return fail(reply, 400, `the quantity is a whole number from 1 to ${MAX_BOOKING_QUANTITY}`, { code: "quantity" });
+    const reason = reasonsForMachine(await listScrapReasons(), machineId).find((r) => r.id === body.reasonId);
+    if (!reason) return fail(reply, 400, "unknown scrap reason for this machine", { code: "reason" });
+    const running = (await listAssignmentsForMachine(machineId)).filter((a) => a.workOrderStatus === "in_progress");
+    const order = typeof body.workOrderId === "string" ? running.find((a) => a.workOrderId === body.workOrderId) : running[0];
+    if (typeof body.workOrderId === "string" && !order) return fail(reply, 409, "this work order is not running on this machine", { code: "order" });
+    const mode = (await getScrapMode(machineId)) ?? "reclassify";
+    if (mode === "reclassify") {
+      // The parts come off the good ones: there have to be that many.
+      const progress = order ? await getWorkOrderProgress(order.workOrderId) : undefined;
+      const good = progress?.goodCount ?? 0;
+      if (!order) return fail(reply, 409, "no running order on this machine: scrap cannot be taken off the good parts", { code: "no_order" });
+      if (quantity > good) return fail(reply, 409, `only ${good} good parts are counted on this order`, { code: "too_many", good });
+    }
+    const note = typeof body.note === "string" && body.note.trim() ? body.note.trim().slice(0, 300) : null;
+    const booking = await bookScrap({
+      machineId,
+      workOrderId: order?.workOrderId ?? null,
+      reason,
+      quantity,
+      note,
+      mode,
+      user: { id: worker.user.id, name: worker.user.name },
+      terminal: { id: terminal.id, name: terminal.name },
+    });
+    await recordAuditEvent({
+      actorId: worker.user.id,
+      actorEmail: worker.user.name,
+      action: "scrap_booked",
+      target: booking.id,
+      details: { machineId, workOrderId: order?.workOrderId ?? null, orderNumber: order?.orderNumber ?? null, reason: reason.code, reasonName: reason.name, quantity, mode, terminalId: terminal.id, terminal: terminal.name },
+      ipAddress: request.ip,
+    });
+    reply.code(201);
+    return { id: booking.id, mode, workerExpiresAt: worker.expiresAt };
   });
 }

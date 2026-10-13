@@ -38,6 +38,7 @@ export const PERMISSIONS = [
   { key: "terminal.report_fault", group: "Terminal", label: "Report a fault at the terminal" },
   { key: "terminal.open_instructions", group: "Terminal", label: "Open work instructions at the terminal" },
   { key: "terminal.set_status", group: "Terminal", label: "Set the machine status at the terminal" },
+  { key: "terminal.report_scrap", group: "Terminal", label: "Report scrap with a reason at the terminal" },
 
   { key: "admin.machines", group: "Administration", label: "Machines, sites and lines, shifts, statuses, fault codes" },
   { key: "admin.edge_nodes", group: "Administration", label: "Edge nodes and data sources" },
@@ -151,6 +152,10 @@ export const ROUTE_PERMISSIONS: Record<string, Requirement> = {
   "POST /api/status-definitions": "admin.machines",
   "PATCH /api/status-definitions/:id": "admin.machines",
   "POST /api/quality-plans": "quality.plans",
+  "POST /api/scrap-reasons": "admin.machines",
+  "PATCH /api/scrap-reasons/:id": "admin.machines",
+  "DELETE /api/scrap-reasons/:id": "admin.machines",
+  "PUT /api/machine-registry/:id/scrap-mode": "admin.machines",
   "POST /api/quality-plans/files": "quality.plans",
   "POST /api/quality-plans/:partName/archive": "quality.plans",
   "POST /api/quality-checks/:id/release": "quality.release",

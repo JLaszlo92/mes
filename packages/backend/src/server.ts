@@ -145,6 +145,7 @@ import workOrderRoutes from "./work-order-routes.js";
 import maintenanceRoutes from "./maintenance-routes.js";
 import workInstructionRoutes from "./work-instruction-routes.js";
 import qualityRoutes from "./quality-routes.js";
+import scrapRoutes from "./scrap-routes.js";
 import materialLotRoutes from "./material-lot-routes.js";
 import userAdminRoutes from "./user-admin-routes.js";
 import terminalRoutes from "./terminal-routes.js";
@@ -170,6 +171,7 @@ export async function buildServer(): Promise<FastifyInstance> {
   await app.register(maintenanceRoutes);
   await app.register(workInstructionRoutes);
   await app.register(qualityRoutes);
+  await app.register(scrapRoutes);
   await app.register(materialLotRoutes);
   await app.register(userAdminRoutes);
   await app.register(terminalRoutes);

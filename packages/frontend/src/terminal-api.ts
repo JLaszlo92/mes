@@ -91,6 +91,9 @@ export interface TerminalMachine {
   status: { code: string; since: string; manual: { code: string; setBy: string | null; setAt: string; blocksProduction: boolean } | null } | null;
   /** What a worker may set (Admin → Status definitions). */
   statusOptions: StatusOption[];
+  /** Scrap reasons of the machine (Admin → Scrap reasons) and how a booking counts. */
+  scrapReasons: { id: string; code: string; name: string }[];
+  scrapMode: "reclassify" | "additional";
   shift: {
     shiftName: string;
     goodCount: number;
@@ -159,6 +162,8 @@ export const terminalApi = {
     request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/start`, { method: "POST", body: {}, ticket }),
   complete: (id: string, ticket: string, workOrderId: string, skipLastPiece = false) =>
     request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, { method: "POST", body: skipLastPiece ? { skipLastPiece: true } : {}, ticket }),
+  reportScrap: (id: string, ticket: string, machineId: string, body: { reasonId: string; quantity: number; workOrderId?: string }) =>
+    request<{ id: string; mode: string; workerExpiresAt: number }>(id, `/machines/${encodeURIComponent(machineId)}/scrap`, { method: "POST", body, ticket }),
   qualityCheck: (id: string, checkId: string) => request<CheckDetail>(id, `/quality-checks/${encodeURIComponent(checkId)}`),
   measure: (id: string, ticket: string, checkId: string, body: { characteristicId: string; value?: number; ok?: boolean; comment?: string }) =>
     request<{ passed: boolean; status: string; check: CheckDetail; workerExpiresAt: number }>(id, `/quality-checks/${encodeURIComponent(checkId)}/measurements`, { method: "POST", body, ticket }),

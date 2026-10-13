@@ -11,6 +11,7 @@ import TerminalChoiceSheet from "./TerminalChoiceSheet.js";
 import TerminalQualityFlow, { type FlowPurpose } from "./TerminalQualityFlow.js";
 import TerminalMachineView, { type MachineActions } from "./TerminalMachineView.js";
 import TerminalOverview from "./TerminalOverview.js";
+import TerminalScrapSheet from "./TerminalScrapSheet.js";
 import { IconChevronLeft, IconLock, IconMoon, IconSun } from "./TerminalIcons.js";
 import { KIND_LABEL_HU } from "./quality.js";
 import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
@@ -36,7 +37,7 @@ interface Action {
 }
 
 type Sheet =
-  | { kind: "fault" | "status" | "history"; machineId: string }
+  | { kind: "fault" | "status" | "history" | "scrap"; machineId: string }
   | { kind: "start" | "complete" | "measure"; machineId: string };
 
 const PERMISSION_TEXT: Record<string, string> = {
@@ -46,6 +47,7 @@ const PERMISSION_TEXT: Record<string, string> = {
   "terminal.open_instructions": "munkautasítást megnyitni",
   "terminal.set_status": "gépállapotot állítani",
   "quality.measure": "mérést rögzíteni",
+  "terminal.report_scrap": "selejtet jelenteni",
   "quality.release": "minőségellenőrzést feloldani",
 };
 
@@ -299,6 +301,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       status: () => setSheet({ kind: "status", machineId: m.id }),
       measure: () => measure(m),
       instruction: () => openInstruction(m),
+      scrap: () => setSheet({ kind: "scrap", machineId: m.id }),
       history: () => setSheet({ kind: "history", machineId: m.id }),
       attention: (item) => item.checkId && setFlow({ checkId: item.checkId, orderNumber: item.orderNumber ?? "", purpose: { kind: "check" } }),
     };
@@ -404,7 +407,31 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         </div>
       )}
 
-      {sheet && state && (
+      {sheet?.kind === "scrap" && state && (() => {
+        const m = state.machines.find((x) => x.id === sheet.machineId);
+        return m ? (
+          <TerminalScrapSheet
+            m={m}
+            busy={busy}
+            onCancel={() => setSheet(null)}
+            onSubmit={(reason, quantity) => {
+              setSheet(null);
+              const run = runningOrder(m);
+              act({
+                title: `Selejt: ${quantity} db — ${reason.name} (${m.name})`,
+                permission: "terminal.report_scrap",
+                run: async (w) => {
+                  const r = await terminalApi.reportScrap(terminalUiId, w.ticket, m.id, { reasonId: reason.id, quantity, workOrderId: run?.workOrderId });
+                  flash("ok", `Selejt lejelentve: ${quantity} db — ${reason.name} (${w.name})`);
+                  return r.workerExpiresAt;
+                },
+              });
+            }}
+          />
+        ) : null;
+      })()}
+
+      {sheet && sheet.kind !== "scrap" && state && (
         <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} start={startOrder} complete={completeOrder} openCheck={(checkId, orderNumber) => setFlow({ checkId, orderNumber, purpose: { kind: "check" } })} />
       )}
 

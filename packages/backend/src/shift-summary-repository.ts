@@ -1,3 +1,4 @@
+import { goodCountSql } from "./count-sql.js";
 import { pool } from "./db.js";
 import { loadShiftWindows, localDateString, type ShiftWindow } from "./shift-windows.js";
 
@@ -228,7 +229,7 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
     ),
     counts AS (
       SELECT sw.machine_id,
-        COUNT(e.*) FILTER (WHERE e.payload->>'result' = 'good') AS good_count,
+        ${goodCountSql("e")} AS good_count,
         COUNT(e.*) FILTER (WHERE e.payload->>'result' = 'scrap') AS scrap_count
       FROM shift_windows sw
       LEFT JOIN events e

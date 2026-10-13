@@ -1854,6 +1854,48 @@ shop floor) — run `pnpm install` before the build.
 - Not done yet: scrap with a reason at the terminal (the rail has no "Selejt" button yet), the stop reason asked at the
   terminal, WebSocket push instead of the 2 s poll, an andon (wall display) mode.
 
+## Scrap reasons, scrap reported at the terminal, scrap analysis — Oct 13 (late)
+
+Migration **052**. Backend `scrap-repository.ts`, `scrap-routes.ts`, `count-sql.ts`; frontend `ScrapReasonsPanel`,
+`ScrapPanel`, `WorkOrderScrapSection`, `TerminalScrapSheet`.
+
+- **Scrap reasons** (Admin → Scrap reasons) work like Status definitions: global rows for every machine and rows of a
+  machine; a machine's own reason with the same code replaces the global one there. A reason can be switched off (not
+  offered at the terminal) or removed; reports keep the name they were booked with. The machine's own scrap signal can
+  carry a reason code (`scrapReasonCode`, already in the event schema) and is named by the same rules.
+- **How a reported scrap counts — per machine** (same page, `machines.scrap_booking_mode`):
+  - **reclassify** ("taken off the good parts", default): the machine counts every part as good; a report of N parts
+    moves N from good to scrap, the total stays. Refused without a running order or above the order's good count.
+  - **additional** ("added as extra scrap"): the machine already tells good from scrap, or the parts were scrapped outside
+    its counter; the report adds N scrap parts, good stays.
+  - Mechanics: a report is one `scrap_bookings` row (who, when, terminal, order, reason, quantity, mode, snapshot of the
+    reason) plus **one `production_count` event per part** (`result = scrap`, `scrapReasonCode`, `scrapReasonName`,
+    `bookingId`, `workOrderId`, `source = terminal`, and `reclassified = true` in reclassify mode). Every good count now
+    goes through **`count-sql.ts`**: good = good events − reclassified scrap events (hourly rollup, current shift summary,
+    work order progress incl. the overproduction cap, scrap-rate alert); the raw-event retention check counts parts
+    without the reclassified events; the live state takes them off the good counter; spot checks count only real parts.
+- **Terminal**: a **Selejt** button on the rail → one screen: the machine's reasons as big buttons, the quantity with − / +
+  / +5 / +10 (in reclassify mode at most the order's good parts), "Lejelentés: N db — reason" → worker code → done. New
+  permission **`terminal.report_scrap`** (granted once to Operátor, Quality operátor, Quality supervisor; marker
+  `052_scrap_permission`). Audit `scrap_booked`.
+- **Dashboard**: Quality → **Scrap**: period (24 h … 90 days, global scope), **Pareto** by reason (biggest first, share and
+  cumulative share; reported at a terminal vs. from the machine in the tooltip; "Ok nélkül" for machine scrap without a
+  code), a **by-machine** table (good, scrap, scrap rate, top reasons), the **reports** made at the terminals (server-paged,
+  search, CSV of the page). The **work order's side panel** shows its scrap by reason (its machine, from its start to its
+  end) and its reports.
+- **API**: `GET/POST /api/scrap-reasons`, `PATCH/DELETE /api/scrap-reasons/:id`, `GET /api/scrap-modes`,
+  `PUT /api/machine-registry/:id/scrap-mode`, `GET /api/scrap/analysis` (from, to, machineIds, workOrderId),
+  `GET /api/scrap-bookings` (+ q, paging); terminal `POST /api/terminal/:terminalId/machines/:machineId/scrap`
+  `{ reasonId, quantity, workOrderId? }`; the terminal state carries `scrapReasons` and `scrapMode` per machine.
+- Tested: unit (reason resolution, the count rule; backend 352); live: global + machine reasons and the override, both
+  modes (good 12 → 9 and scrap +3 on the order and in the shift; additional: good unchanged), refusals (no worker, unknown
+  reason, more than the good parts, no running order, viewer), machine scrap with and without a code, analysis by period
+  and by order, reports by order and by search, **hourly rollup equals the raw good count, and the retention check's
+  part count equals the rollup**; Chromium: terminal report (counter drops by 2), admin page, analysis page, work order
+  panel.
+- Not done: correcting / cancelling a report (a supervisor action), scrap reason asked when the machine sends scrap
+  without a code.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

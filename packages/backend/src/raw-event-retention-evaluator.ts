@@ -1,3 +1,4 @@
+import { partsCountSql } from "./count-sql.js";
 import type { FastifyBaseLogger } from "fastify";
 import { pool } from "./db.js";
 import { config } from "./config.js";
@@ -111,7 +112,7 @@ async function statusRecomputeEnd(chunk: ChunkInfo): Promise<Date> {
 async function verifyProductionRollup(chunk: ChunkInfo): Promise<{ raw: number; rollup: number }> {
   const result = await pool.query<{ raw: string; rollup: string }>(
     `SELECT
-       (SELECT count(*) FROM events WHERE type = 'production_count' AND "timestamp" >= $1 AND "timestamp" < $2) AS raw,
+       (SELECT ${partsCountSql()} FROM events WHERE type = 'production_count' AND "timestamp" >= $1 AND "timestamp" < $2) AS raw,
        (SELECT COALESCE(sum(good_count + scrap_count), 0) FROM production_counts_hourly
         WHERE bucket_start >= date_trunc('hour', $1::timestamptz) AND bucket_start < $2) AS rollup`,
     [chunk.start, chunk.end],

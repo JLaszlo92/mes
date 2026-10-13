@@ -40,7 +40,11 @@ class MachineStateStore {
       state.status = event.status;
     } else if (event.type === "production_count") {
       if (event.result === "good") state.goodCount += 1;
-      else state.scrapCount += 1;
+      else {
+        state.scrapCount += 1;
+        // Booked at the terminal from parts the machine counted as good (scrap-bookings.ts).
+        if ((event as { reclassified?: boolean }).reclassified === true) state.goodCount = Math.max(0, state.goodCount - 1);
+      }
     }
     state.lastUpdated = event.timestamp;
     return { ...state };

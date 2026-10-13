@@ -27,6 +27,8 @@ import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import QualityChecksPanel from "./QualityChecksPanel.js";
 import QualityPlansPanel from "./QualityPlansPanel.js";
 import SpcPanel from "./SpcPanel.js";
+import ScrapPanel from "./ScrapPanel.js";
+import ScrapReasonsPanel from "./ScrapReasonsPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
@@ -102,6 +104,7 @@ const NAV: GroupDef[] = [
       { id: "checks", label: "Quality checks" },
       { id: "plans", label: "Quality plans" },
       { id: "spc", label: "SPC and capability" },
+      { id: "scrap", label: "Scrap" },
     ],
   },
   {
@@ -134,6 +137,7 @@ const NAV: GroupDef[] = [
       { id: "plant", label: "Sites, areas and lines", permission: "admin.machines" },
       { id: "shifts", label: "Shifts and calendars", permission: "admin.machines" },
       { id: "statuses", label: "Status definitions", permission: "admin.machines" },
+      { id: "scrap-reasons", label: "Scrap reasons", permission: "admin.machines" },
       { id: "fault-codes", label: "Fault codes", permission: "admin.machines" },
       { id: "terminals", label: "Terminals", permission: "admin.terminals" },
       { id: "edge-nodes", label: "Edge nodes", permission: "admin.edge_nodes" },
@@ -202,6 +206,10 @@ function renderView(groupId: string, viewId: string, liveState: Record<string, M
       return <QualityPlansPanel />;
     case "quality/spc":
       return <SpcPanel />;
+    case "quality/scrap":
+      return <ScrapPanel />;
+    case "admin/scrap-reasons":
+      return <ScrapReasonsPanel />;
     case "maintenance/work-orders":
       return <MaintenanceWorkOrdersPanel />;
     case "maintenance/preventive":

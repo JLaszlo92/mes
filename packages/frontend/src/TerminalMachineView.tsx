@@ -16,7 +16,7 @@ import {
   waitingOrders,
   type Attention,
 } from "./terminal-model.js";
-import { IconCheck, IconClock, IconDoc, IconFault, IconHistory, IconPause, IconPlay, IconPulse, IconRuler, IconStop, IconX, StateIcon } from "./TerminalIcons.js";
+import { IconCheck, IconClock, IconDoc, IconFault, IconHistory, IconPause, IconPlay, IconPulse, IconRuler, IconStop, IconTrash, IconX, StateIcon } from "./TerminalIcons.js";
 
 export interface MachineActions {
   primary: () => void;
@@ -24,6 +24,7 @@ export interface MachineActions {
   status: () => void;
   measure: () => void;
   instruction: () => void;
+  scrap: () => void;
   history: () => void;
   attention: (item: Attention) => void;
 }
@@ -219,6 +220,13 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
           <RailButton icon={<IconFault color="var(--t-fault-icon)" />} label="Hiba jelentése" disabled={busy} onClick={actions.fault} />
           <RailButton icon={<IconPulse />} label="Státusz" sub={s.manual ? `kézi: ${s.label}` : undefined} disabled={busy} onClick={actions.status} />
           {!measureFirst && measureButton}
+          <RailButton
+            icon={<IconTrash />}
+            label="Selejt"
+            sub={m.scrapReasons.length === 0 ? "nincs selejtok" : m.scrapMode === "reclassify" && !run ? "nincs futó rendelés" : undefined}
+            disabled={busy || m.scrapReasons.length === 0 || (m.scrapMode === "reclassify" && !run)}
+            onClick={actions.scrap}
+          />
           <RailButton icon={<IconDoc />} label="Munkautasítás" sub={order?.instruction ? `v${order.instruction.version}${order.instruction.hasPdf ? " · PDF" : ""}` : "nincs"} disabled={busy || !order?.instruction} onClick={actions.instruction} />
         </nav>
       </div>

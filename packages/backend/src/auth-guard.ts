@@ -45,6 +45,7 @@ const PUBLIC_ROUTES = new Set<string>([
   "POST /api/terminal/:terminalId/quality-checks/:checkId/measurements",
   "POST /api/terminal/:terminalId/quality-checks/:checkId/release",
   "POST /api/terminal/:terminalId/work-orders/:workOrderId/spot-check",
+  "POST /api/terminal/:terminalId/machines/:machineId/scrap",
   // A böngésző WebSocketen nem küld Authorization headert: a /ws-t a
   // route maga hitelesíti egyszer használható tickettel (ws-tickets.ts).
   "GET /ws",

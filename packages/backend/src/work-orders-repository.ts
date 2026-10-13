@@ -1,3 +1,4 @@
+import { goodCountSql, scrapCountSql } from "./count-sql.js";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "./db.js";
@@ -343,24 +344,34 @@ export async function computeWorkOrderProgress(
 
   let cappedAtTimestamp: string | null = null;
   if (!countOverproduction && quantity > 0) {
+    // Parts booked as scrap from the good ones (reclassify) do not count towards the target: the cap moves by them.
+    const reclassified = await pool.query<{ n: string }>(
+      `SELECT count(*) AS n FROM events WHERE type = 'production_count' AND machine_id = $1 AND "timestamp" >= $2
+       AND payload->>'result' = 'scrap' AND payload->>'reclassified' = 'true'`,
+      [machineId, startedAt],
+    );
     const nthGoodResult = await pool.query<{ timestamp: string }>(
       `SELECT "timestamp" FROM events
        WHERE type = 'production_count' AND machine_id = $1 AND payload->>'result' = 'good' AND "timestamp" >= $2
        ORDER BY "timestamp" ASC
        OFFSET $3 LIMIT 1`,
-      [machineId, startedAt, quantity - 1],
+      [machineId, startedAt, quantity - 1 + Number(reclassified.rows[0]?.n ?? 0)],
     );
     cappedAtTimestamp = nthGoodResult.rows[0]?.timestamp ?? null;
   }
 
   const countsResult = await pool.query<{ good_count: string; scrap_count: string }>(
     `SELECT
-       COUNT(*) FILTER (WHERE payload->>'result' = 'good') AS good_count,
-       COUNT(*) FILTER (WHERE payload->>'result' = 'scrap') AS scrap_count
+       ${goodCountSql()} AS good_count,
+       ${scrapCountSql()} AS scrap_count
      FROM events
      WHERE type = 'production_count' AND machine_id = $1
-       AND "timestamp" BETWEEN $2 AND COALESCE($3::timestamptz, now())`,
-    [machineId, startedAt, cappedAtTimestamp],
+       AND "timestamp" >= $2 AND (
+         "timestamp" <= COALESCE($3::timestamptz, now())
+         -- a booking made after the target was reached still belongs to this order
+         OR (payload->>'workOrderId' = $4)
+       )`,
+    [machineId, startedAt, cappedAtTimestamp, workOrderId],
   );
   const goodCount = Number(countsResult.rows[0]?.good_count ?? 0);
   const scrapCount = Number(countsResult.rows[0]?.scrap_count ?? 0);

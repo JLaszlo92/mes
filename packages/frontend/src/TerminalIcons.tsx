@@ -40,6 +40,13 @@ export const IconRuler = (p: P) => (
     <path d="m4.5 13.5 2 2" />
   </Svg>
 );
+export const IconTrash = (p: P) => (
+  <Svg {...p}>
+    <path d="M3 6h18" />
+    <path d="M8 6V4h8v2" />
+    <path d="M19 6l-1 14H6L5 6" />
+  </Svg>
+);
 export const IconDoc = (p: P) => (
   <Svg {...p}>
     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
