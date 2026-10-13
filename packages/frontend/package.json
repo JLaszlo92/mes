@@ -9,6 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/barlow": "5.1.1",
+    "@fontsource/barlow-condensed": "5.1.1",
     "@mes/shared": "workspace:*",
     "pdfjs-dist": "4.10.38",
     "react": "^18.3.1",

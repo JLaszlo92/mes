@@ -15,6 +15,11 @@ export interface ShiftSummary {
   performance: number | null;
   quality: number | null;
   oee: number | null;
+  /** Current shift only (getCurrentShiftSummary…): the shift's planned start and end ("HH:MM:SS"), and its stops so far. */
+  startTime?: string | null;
+  endTime?: string | null;
+  downSeconds?: number;
+  downCount?: number;
 }
 
 const HOUR_MS = 3600_000;
@@ -190,6 +195,10 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
     scrap_count: string;
     running_seconds: string;
     total_seconds: string;
+    down_seconds: string;
+    down_count: string;
+    start_time: string | null;
+    end_time: string | null;
   }>(
     `
     WITH machine_shifts AS (
@@ -198,7 +207,7 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
       WHERE m.is_active AND ($1::text IS NULL OR m.id = $1)
     ),
     shift_windows AS (
-      SELECT ms.machine_id, ms.shift_date, ms.shift_name,
+      SELECT ms.machine_id, ms.shift_date, ms.shift_name, sps.start_time::text AS start_time, sps.end_time::text AS end_time,
         COALESCE(
           (ms.shift_date + sps.start_time)::timestamptz,
           ms.shift_date::timestamptz
@@ -272,7 +281,9 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
     durations AS (
       SELECT machine_id,
         COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE oee_bucket = 'running'), 0) AS running_seconds,
-        COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE oee_bucket IN ('running','counts_as_down')), 0) AS total_seconds
+        COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE oee_bucket IN ('running','counts_as_down')), 0) AS total_seconds,
+        COALESCE(SUM(EXTRACT(EPOCH FROM (clip_end - clip_start))) FILTER (WHERE oee_bucket = 'counts_as_down'), 0) AS down_seconds,
+        COUNT(*) FILTER (WHERE oee_bucket = 'counts_as_down') AS down_count
       FROM categorized
       GROUP BY machine_id
     )
@@ -280,7 +291,10 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
       COALESCE(c.good_count, 0) AS good_count,
       COALESCE(c.scrap_count, 0) AS scrap_count,
       COALESCE(d.running_seconds, 0) AS running_seconds,
-      COALESCE(d.total_seconds, 0) AS total_seconds
+      COALESCE(d.total_seconds, 0) AS total_seconds,
+      COALESCE(d.down_seconds, 0) AS down_seconds,
+      COALESCE(d.down_count, 0) AS down_count,
+      sw.start_time, sw.end_time
     FROM shift_windows sw
     LEFT JOIN counts c ON c.machine_id = sw.machine_id
     LEFT JOIN durations d ON d.machine_id = sw.machine_id
@@ -306,6 +320,10 @@ export async function getCurrentShiftSummaryForAllMachines(machineId?: string): 
         performance: null,
         quality: null,
         oee: null,
+        startTime: row.start_time,
+        endTime: row.end_time,
+        downSeconds: Number(row.down_seconds),
+        downCount: Number(row.down_count),
       },
       idealCycleTimeByMachine.get(row.machine_id) ?? null,
     ),

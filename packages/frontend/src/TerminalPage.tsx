@@ -1,18 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import "@fontsource/barlow/400.css";
+import "@fontsource/barlow/500.css";
+import "@fontsource/barlow/600.css";
+import "@fontsource/barlow/700.css";
+import "@fontsource/barlow-condensed/600.css";
+import "@fontsource/barlow-condensed/700.css";
 import InstructionViewer, { VIEWER_LABELS_HU, type ViewerTab } from "./InstructionViewer.js";
 import TerminalPinPad from "./TerminalPinPad.js";
 import TerminalChoiceSheet from "./TerminalChoiceSheet.js";
 import TerminalQualityFlow, { type FlowPurpose } from "./TerminalQualityFlow.js";
+import TerminalMachineView, { type MachineActions } from "./TerminalMachineView.js";
+import TerminalOverview from "./TerminalOverview.js";
+import { IconChevronLeft, IconLock, IconMoon, IconSun } from "./TerminalIcons.js";
 import { KIND_LABEL_HU } from "./quality.js";
 import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
+import { hhmm, int, plannedText, runningOrder, shortTime, statusView, waitingOrders } from "./terminal-model.js";
 import type { WorkInstruction } from "./work-instructions.js";
 
 /**
  * A gép melletti terminál. Bejelentkezés nélkül fut (a párosított eszköz
- * tokenjével, újraindítás után is), mindenki láthatja. Minden változtatás —
- * rendelés indítása és lezárása, hibajelentés, munkautasítás megnyitása — a
+ * tokenjével, újraindítás után is), mindenki láthatja. Minden változtatás a
  * dolgozó személyes kódját kéri; a kód után 60 másodpercig (minden
  * művelettel újrakezdve) nem kell újra beírni, és a művelet az ő nevén fut.
+ *
+ * Elrendezés a gépek számától függ: 1 gép → a gép képernyője; 2–4 →
+ * csempés áttekintés; 5+ → lista. Több gépnél a gép képernyője koppintásra
+ * nyílik, és 90 mp tétlenség után visszaáll az áttekintésre.
  */
 
 interface Action {
@@ -21,6 +34,10 @@ interface Action {
   permission: string;
   run: (worker: Worker) => Promise<number | void>;
 }
+
+type Sheet =
+  | { kind: "fault" | "status" | "history"; machineId: string }
+  | { kind: "start" | "complete" | "measure"; machineId: string };
 
 const PERMISSION_TEXT: Record<string, string> = {
   "terminal.start_work_order": "rendelést indítani",
@@ -32,30 +49,21 @@ const PERMISSION_TEXT: Record<string, string> = {
   "quality.release": "minőségellenőrzést feloldani",
 };
 
-/** Built-in statuses (the rest come with their own name from Status definitions). */
-const BUILT_IN: Record<string, { label: string; color: string }> = {
-  running: { label: "Gyártás", color: "#0b7d33" },
-  down: { label: "Leállás", color: "#b3261e" },
-  off_shift: { label: "Műszakon kívül", color: "#8a929b" },
-};
-
-function statusLook(code: string, m: TerminalMachine): { label: string; color: string } {
-  const option = m.statusOptions.find((o) => o.code === code);
-  if (option) return { label: option.label, color: option.color ?? "#9a5b00" };
-  return BUILT_IN[code] ?? { label: code, color: "#9a5b00" };
-}
-
-function clock(iso: string): string {
-  const d = new Date(iso);
-  const today = new Date().toDateString() === d.toDateString();
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-  return today ? time : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
-}
-
 /** How often the screen asks for the state; a request still running is not doubled, a hidden tab does not ask. */
 const POLL_MS = 2000;
 /** Same as the server (terminal-workers.ts). Counted on this device's clock: a tablet with a wrong clock still counts right; the server decides anyway. */
 const WORKER_IDLE_MS = 60_000;
+/** With several machines, an open machine screen goes back to the overview after this long without a touch. */
+const BACK_TO_OVERVIEW_MS = 90_000;
+const THEME_KEY = "mes-terminal-theme";
+
+function readTheme(): "dark" | "light" {
+  try {
+    return localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
 
 export default function TerminalPage({ terminalUiId }: { terminalUiId: string }) {
   const [paired, setPaired] = useState(() => {
@@ -72,9 +80,11 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [viewer, setViewer] = useState<{ instruction: WorkInstruction; orderNumber: string; tab: ViewerTab } | null>(null);
-  const [showHistoryFor, setShowHistoryFor] = useState<Record<string, boolean>>({});
-  const [sheet, setSheet] = useState<{ kind: "fault" | "status"; machineId: string } | null>(null);
+  const [sheet, setSheet] = useState<Sheet | null>(null);
   const [flow, setFlow] = useState<{ checkId: string; orderNumber: string; purpose: FlowPurpose } | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">(readTheme);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const lastTouch = useRef(Date.now());
   const messageTimer = useRef<number | undefined>(undefined);
 
   const loading = useRef(false);
@@ -110,15 +120,33 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     };
   }, [paired, load]);
 
-  // The countdown of the signed-in worker; at zero the terminal locks itself.
+  // The clock (and the worker's countdown, every second while someone is signed in).
   useEffect(() => {
-    if (!worker) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const timer = setInterval(() => setNow(Date.now()), worker ? 1000 : 10_000);
     return () => clearInterval(timer);
   }, [worker]);
   useEffect(() => {
     if (worker && now >= worker.expiresAt) setWorker(null);
   }, [now, worker]);
+
+  // Several machines: an open machine screen goes back to the overview when nobody touches it.
+  useEffect(() => {
+    const touch = () => (lastTouch.current = Date.now());
+    window.addEventListener("pointerdown", touch);
+    return () => window.removeEventListener("pointerdown", touch);
+  }, []);
+  const modalOpen = pending !== null || flow !== null || sheet !== null || viewer !== null;
+  useEffect(() => {
+    if (selectedId && !modalOpen && now - lastTouch.current > BACK_TO_OVERVIEW_MS) setSelectedId(null);
+  }, [now, selectedId, modalOpen]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch {
+      // per-device convenience only
+    }
+  }, [theme]);
 
   function flash(kind: "ok" | "error", text: string) {
     setMessage({ kind, text });
@@ -187,10 +215,99 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     setWorker(null);
   }
 
+  // ---- machine actions ----
+
+  function startOrder(a: TerminalAssignment) {
+    act({
+      title: `Rendelés indítása: ${a.orderNumber} — ${a.partName}`,
+      permission: "terminal.start_work_order",
+      run: async (w) => {
+        const r = await terminalApi.start(terminalUiId, w.ticket, a.workOrderId);
+        flash("ok", `Elindítva: ${a.orderNumber} (${w.name})`);
+        return r.workerExpiresAt;
+      },
+    });
+  }
+
+  function completeOrder(a: TerminalAssignment) {
+    act({
+      title: `Rendelés lezárása: ${a.orderNumber} — ${a.partName}`,
+      permission: "terminal.complete_work_order",
+      run: async (w) => {
+        try {
+          const r = await terminalApi.complete(terminalUiId, w.ticket, a.workOrderId);
+          flash("ok", `Lezárva: ${a.orderNumber} (${w.name})`);
+          return r.workerExpiresAt;
+        } catch (err) {
+          // A last-piece check comes first: the measurement opens; it closes the order at the end.
+          if (err instanceof TerminalError && (err.code === "quality_check_required" || err.code === "quality_check_offered") && typeof err.data.checkId === "string") {
+            setFlow({ checkId: err.data.checkId, orderNumber: a.orderNumber, purpose: { kind: "complete", workOrderId: a.workOrderId, gating: err.code === "quality_check_required" } });
+            return;
+          }
+          throw err;
+        }
+      },
+    });
+  }
+
+  function openInstruction(m: TerminalMachine) {
+    const a = runningOrder(m);
+    if (!a) return;
+    act({
+      title: `Munkautasítás: ${a.orderNumber}`,
+      permission: "terminal.open_instructions",
+      run: async (w) => {
+        const r = await terminalApi.openInstruction(terminalUiId, w.ticket, a.workOrderId);
+        setViewer({ instruction: r.instruction, orderNumber: a.orderNumber, tab: r.instruction.content.trim() ? "text" : "pdf" });
+        return r.workerExpiresAt;
+      },
+    });
+  }
+
+  function activeChecks(m: TerminalMachine) {
+    return m.current.flatMap((a) => (m.orders[a.workOrderId]?.quality?.checks ?? []).map((c) => ({ c, a })));
+  }
+
+  function measure(m: TerminalMachine) {
+    const checks = activeChecks(m).sort((x, y) => rank(x.c) - rank(y.c));
+    if (checks.length === 1) return setFlow({ checkId: checks[0]!.c.id, orderNumber: checks[0]!.a.orderNumber, purpose: { kind: "check" } });
+    if (checks.length > 1) return setSheet({ kind: "measure", machineId: m.id });
+    const a = runningOrder(m);
+    if (!a) return;
+    act({
+      title: `Szúrópróba most: ${a.orderNumber}`,
+      permission: "quality.measure",
+      run: async (w) => {
+        const r = await terminalApi.requestSpotCheck(terminalUiId, w.ticket, a.workOrderId);
+        setFlow({ checkId: r.checkId, orderNumber: a.orderNumber, purpose: { kind: "check" } });
+        return r.workerExpiresAt;
+      },
+    });
+  }
+
+  function actionsFor(m: TerminalMachine): MachineActions {
+    return {
+      primary: () => {
+        const running = m.current.filter((a) => a.workOrderStatus === "in_progress");
+        if (running.length === 1) return completeOrder(running[0]!);
+        if (running.length > 1) return setSheet({ kind: "complete", machineId: m.id });
+        const waiting = waitingOrders(m);
+        if (waiting.length === 1) return startOrder(waiting[0]!);
+        if (waiting.length > 1) setSheet({ kind: "start", machineId: m.id });
+      },
+      fault: () => setSheet({ kind: "fault", machineId: m.id }),
+      status: () => setSheet({ kind: "status", machineId: m.id }),
+      measure: () => measure(m),
+      instruction: () => openInstruction(m),
+      history: () => setSheet({ kind: "history", machineId: m.id }),
+      attention: (item) => item.checkId && setFlow({ checkId: item.checkId, orderNumber: item.orderNumber ?? "", purpose: { kind: "check" } }),
+    };
+  }
+
   if (!paired) {
     return (
-      <div className="term">
-        <div className="term-notice">
+      <div className="tx" data-theme={theme}>
+        <div className="tx-notice">
           <h1>Ez a képernyő nincs párosítva</h1>
           <p>
             A terminál használatához egy adminisztrátornak párosítania kell ezt az eszközt: a dashboardon Admin → Terminals → <strong>Pair device</strong>, majd
@@ -201,118 +318,95 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     );
   }
 
+  const machines = state?.machines ?? [];
+  const multi = machines.length > 1;
+  const selected = multi ? (machines.find((m) => m.id === selectedId) ?? null) : (machines[0] ?? null);
   const secondsLeft = worker ? Math.max(0, Math.ceil((worker.expiresAt - now) / 1000)) : 0;
+  const shiftSource = selected ?? machines.find((m) => m.shift) ?? null;
 
   return (
-    <div className="term">
-      <header className="term-head">
-        <h1>{state?.terminal.name ?? "Terminál"}</h1>
-        <span className="term-spacer" />
+    <div className="tx" data-theme={theme}>
+      <header className="tx-head">
+        {multi && selected && (
+          <button type="button" className="tx-back" onClick={() => setSelectedId(null)}>
+            <IconChevronLeft size={24} /> Összes gép
+          </button>
+        )}
+        <div className="tx-head-title">
+          <span className="tx-head-name">{selected ? selected.name : (state?.terminal.name ?? "Terminál")}</span>
+          <span className="tx-muted">{selected ? (state?.terminal.name ?? "") : multi ? `${machines.length} gép · koppints egy gépre a részletekhez` : ""}</span>
+        </div>
+        {multi && selected && machines.length <= 4 && (
+          <div className="tx-switch" role="group" aria-label="Gépváltás">
+            {machines
+              .filter((m) => m.id !== selected.id)
+              .map((m) => (
+                <button key={m.id} type="button" className="tx-switch-btn" onClick={() => setSelectedId(m.id)}>
+                  <span className="tx-dot" data-tone={statusView(m).tone} />
+                  {m.name}
+                </button>
+              ))}
+          </div>
+        )}
+        <div className="tx-spacer" />
+        {shiftSource?.shift && (
+          <div className="tx-head-shift">
+            <strong>{shiftSource.shift.shiftName}</strong>
+            <span className="tx-muted">{shiftSource.shift.startTime ? `${shortTime(shiftSource.shift.startTime)}–${shortTime(shiftSource.shift.endTime)}` : "műszak"}</span>
+          </div>
+        )}
+        <div className="tx-conn" data-ok={loadError ? "false" : "true"}>
+          <span className="tx-conn-dot" />
+          {loadError ? "Nincs kapcsolat" : "Online"}
+        </div>
+        <span className="tx-clock">{hhmm(now)}</span>
+        <button type="button" className="tx-icon-btn" aria-label={theme === "dark" ? "Világos téma" : "Sötét téma"} onClick={() => setTheme(theme === "dark" ? "light" : "dark")}>
+          {theme === "dark" ? <IconSun size={22} /> : <IconMoon size={22} />}
+        </button>
         {worker ? (
-          <div className="term-worker">
-            <span>
+          <div className="tx-worker">
+            <span className="tx-avatar">{initials(worker.name)}</span>
+            <span className="tx-worker-text">
               <strong>{worker.name}</strong>
-              <span className="term-sub">
+              <span className="tx-muted">
                 {worker.roleName} · még {secondsLeft} mp
               </span>
             </span>
-            <button type="button" className="term-btn term-btn-ghost" onClick={signOut}>
+            <button type="button" className="tx-worker-out" onClick={signOut}>
               Kilépés
             </button>
           </div>
         ) : (
           <button
             type="button"
-            className="term-btn term-btn-ghost"
+            className="tx-login"
             onClick={() => {
               setPinError(null);
               setPending({ title: "Belépés", permission: "", run: async () => undefined });
             }}
           >
-            Belépés kóddal
+            <IconLock size={22} /> Belépés kóddal
           </button>
         )}
       </header>
 
-      {message && <div className={`term-flash term-flash-${message.kind}`}>{message.kind === "ok" ? "✓ " : ""}{message.text}</div>}
-      {loadError && <div className="term-flash term-flash-error">Nincs kapcsolat a szerverrel: {loadError}</div>}
-      {!state && !loadError && <p className="term-sub">Betöltés…</p>}
+      {loadError && <div className="tx-offline">Nincs kapcsolat a szerverrel — a képernyő a legutóbbi állapotot mutatja. ({loadError})</div>}
 
-      {state?.machines.map((m) => {
-        const showHistory = showHistoryFor[m.id] ?? false;
-        return (
-          <section key={m.id} className="term-machine">
-            <div className="term-machine-head">
-              <h2>{m.name}</h2>
-              {m.shift && (
-                <div className="term-shift">
-                  <span>
-                    Műszak: <strong>{m.shift.shiftName}</strong>
-                  </span>
-                  <span>
-                    Jó: <strong>{m.shift.goodCount}</strong>
-                  </span>
-                  <span>
-                    Selejt: <strong className="term-scrap">{m.shift.scrapCount}</strong>
-                  </span>
-                  <span>
-                    OEE: <strong>{m.shift.oee !== null ? `${Math.round(m.shift.oee * 100)}%` : "—"}</strong>
-                  </span>
-                </div>
-              )}
-            </div>
-            <div className="term-status-row">
-              <StatusBadge m={m} />
-              <span className="term-spacer" />
-              <button type="button" className="term-btn term-btn-alarm" disabled={busy} onClick={() => setSheet({ kind: "fault", machineId: m.id })}>
-                Hiba jelentése
-              </button>
-              <button type="button" className="term-btn" disabled={busy} onClick={() => setSheet({ kind: "status", machineId: m.id })}>
-                Státusz
-              </button>
-            </div>
+      {!state && !loadError && <p className="tx-loading">Betöltés…</p>}
+      {state && machines.length === 0 && <p className="tx-loading">Ehhez a terminálhoz nincs gép rendelve (Admin → Terminals).</p>}
+      {state && selected && <TerminalMachineView key={selected.id} m={selected} busy={busy} now={now} actions={actionsFor(selected)} />}
+      {state && multi && !selected && <TerminalOverview machines={machines} now={now} onOpen={(id) => setSelectedId(id)} />}
 
-            {m.current.length === 0 && <p className="term-sub">Nincs ütemezett rendelés.</p>}
-            {m.current.map((a) => (
-              <OrderRow
-                key={a.id}
-                a={a}
-                order={m.orders[a.workOrderId]}
-                busy={busy}
-                act={act}
-                terminalId={terminalUiId}
-                onInstruction={(instruction, tab) => setViewer({ instruction, orderNumber: a.orderNumber, tab })}
-                onQuality={(checkId, purpose) => setFlow({ checkId, orderNumber: a.orderNumber, purpose })}
-              />
-            ))}
+      {message && (
+        <div className="tx-toast" data-kind={message.kind} role="status">
+          {message.kind === "ok" ? "✓ " : ""}
+          {message.text}
+        </div>
+      )}
 
-            {m.history.length > 0 && (
-              <div className="term-history">
-                <button type="button" className="term-btn term-btn-ghost term-btn-small" onClick={() => setShowHistoryFor((p) => ({ ...p, [m.id]: !showHistory }))}>
-                  {showHistory ? "Korábbiak elrejtése" : `Korábbiak (${m.history.length})`}
-                </button>
-                {showHistory &&
-                  m.history.map((a) => (
-                    <div key={a.id} className="term-order term-order-done">
-                      <div className="term-order-main">
-                        <div className="term-order-title">
-                          {a.orderNumber} — {a.partName}
-                        </div>
-                        <div className="term-sub">
-                          {a.quantity} db · {a.workOrderStatus === "completed" ? "Kész" : "Törölve"}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            )}
-
-            {m.recentReports.length > 0 && <div className="term-sub term-recent">Legutóbbi hibajelentések: {m.recentReports.map((r) => `${r.faultCode} (${r.status})`).join(", ")}</div>}
-          </section>
-        );
-      })}
-
-      {sheet && state && <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} />}
+      {sheet && state && (
+        <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} start={startOrder} complete={completeOrder} openCheck={(checkId, orderNumber) => setFlow({ checkId, orderNumber, purpose: { kind: "check" } })} />
+      )}
 
       {flow && (
         <TerminalQualityFlow
@@ -348,26 +442,20 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   );
 }
 
-function StatusBadge({ m }: { m: TerminalMachine }) {
-  if (!m.status) return <span className="term-status" style={{ borderColor: "#8a929b" }}>Nincs adat a gépről</span>;
-  const look = statusLook(m.status.code, m);
-  return (
-    <span className="term-status" style={{ borderColor: look.color }}>
-      <span className="term-status-dot" style={{ background: look.color }} aria-hidden="true" />
-      <span>
-        <strong>{look.label}</strong>
-        <span className="term-sub">
-          {" "}
-          · {clock(m.status.since)} óta
-          {m.status.manual ? ` · kézzel: ${m.status.manual.setBy ?? "?"}` : ""}
-        </span>
-        {m.status.manual?.blocksProduction && <span className="term-status-block">Gyártás tiltva — a darabok nem számítanak</span>}
-      </span>
-    </span>
-  );
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]!.toLocaleUpperCase("hu-HU"))
+    .join("");
 }
 
-/** The fault list and the status list of one machine; choosing asks the worker's code (via act). */
+function rank(c: { status: string; gating: boolean; overdue: boolean }): number {
+  return c.status === "failed" ? 0 : c.gating ? 1 : c.overdue ? 2 : 3;
+}
+
+/** The lists of one machine (fault, status, which order to start / complete, which check to measure, history). */
 function MachineSheet({
   sheet,
   state,
@@ -375,13 +463,19 @@ function MachineSheet({
   act,
   terminalId,
   flash,
+  start,
+  complete,
+  openCheck,
 }: {
-  sheet: { kind: "fault" | "status"; machineId: string };
+  sheet: Sheet;
   state: TerminalState;
   close: () => void;
   act: (action: Action) => void;
   terminalId: string;
   flash: (kind: "ok" | "error", text: string) => void;
+  start: (a: TerminalAssignment) => void;
+  complete: (a: TerminalAssignment) => void;
+  openCheck: (checkId: string, orderNumber: string) => void;
 }) {
   const m = state.machines.find((x) => x.id === sheet.machineId);
   if (!m) return null;
@@ -407,6 +501,59 @@ function MachineSheet({
             },
           });
         }}
+      />
+    );
+  }
+
+  if (sheet.kind === "start" || sheet.kind === "complete") {
+    const list = sheet.kind === "start" ? waitingOrders(m) : m.current.filter((a) => a.workOrderStatus === "in_progress");
+    return (
+      <TerminalChoiceSheet
+        title={`${sheet.kind === "start" ? "Melyik rendelést indítod?" : "Melyik rendelést zárod le?"} — ${m.name}`}
+        emptyText="Nincs ilyen rendelés."
+        choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: `${a.orderNumber} · ${int(a.quantity)} db · ${plannedText(a.plannedStart)}` }))}
+        onCancel={close}
+        onChoose={(id) => {
+          const a = list.find((x) => x.workOrderId === id)!;
+          close();
+          if (sheet.kind === "start") start(a);
+          else complete(a);
+        }}
+      />
+    );
+  }
+
+  if (sheet.kind === "measure") {
+    const checks = m.current.flatMap((a) => (m.orders[a.workOrderId]?.quality?.checks ?? []).map((c) => ({ c, a }))).sort((x, y) => rank(x.c) - rank(y.c));
+    return (
+      <TerminalChoiceSheet
+        title={`Mérés — ${m.name}`}
+        subtitle="Melyik ellenőrzést végzed?"
+        emptyText="Nincs nyitott ellenőrzés."
+        choices={checks.map(({ c, a }) => ({
+          key: c.id,
+          label: KIND_LABEL_HU[c.kind],
+          sub: `${a.orderNumber} · ${c.passedCount} / ${c.total} kész${c.status === "failed" ? " · tűrésen kívül" : c.overdue ? " · késésben" : ""}`,
+          tone: c.status === "failed" ? ("alarm" as const) : undefined,
+        }))}
+        onCancel={close}
+        onChoose={(id) => {
+          const found = checks.find((x) => x.c.id === id)!;
+          close();
+          openCheck(found.c.id, found.a.orderNumber);
+        }}
+      />
+    );
+  }
+
+  if (sheet.kind === "history") {
+    return (
+      <TerminalChoiceSheet
+        title={`Korábbi rendelések — ${m.name}`}
+        emptyText="Nincs korábbi rendelés."
+        choices={m.history.map((a) => ({ key: a.id, label: a.partName, sub: `${a.orderNumber} · ${int(a.quantity)} db · ${a.workOrderStatus === "completed" ? "kész" : "törölve"} · ${plannedText(a.plannedEnd)}` }))}
+        onCancel={close}
+        onChoose={close}
       />
     );
   }
@@ -464,170 +611,5 @@ function MachineSheet({
         });
       }}
     />
-  );
-}
-
-function OrderRow({
-  a,
-  order,
-  busy,
-  act,
-  terminalId,
-  onInstruction,
-  onQuality,
-}: {
-  a: TerminalAssignment;
-  order: TerminalState["machines"][number]["orders"][string] | undefined;
-  busy: boolean;
-  act: (action: Action) => void;
-  terminalId: string;
-  onInstruction: (instruction: WorkInstruction, tab: ViewerTab) => void;
-  onQuality: (checkId: string, purpose: FlowPurpose) => void;
-}) {
-  const running = a.workOrderStatus === "in_progress";
-  const progress = order?.progress;
-  const instruction = order?.instruction;
-  const quality = order?.quality ?? null;
-
-  function openInstruction(tab: ViewerTab) {
-    act({
-      title: `Munkautasítás: ${a.orderNumber}`,
-      permission: "terminal.open_instructions",
-      run: async (w) => {
-        const r = await terminalApi.openInstruction(terminalId, w.ticket, a.workOrderId);
-        onInstruction(r.instruction, tab);
-        return r.workerExpiresAt;
-      },
-    });
-  }
-
-  return (
-    <div className="term-order">
-      <div className="term-order-row">
-        <div className="term-order-main">
-          <div className="term-order-title">
-            {a.orderNumber} — {a.partName}
-          </div>
-          <div className="term-sub">
-            {a.quantity} db · {new Date(a.plannedStart).toLocaleString()} → {new Date(a.plannedEnd).toLocaleString()}
-          </div>
-          {running && progress && (
-            <div className="term-progress" data-done={progress.targetReached ? "true" : undefined}>
-              {progress.goodCount} / {progress.quantity} db kész{progress.targetReached ? " — célmennyiség elérve" : ` — ${progress.remaining} hátra`}
-              {progress.operator ? <span className="term-sub"> · indította: {progress.operator}</span> : null}
-            </div>
-          )}
-        </div>
-        {running ? (
-          <button
-            type="button"
-            className="term-btn term-btn-done"
-            disabled={busy}
-            onClick={() =>
-              act({
-                title: `Rendelés lezárása: ${a.orderNumber}`,
-                permission: "terminal.complete_work_order",
-                run: async (w) => {
-                  try {
-                    return (await terminalApi.complete(terminalId, w.ticket, a.workOrderId)).workerExpiresAt;
-                  } catch (err) {
-                    // A last-piece check comes first: the measurement opens; it closes the order at the end.
-                    if (err instanceof TerminalError && (err.code === "quality_check_required" || err.code === "quality_check_offered") && typeof err.data.checkId === "string") {
-                      onQuality(err.data.checkId, { kind: "complete", workOrderId: a.workOrderId, gating: err.code === "quality_check_required" });
-                      return;
-                    }
-                    throw err;
-                  }
-                },
-              })
-            }
-          >
-            Befejezés
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="term-btn term-btn-primary"
-            disabled={busy}
-            onClick={() =>
-              act({
-                title: `Rendelés indítása: ${a.orderNumber}`,
-                permission: "terminal.start_work_order",
-                run: async (w) => (await terminalApi.start(terminalId, w.ticket, a.workOrderId)).workerExpiresAt,
-              })
-            }
-          >
-            Elkezdés
-          </button>
-        )}
-      </div>
-      {running && quality && (
-        <div className="term-quality">
-          {quality.hold && (
-            <div className="term-quality-hold" role="status">
-              {quality.hold.reason === "first_piece" ? "Első darab mérés szükséges — addig a darabok nem számítanak" : "Tűrésen kívüli mérés — a darabszámlálás szünetel, amíg az újramérés meg nem felel"}
-            </div>
-          )}
-          <div className="term-quality-row">
-            {quality.checks.map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                className="term-btn term-quality-btn"
-                data-state={c.status === "failed" ? "fail" : c.overdue ? "late" : "due"}
-                disabled={busy}
-                onClick={() => onQuality(c.id, { kind: "check" })}
-              >
-                Mérés: {KIND_LABEL_HU[c.kind]}
-                <small>
-                  {c.passedCount} / {c.total} kész{c.status === "failed" ? " · tűrésen kívül" : c.overdue ? " · késésben" : ""}
-                </small>
-              </button>
-            ))}
-            {quality.planVersion !== null && !quality.checks.some((c) => c.kind === "spot") && (
-              <button
-                type="button"
-                className="term-btn term-btn-soft"
-                disabled={busy}
-                onClick={() =>
-                  act({
-                    title: `Szúrópróba most: ${a.orderNumber}`,
-                    permission: "quality.measure",
-                    run: async (w) => {
-                      const r = await terminalApi.requestSpotCheck(terminalId, w.ticket, a.workOrderId);
-                      onQuality(r.checkId, { kind: "check" });
-                      return r.workerExpiresAt;
-                    },
-                  })
-                }
-              >
-                Szúrópróba most
-              </button>
-            )}
-            {quality.checks.length === 0 && (
-              <span className="term-sub">
-                Minőség: rendben
-                {quality.spot?.enabled ? ` · szúrópróba ${[quality.spot.everyParts && `${quality.spot.everyParts} db`, quality.spot.maxMinutes && `legkésőbb ${quality.spot.maxMinutes} perc`].filter(Boolean).join(" / ")}` : ""}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-      {running && instruction && (
-        <div className="term-instruction">
-          <button type="button" className="term-btn term-btn-soft" disabled={busy} onClick={() => openInstruction("text")}>
-            Munkautasítás
-          </button>
-          {instruction.hasPdf && (
-            <button type="button" className="term-btn term-btn-soft" disabled={busy} onClick={() => openInstruction("pdf")}>
-              PDF megnyitása
-            </button>
-          )}
-          <span className="term-sub">
-            {instruction.partName} · v{instruction.version}
-          </span>
-        </div>
-      )}
-    </div>
   );
 }

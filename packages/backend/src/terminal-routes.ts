@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { recordAuditEvent } from "./audit-repository.js";
+import { pool } from "./db.js";
 import { checkThrottle, clearPinThrottle, pinThrottleKeys, POLICIES, registerThrottleFailure } from "./auth-throttle.js";
 import { listFaultCodes } from "./machine-fault-codes-repository.js";
 import { createFaultReport, isForeignKeyViolation, listFaultReportsPage } from "./fault-reports-repository.js";
@@ -76,6 +77,29 @@ async function workerFor(request: TerminalRequest, reply: FastifyReply, terminal
 const HISTORY_PER_MACHINE = 10;
 
 /**
+ * How fast the machine makes parts now: parts in the last hour, and the average cycle of the latest (up to 20)
+ * cycles — only while parts keep coming (the last one at most 10 minutes ago), else null.
+ */
+async function machineRate(machineId: string): Promise<{ partsLastHour: number; cycleSeconds: number | null; idealCycleSeconds: number | null }> {
+  const result = await pool.query<{ last_hour: string; first: Date | null; last: Date | null; n: string; ideal: string | null }>(
+    `WITH recent AS (
+       SELECT "timestamp" FROM events
+       WHERE machine_id = $1 AND type = 'production_count' AND "timestamp" >= now() - interval '60 minutes'
+       ORDER BY "timestamp" DESC
+     )
+     SELECT (SELECT count(*) FROM recent) AS last_hour, min(t) AS first, max(t) AS last, count(*) AS n,
+            (SELECT ideal_cycle_time_seconds FROM machines WHERE id = $1) AS ideal
+     FROM (SELECT "timestamp" AS t FROM recent LIMIT 21) x`,
+    [machineId],
+  );
+  const r = result.rows[0]!;
+  const n = Number(r.n);
+  const fresh = r.last !== null && Date.now() - new Date(r.last).getTime() <= 10 * 60_000;
+  const cycleSeconds = fresh && n >= 3 && r.first && r.last ? (new Date(r.last).getTime() - new Date(r.first).getTime()) / 1000 / (n - 1) : null;
+  return { partsLastHour: Number(r.last_hour), cycleSeconds, idealCycleSeconds: r.ideal === null ? null : Number(r.ideal) };
+}
+
+/**
  * The statuses a worker may set on a machine: its own definitions, then the global ones not overridden by code.
  * off_shift is left out: the shift calendar sets it, not the operator.
  */
@@ -97,13 +121,14 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
     const definitions = await listStatusDefinitions();
     const machines = await Promise.all(
       terminal.machineIds.map(async (machineId, i) => {
-        const [assignments, codes, reports, shift, status, manual] = await Promise.all([
+        const [assignments, codes, reports, shift, status, manual, rate] = await Promise.all([
           listAssignmentsForMachine(machineId),
           listFaultCodes(machineId),
           listFaultReportsPage({ machineIds: [machineId], limit: 5, offset: 0 }),
           getCurrentShiftSummaryForMachine(machineId).catch(() => undefined),
           currentStatus(machineId),
           getActiveManualStatus(machineId),
+          machineRate(machineId),
         ]);
         const done = (s: string) => s === "completed" || s === "cancelled";
         const current = assignments.filter((a) => !done(a.workOrderStatus));
@@ -114,14 +139,21 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
           await Promise.all(
             running.map(async (id) => {
               const partName = runningAssignments.find((a) => a.workOrderId === id)!.partName;
-              const [progress, instruction, quality] = await Promise.all([getWorkOrderProgress(id), getInstructionForWorkOrder(id), orderQuality(id, partName, machineId)]);
+              const [progress, instruction, quality, planned] = await Promise.all([
+                getWorkOrderProgress(id),
+                getInstructionForWorkOrder(id),
+                orderQuality(id, partName, machineId),
+                pool.query<{ s: string | null }>(`SELECT expected_cycle_time_seconds AS s FROM work_orders WHERE id = $1`, [id]),
+              ]);
+              const plannedCycle = planned.rows[0]?.s;
               return [
                 id,
                 {
-                  progress: progress ? { goodCount: progress.goodCount, scrapCount: progress.scrapCount, quantity: progress.quantity, remaining: progress.remaining, targetReached: progress.targetReached, operator: progress.operatorEmail } : null,
+                  progress: progress ? { goodCount: progress.goodCount, scrapCount: progress.scrapCount, quantity: progress.quantity, remaining: progress.remaining, targetReached: progress.targetReached, operator: progress.operatorEmail, startedAt: progress.startedAt ? new Date(progress.startedAt).toISOString() : null } : null,
                   // Only what the buttons need; the text and the file come when it is opened (and logged).
                   instruction: instruction ? { partName: instruction.partName, version: instruction.version, hasPdf: instruction.pdfFileId !== null } : null,
                   quality,
+                  plannedCycleSeconds: plannedCycle != null ? Number(plannedCycle) : null,
                 },
               ] as const;
             }),
@@ -139,11 +171,12 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
             : null,
           statusOptions: statusOptionsFor(definitions, machineId),
           shift: shift ?? null,
+          rate,
           current,
           history,
           orders,
           faultCodes: codes.filter((c) => c.isActive).map((c) => ({ id: c.id, code: c.code, name: c.name })),
-          recentReports: reports.rows.map((r) => ({ id: r.id, faultCode: r.faultCode, status: r.status })),
+          recentReports: reports.rows.map((r) => ({ id: r.id, faultCode: r.faultCode, faultName: r.faultName, status: r.status, reportedAt: r.reportedAt, reportedBy: r.reportedByEmail })),
         };
       }),
     );

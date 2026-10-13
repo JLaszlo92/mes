@@ -730,6 +730,7 @@ export async function orderQuality(workOrderId: string, partName: string, machin
   const active = await pool.query<CheckRow>(`${CHECK_SELECT} WHERE qc.work_order_id = $1 AND qc.status IN ('open', 'failed') ORDER BY qc.created_at`, [workOrderId]);
   const hold = await holdForMachine(machineId);
   const lastDone = await pool.query(`SELECT 1 FROM quality_checks WHERE work_order_id = $1 AND kind = 'last_piece' AND status IN ('passed', 'released', 'skipped') LIMIT 1`, [workOrderId]);
+  const closed = await pool.query<CheckRow>(`${CHECK_SELECT} WHERE qc.work_order_id = $1 AND qc.status NOT IN ('open', 'failed') ORDER BY qc.closed_at DESC NULLS LAST LIMIT 1`, [workOrderId]);
   if (!plan && active.rows.length === 0) return null;
   return {
     planVersion: plan?.version ?? null,
@@ -739,5 +740,7 @@ export async function orderQuality(workOrderId: string, partName: string, machin
     lastPieceDone: (lastDone.rowCount ?? 0) > 0,
     hold: hold && active.rows.some((r) => r.id === hold.checkId) ? hold : null,
     checks: active.rows.map(toCheck),
+    /** The latest closed check of the order (for "first piece passed at 18:09"). */
+    lastClosed: closed.rows[0] ? toCheck(closed.rows[0]) : null,
   };
 }

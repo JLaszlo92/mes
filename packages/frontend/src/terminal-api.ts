@@ -91,19 +91,35 @@ export interface TerminalMachine {
   status: { code: string; since: string; manual: { code: string; setBy: string | null; setAt: string; blocksProduction: boolean } | null } | null;
   /** What a worker may set (Admin → Status definitions). */
   statusOptions: StatusOption[];
-  shift: { shiftName: string; goodCount: number; scrapCount: number; oee: number | null } | null;
+  shift: {
+    shiftName: string;
+    goodCount: number;
+    scrapCount: number;
+    oee: number | null;
+    availability: number;
+    performance: number | null;
+    quality: number | null;
+    /** "HH:MM:SS" of the shift pattern, when the machine has one. */
+    startTime?: string | null;
+    endTime?: string | null;
+    downSeconds?: number;
+    downCount?: number;
+  } | null;
+  /** Parts in the last hour; the average cycle of the latest parts (null when no parts came lately). */
+  rate: { partsLastHour: number; cycleSeconds: number | null; idealCycleSeconds: number | null };
   current: TerminalAssignment[];
   history: TerminalAssignment[];
   orders: Record<
     string,
     {
-      progress: { goodCount: number; scrapCount: number; quantity: number; remaining: number; targetReached: boolean; operator: string | null } | null;
+      progress: { goodCount: number; scrapCount: number; quantity: number; remaining: number; targetReached: boolean; operator: string | null; startedAt: string | null } | null;
       instruction: { partName: string; version: number; hasPdf: boolean } | null;
       quality: OrderQuality | null;
+      plannedCycleSeconds: number | null;
     }
   >;
   faultCodes: { id: string; code: string; name: string }[];
-  recentReports: { id: string; faultCode: string; status: string }[];
+  recentReports: { id: string; faultCode: string; faultName: string; status: string; reportedAt: string; reportedBy: string | null }[];
 }
 
 export interface OrderQuality {
@@ -116,6 +132,7 @@ export interface OrderQuality {
   hold: { checkId: string; kind: CheckKind; reason: "first_piece" | "failed"; since: string } | null;
   /** Open and failed checks of the order. */
   checks: QualityCheck[];
+  lastClosed: QualityCheck | null;
 }
 
 export interface TerminalState {

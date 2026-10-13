@@ -97,6 +97,12 @@ importers:
 
   packages/frontend:
     dependencies:
+      '@fontsource/barlow':
+        specifier: 5.1.1
+        version: 5.1.1
+      '@fontsource/barlow-condensed':
+        specifier: 5.1.1
+        version: 5.1.1
       '@mes/shared':
         specifier: workspace:*
         version: link:../shared
@@ -548,6 +554,12 @@ packages:
 
   '@fastify/websocket@11.3.0':
     resolution: {integrity: sha512-g89ag4BCcD9YP5wBZXixzoLnuf5j89p/sXFcfpCiv2pdEkYYukBEoK3heVzqsp0EAtszVDc2BBZG0KZqeAShIA==}
+
+  '@fontsource/barlow-condensed@5.1.1':
+    resolution: {integrity: sha512-UaZXefUm5gzQkGq1BUHgrqfOUc05TFAbpGUgOeTjE0+FmYyKNHGI9UhYkYFcSLOmMJU71Pkkc2AcaUbxT8RZ2g==}
+
+  '@fontsource/barlow@5.1.1':
+    resolution: {integrity: sha512-41BWOY3bZg0Hc7eQkeMEFIPUIt2wkVYHhfhlV8VVVaiRBdQw5JY8NT9qpB3Z/IKZ9dQuhHzUjuQJu9ALmjEwig==}
 
   '@jridgewell/gen-mapping@0.3.13':
     resolution: {integrity: sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA==}
@@ -2713,6 +2725,10 @@ snapshots:
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
+
+  '@fontsource/barlow-condensed@5.1.1': {}
+
+  '@fontsource/barlow@5.1.1': {}
 
   '@jridgewell/gen-mapping@0.3.13':
     dependencies:

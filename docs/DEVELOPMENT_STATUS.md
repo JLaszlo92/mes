@@ -1812,6 +1812,48 @@ No migration. Backend `spc.ts` (pure maths, unit-tested), `spc-repository.ts`, t
   tool-wear drift and an out-of-tolerance part (Cpk 1.51 but Ppk 0.80 → "Not capable, Not stable"; it read "Capable" before the
   lower-of rule); Chromium: table, detail, tooltip, histogram, values table → check drawer, first attempts only, narrow screen.
 
+## Terminal: new screen, dark / light, layout by the number of machines — Oct 13 (evening)
+
+Frontend mostly (`TerminalPage.tsx` rewritten as the shell; new `TerminalMachineView.tsx`, `TerminalOverview.tsx`,
+`TerminalIcons.tsx`, `terminal-model.ts`; styles `.tx-*` in `theme.css`), after the design canvas the user approved.
+**New dependency**: `@fontsource/barlow`, `@fontsource/barlow-condensed` (self-hosted font, no internet needed on the
+shop floor) — run `pnpm install` before the build.
+
+- **Principles** (ISA-101 style): full screen, nothing scrolls on a 1280×800 tablet, everything always in the same place;
+  grey surface, colour only for the machine state (green running, red down / counts as down, blue-grey planned stop,
+  grey idle / no data) and for what needs attention (red: stops the count, amber: needs someone soon); a shape next to
+  every colour (state icon, square vs circle dots). Hungarian only, 24 h clock, decimal comma.
+- **Dark theme by default**, light on a button in the header (remembered per device in `localStorage`). The theme also
+  re-colours the PIN pad, the lists, the measurement screen and the PDF viewer (it overrides the `--c-*` variables).
+- **One machine**: header (machine, terminal, shift with times, online / no connection, clock, theme, worker with the
+  seconds left or "Belépés kóddal") · **state band** across the screen (state, since when, set by hand by whom, production
+  blocked; when running the cycle time and parts per hour against the plan, otherwise the stop time of the shift) ·
+  **to-dos** (out-of-tolerance measurement, first piece needed, spot check overdue / due, open fault report of the last
+  24 h, each with its button) · the **running order** (part, order, huge counter, progress, scrap, remaining, expected end
+  at the current pace, who started it; "Számlálás szünetel" when a quality check or a blocking manual status holds the
+  count) · **shift OEE** with its three parts and the **quality** summary (last closed check, spot-check rule) · the next
+  orders and the earlier ones · the **action rail**: Befejezés / Indítás (a list if several), Hiba jelentése, Státusz,
+  Mérés (badge with the open checks; "szúrópróba most" when none), Munkautasítás. With an alarm to-do, Mérés moves to the
+  top as the primary button.
+- **2–4 machines**: tiles (2 side by side, 3 in a row, 4 as 2×2), the ones needing attention first, coloured border and the
+  top to-do on the tile. **5+ machines**: one row per machine, needing attention first, filter chips with counts (Mind,
+  Figyelmet kér, Áll, Gyárt, Tétlen) and the average OEE. A tap opens the machine's own screen with "‹ Összes gép" and
+  (up to 4 machines) a machine switcher; after **90 s without a touch** it goes back to the overview. Actions exist only on
+  a machine's own screen, so nothing is booked on the wrong machine.
+- **Backend (state endpoint)**: per machine `rate` (parts in the last hour, the average cycle of the latest up to 20
+  parts while parts keep coming, the machine's ideal cycle), the shift's start / end time and its stop time and count
+  (`getCurrentShiftSummaryForAllMachines` gained `startTime`, `endTime`, `downSeconds`, `downCount`), per running order
+  its planned cycle (`work_orders.expected_cycle_time_seconds`), its start time and the latest closed quality check
+  (`orderQuality().lastClosed`), and the fault reports with name, time and reporter.
+- Smaller screens: at 1024 px the shift and the switcher hide and the rail narrows; in portrait (≤ 860 px) the page scrolls,
+  the rail becomes a two-column grid under the content and the list shows state, machine and to-do.
+- Tested: Chromium on a 1-machine, a 4-machine and a 9-machine terminal (seeded: running, manual blocking status, first
+  piece holding the count, open fault report, no order, no data), dark and light, 1024×768 and 800×1280; complete → start
+  the next order, set and end a planned manual status, measure a first piece from the to-do with a quality operator's code
+  (the operator was signed in), no page errors. `pnpm test`: backend 350.
+- Not done yet: scrap with a reason at the terminal (the rail has no "Selejt" button yet), the stop reason asked at the
+  terminal, WebSocket push instead of the 2 s poll, an andon (wall display) mode.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
