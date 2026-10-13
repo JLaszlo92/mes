@@ -52,7 +52,8 @@ export interface QualityPlan {
   version: number;
   isCurrent: boolean;
   isActive: boolean;
-  firstPiece: { enabled: boolean; gatesCounting: boolean };
+  /** onResume: measured again when a paused order is resumed (otherwise once per order). */
+  firstPiece: { enabled: boolean; gatesCounting: boolean; onResume: boolean };
   lastPiece: { enabled: boolean; gatesCompletion: boolean };
   spot: { enabled: boolean; everyParts: number | null; maxMinutes: number | null; graceMinutes: number };
   notes: string | null;
@@ -69,6 +70,7 @@ type PlanRow = {
   is_active: boolean;
   first_piece_enabled: boolean;
   first_piece_gates_counting: boolean;
+  first_piece_on_resume: boolean;
   last_piece_enabled: boolean;
   last_piece_gates_completion: boolean;
   spot_enabled: boolean;
@@ -126,7 +128,7 @@ function toPlan(r: PlanRow, chars: Characteristic[]): QualityPlan {
     version: r.version,
     isCurrent: r.is_current,
     isActive: r.is_active,
-    firstPiece: { enabled: r.first_piece_enabled, gatesCounting: r.first_piece_gates_counting },
+    firstPiece: { enabled: r.first_piece_enabled, gatesCounting: r.first_piece_gates_counting, onResume: r.first_piece_on_resume },
     lastPiece: { enabled: r.last_piece_enabled, gatesCompletion: r.last_piece_gates_completion },
     spot: { enabled: r.spot_enabled, everyParts: r.spot_every_parts, maxMinutes: r.spot_max_minutes, graceMinutes: r.spot_grace_minutes },
     notes: r.notes,
@@ -188,8 +190,8 @@ export async function createPlanVersion(input: PlanInput, userId: string): Promi
     const id = randomUUID();
     await client.query(
       `INSERT INTO quality_plans (id, part_name, version, first_piece_enabled, first_piece_gates_counting, last_piece_enabled, last_piece_gates_completion,
-                                  spot_enabled, spot_every_parts, spot_max_minutes, spot_grace_minutes, notes, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+                                  spot_enabled, spot_every_parts, spot_max_minutes, spot_grace_minutes, notes, created_by, first_piece_on_resume)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         id,
         input.partName,
@@ -204,6 +206,7 @@ export async function createPlanVersion(input: PlanInput, userId: string): Promi
         input.spot.graceMinutes,
         input.notes,
         userId,
+        input.firstPiece.enabled && input.firstPiece.onResume,
       ],
     );
     for (const [i, c] of input.characteristics.entries()) {
@@ -485,7 +488,7 @@ async function partOf(workOrderId: string): Promise<string | undefined> {
  * Opens a check of this kind for the order if its plan has one and none is active yet. Returns the active check's id
  * (new or existing), or undefined if the plan has no such check.
  */
-export async function ensureCheck(input: { workOrderId: string; kind: CheckKind; trigger: "start" | "complete" | "parts" | "time" | "manual"; machineId?: string | null }): Promise<string | undefined> {
+export async function ensureCheck(input: { workOrderId: string; kind: CheckKind; trigger: "start" | "resume" | "complete" | "parts" | "time" | "manual"; machineId?: string | null }): Promise<string | undefined> {
   const part = await partOf(input.workOrderId);
   if (part === undefined) return undefined;
   const plan = await getActivePlanForPart(part);
@@ -506,8 +509,16 @@ export async function ensureCheck(input: { workOrderId: string; kind: CheckKind;
   return existing.rows[0]?.id;
 }
 
-/** The order was started: the first-piece check opens (once per order). */
-export async function onWorkOrderStarted(workOrderId: string, machineId?: string | null): Promise<string | undefined> {
+/**
+ * The order was started: the first-piece check opens (once per order). When a paused order is resumed and its plan
+ * says so (first piece "on resume"), a new first-piece check opens for the new run.
+ */
+export async function onWorkOrderStarted(workOrderId: string, machineId?: string | null, options: { resumed?: boolean } = {}): Promise<string | undefined> {
+  if (options.resumed) {
+    const part = await partOf(workOrderId);
+    const plan = part === undefined ? undefined : await getActivePlanForPart(part);
+    if (plan?.firstPiece.enabled && plan.firstPiece.onResume) return ensureCheck({ workOrderId, kind: "first_piece", trigger: "resume", machineId });
+  }
   const done = await pool.query(`SELECT 1 FROM quality_checks WHERE work_order_id = $1 AND kind = 'first_piece' LIMIT 1`, [workOrderId]);
   if (done.rowCount) return undefined;
   return ensureCheck({ workOrderId, kind: "first_piece", trigger: "start", machineId });

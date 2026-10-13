@@ -33,6 +33,7 @@ interface Draft {
   notes: string;
   firstEnabled: boolean;
   firstGates: boolean;
+  firstOnResume: boolean;
   lastEnabled: boolean;
   lastGates: boolean;
   spotEnabled: boolean;
@@ -56,6 +57,7 @@ function toDraft(plan?: QualityPlan): Draft {
       notes: "",
       firstEnabled: true,
       firstGates: true,
+      firstOnResume: false,
       lastEnabled: false,
       lastGates: true,
       spotEnabled: false,
@@ -70,6 +72,7 @@ function toDraft(plan?: QualityPlan): Draft {
     notes: plan.notes ?? "",
     firstEnabled: plan.firstPiece.enabled,
     firstGates: plan.firstPiece.gatesCounting,
+    firstOnResume: plan.firstPiece.onResume ?? false,
     lastEnabled: plan.lastPiece.enabled,
     lastGates: plan.lastPiece.gatesCompletion,
     spotEnabled: plan.spot.enabled,
@@ -213,7 +216,7 @@ export default function QualityPlanDrawer({
       const plan = await savePlan({
         partName: draft.partName.trim(),
         notes: draft.notes.trim() || null,
-        firstPiece: { enabled: draft.firstEnabled, gatesCounting: draft.firstGates },
+        firstPiece: { enabled: draft.firstEnabled, gatesCounting: draft.firstGates, onResume: draft.firstOnResume },
         lastPiece: { enabled: draft.lastEnabled, gatesCompletion: draft.lastGates },
         spot: { enabled: draft.spotEnabled, everyParts: numOrNull(draft.spotEveryParts), maxMinutes: numOrNull(draft.spotMaxMinutes), graceMinutes: numOrNull(draft.spotGraceMinutes) ?? 15 },
         characteristics: chars.map((c) => ({
@@ -342,6 +345,13 @@ export default function QualityPlanDrawer({
                 <label className="ui-check q-sub-option">
                   <input type="checkbox" checked={draft.firstGates} onChange={(e) => set("firstGates", e.target.checked)} />
                   Parts are counted only after it passes
+                </label>
+              )}
+              {draft.firstEnabled && (
+                <label className="ui-check q-sub-option">
+                  <input type="checkbox" checked={draft.firstOnResume} onChange={(e) => set("firstOnResume", e.target.checked)} />
+                  Again when a paused order is resumed
+                  <span className="ui-sub"> — e.g. after a re-setup; otherwise once per order</span>
                 </label>
               )}
               {err("first") && <p className="ui-field-error">{err("first")}</p>}
@@ -504,7 +514,7 @@ export default function QualityPlanDrawer({
                 <li key={v.id}>
                   <strong>v{v.version}</strong> · {formatDateTime(v.createdAt)} · {v.createdByName ?? "—"}
                   <span className="ui-sub">
-                    {[v.firstPiece.enabled && "first piece", v.lastPiece.enabled && "last piece", v.spot.enabled && "spot check"].filter(Boolean).join(", ") || "no checks"} ·{" "}
+                    {[v.firstPiece.enabled && (v.firstPiece.onResume ? "first piece (also on resume)" : "first piece"), v.lastPiece.enabled && "last piece", v.spot.enabled && "spot check"].filter(Boolean).join(", ") || "no checks"} ·{" "}
                     {v.characteristics.map((c) => `${c.name} ${formatLimits(c)}`).join("; ")}
                   </span>
                 </li>

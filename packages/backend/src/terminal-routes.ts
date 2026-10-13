@@ -284,7 +284,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
       details: { status: "in_progress", resumed, machineId: assignment.machineId, changes: change.changes, terminalId: terminal.id, terminal: terminal.name },
       ipAddress: request.ip,
     });
-    await onWorkOrderStarted(workOrderId, assignment.machineId);
+    await onWorkOrderStarted(workOrderId, assignment.machineId, { resumed });
     return { success: true, status: "in_progress", resumed, workerExpiresAt: worker.expiresAt };
   });
 

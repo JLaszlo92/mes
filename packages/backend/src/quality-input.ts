@@ -25,7 +25,7 @@ export interface CharacteristicInput {
 export interface PlanInput {
   partName: string;
   notes: string | null;
-  firstPiece: { enabled: boolean; gatesCounting: boolean };
+  firstPiece: { enabled: boolean; gatesCounting: boolean; onResume: boolean };
   lastPiece: { enabled: boolean; gatesCompletion: boolean };
   spot: { enabled: boolean; everyParts: number | null; maxMinutes: number | null; graceMinutes: number };
   characteristics: CharacteristicInput[];
@@ -142,7 +142,7 @@ export function parsePlanInput(body: unknown): Parsed<PlanInput> {
     characteristics.push(item);
   }
 
-  const firstPiece = { enabled: bool(fp.enabled, false), gatesCounting: bool(fp.gatesCounting, true) };
+  const firstPiece = { enabled: bool(fp.enabled, false), gatesCounting: bool(fp.gatesCounting, true), onResume: bool(fp.onResume, false) };
   const lastPiece = { enabled: bool(lp.enabled, false), gatesCompletion: bool(lp.gatesCompletion, true) };
   if (firstPiece.enabled && !characteristics.some((c) => c.inFirstPiece)) return bad("firstPiece.enabled", "the first-piece check has no measurement");
   if (lastPiece.enabled && !characteristics.some((c) => c.inLastPiece)) return bad("lastPiece.enabled", "the last-piece check has no measurement");

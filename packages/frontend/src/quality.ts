@@ -32,7 +32,7 @@ export interface QualityPlan {
   version: number;
   isCurrent: boolean;
   isActive: boolean;
-  firstPiece: { enabled: boolean; gatesCounting: boolean };
+  firstPiece: { enabled: boolean; gatesCounting: boolean; onResume: boolean };
   lastPiece: { enabled: boolean; gatesCompletion: boolean };
   spot: { enabled: boolean; everyParts: number | null; maxMinutes: number | null; graceMinutes: number };
   notes: string | null;
@@ -102,6 +102,7 @@ export const STATUS_LABEL: Record<CheckStatus, string> = {
 };
 export const TRIGGER_LABEL: Record<string, string> = {
   start: "order started",
+  resume: "order resumed",
   complete: "order completion",
   parts: "part count",
   time: "time limit",

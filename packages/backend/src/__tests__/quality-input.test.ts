@@ -20,6 +20,12 @@ describe("parsePlanInput", () => {
     expect(r.value.spot).toEqual({ enabled: true, everyParts: 50, maxMinutes: 60, graceMinutes: 15 });
     expect(r.value.characteristics[1]).toMatchObject({ kind: "attribute", lowerLimit: null, unit: null, inSpot: false });
   });
+  it("first piece again on resume: off unless asked", () => {
+    const off = parsePlanInput({ partName: "P", firstPiece: { enabled: true }, characteristics: [visual] });
+    expect(off.ok && off.value.firstPiece).toEqual({ enabled: true, gatesCounting: true, onResume: false });
+    const on = parsePlanInput({ partName: "P", firstPiece: { enabled: true, onResume: true }, characteristics: [visual] });
+    expect(on.ok && on.value.firstPiece.onResume).toBe(true);
+  });
   it("accepts a decimal comma", () => {
     const r = parsePlanInput({ partName: "P", characteristics: [{ ...diameter, lowerLimit: "9,95" }] });
     expect(r.ok && r.value.characteristics[0]!.lowerLimit).toBe(9.95);

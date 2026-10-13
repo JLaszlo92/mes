@@ -56,7 +56,7 @@ async function afterChange(request: FastifyRequest, change: WorkOrderChange, det
     await generateLotForWorkOrder(change.current.id);
   }
   if (change.changes.status) {
-    if (change.current.status === "in_progress") await onWorkOrderStarted(change.current.id);
+    if (change.current.status === "in_progress") await onWorkOrderStarted(change.current.id, undefined, { resumed: change.changes.status.from === "paused" });
     if (change.current.status === "paused") await onWorkOrderPaused(change.current.id);
     if (change.current.status === "completed" || change.current.status === "cancelled") await onWorkOrderClosed(change.current.id);
   }
