@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { TerminalMachine } from "./terminal-api.js";
-import { attentionItems, int, percent, plannedText, runningOrder, sinceShort, sortForOverview, statusView, waitingOrders, type Tone } from "./terminal-model.js";
+import { attentionItems, int, percent, plannedText, runningOrder, sinceShort, sortForOverview, statusView, waitingOrders, waitingText, isPaused, type Tone } from "./terminal-model.js";
 import { IconChevronRight, IconClock, IconFault, IconX } from "./TerminalIcons.js";
 
 /**
@@ -50,13 +50,11 @@ function Tiles({ machines, now, onOpen }: { machines: TerminalMachine[]; now: nu
                 </>
               ) : (
                 <>
-                  <span className="tx-muted">{next ? "Következő a sorban" : "Nincs ütemezett rendelés"}</span>
+                  <span className="tx-muted">{next ? (isPaused(next) ? "Szüneteltetett megbízás" : "Következő a sorban") : "Nincs ütemezett rendelés"}</span>
                   {next && (
                     <div className="tx-tile-order">
                       <strong>{next.partName}</strong>
-                      <span className="tx-muted">
-                        {next.orderNumber} · {int(next.quantity)} db · {plannedText(next.plannedStart)}
-                      </span>
+                      <span className="tx-muted">{waitingText(m, next)}</span>
                     </div>
                   )}
                 </>
@@ -69,7 +67,7 @@ function Tiles({ machines, now, onOpen }: { machines: TerminalMachine[]; now: nu
                   </span>
                 ) : (
                   <span className="tx-muted tx-tile-open">
-                    <IconChevronRight size={20} /> {run ? "Részletek és műveletek" : next ? "Megnyitás az indításhoz" : "Megnyitás"}
+                    <IconChevronRight size={20} /> {run ? "Részletek és műveletek" : next ? (isPaused(next) ? "Megnyitás a folytatáshoz" : "Megnyitás az indításhoz") : "Megnyitás"}
                   </span>
                 )}
               </div>
@@ -136,6 +134,7 @@ function List({ machines, now, onOpen }: { machines: TerminalMachine[]; now: num
           const run = runningOrder(m);
           const progress = run ? m.orders[run.workOrderId]?.progress : null;
           const next = waitingOrders(m)[0];
+          const pausedNext = next && isPaused(next) ? m.paused?.[next.workOrderId] : undefined;
           const item = items[0];
           return (
             <button key={m.id} type="button" className="tx-list-row" data-attention={item?.severity} onClick={() => onOpen(m.id)} aria-label={`${m.name} megnyitása`}>
@@ -154,12 +153,15 @@ function List({ machines, now, onOpen }: { machines: TerminalMachine[]; now: num
                     <strong>{run.partName}</strong>
                     <span className="tx-muted">{run.orderNumber}</span>
                   </>
+                ) : next && isPaused(next) ? (
+                  <>
+                    <strong>{next.partName}</strong>
+                    <span className="tx-paused-tag">szüneteltetve · {next.orderNumber}</span>
+                  </>
                 ) : next ? (
                   <>
                     <span className="tx-muted">Következő: {next.partName}</span>
-                    <span className="tx-faint">
-                      {next.orderNumber} · {plannedText(next.plannedStart)}
-                    </span>
+                    <span className="tx-faint">{waitingText(m, next)}</span>
                   </>
                 ) : (
                   <span className="tx-faint">—</span>
@@ -173,6 +175,15 @@ function List({ machines, now, onOpen }: { machines: TerminalMachine[]; now: num
                     </span>
                     <span className="tx-progress tx-progress-thin">
                       <span style={{ width: `${Math.min(100, (progress.goodCount / Math.max(1, progress.quantity)) * 100)}%` }} />
+                    </span>
+                  </>
+                ) : pausedNext ? (
+                  <>
+                    <span>
+                      <strong>{int(pausedNext.goodCount)}</strong> / {int(pausedNext.quantity)} db
+                    </span>
+                    <span className="tx-progress tx-progress-thin" data-paused="true">
+                      <span style={{ width: `${Math.min(100, (pausedNext.goodCount / Math.max(1, pausedNext.quantity)) * 100)}%` }} />
                     </span>
                   </>
                 ) : (

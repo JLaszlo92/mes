@@ -2,6 +2,7 @@ import { computeWorkOrderProgress, updateWorkOrder, findAutoCompleteCandidates }
 import { generateLotForWorkOrder } from "./lots-repository.js";
 import { recordAuditEvent } from "./audit-repository.js";
 import { lastPieceGate, onWorkOrderClosed } from "./quality-repository.js";
+import { syncRunsOnStatusChange } from "./work-order-runs.js";
 
 /**
  * Ellenőrzi (egy adott gépre, vagy ha nincs megadva, mindegyikre), hogy
@@ -20,6 +21,7 @@ export async function checkAndAutoCompleteWorkOrders(machineId?: string): Promis
     if (!gate.ok && gate.gating) continue;
 
     await updateWorkOrder(candidate.id, { status: "completed" });
+    await syncRunsOnStatusChange({ workOrderId: candidate.id, to: "completed", user: { id: null, name: "system" } });
     await generateLotForWorkOrder(candidate.id);
     await onWorkOrderClosed(candidate.id);
     await recordAuditEvent({

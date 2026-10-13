@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { randomUUID } from "node:crypto";
 import { recordAuditEvent } from "./audit-repository.js";
 import { pool } from "./db.js";
 import { checkThrottle, clearPinThrottle, pinThrottleKeys, POLICIES, registerThrottleFailure } from "./auth-throttle.js";
@@ -13,13 +14,17 @@ import { listAssignmentsForMachine } from "./work-order-assignments-repository.j
 import { getInstructionFile, getInstructionForWorkOrder, instructionFileExists, recordView } from "./work-instructions-repository.js";
 import { getWorkOrderProgress, patchWorkOrder } from "./work-orders-repository.js";
 import { workerTickets } from "./terminal-workers.js";
+import { closedTotals, closeRun, getOpenRun, listRuns, liveCounts, openRun, reportOutcome } from "./work-order-runs.js";
 import { listStatusDefinitions } from "./machine-status-definitions-repository.js";
 import { bookScrap, getScrapMode, listScrapReasons, MAX_BOOKING_QUANTITY, reasonsForMachine } from "./scrap-repository.js";
 import { currentStatus, endManualStatus, getActiveManualStatus, setManualStatus } from "./manual-status.js";
-import { ensureCheck, getCheck, getCheckDetail, lastPieceGate, onWorkOrderClosed, onWorkOrderStarted, orderQuality, QualityError, recordMeasurement, releaseCheck, skipCheck } from "./quality-repository.js";
+import { ensureCheck, getCheck, getCheckDetail, lastPieceGate, onWorkOrderClosed, onWorkOrderPaused, onWorkOrderStarted, orderQuality, QualityError, recordMeasurement, releaseCheck, skipCheck } from "./quality-repository.js";
 
 /** Permissions outside "terminal." that are used at the terminal (quality measurements). */
 const TERMINAL_EXTRA_PERMISSIONS: readonly string[] = ["quality.measure", "quality.release"];
+
+/** The highest good count a report may give. */
+const MAX_REPORTED_GOOD = 1_000_000;
 
 /**
  * A gép melletti terminál API-ja.
@@ -164,6 +169,27 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
             }),
           ),
         );
+        // Paused orders waiting to be resumed here: how far they got and when they were reported off.
+        const paused = Object.fromEntries(
+          await Promise.all(
+            [...new Set(current.filter((a) => a.workOrderStatus === "paused").map((a) => a.workOrderId))].map(async (id) => {
+              const [progress, runs] = await Promise.all([getWorkOrderProgress(id), listRuns(id)]);
+              const last = runs.filter((r) => r.endedAt !== null).at(-1);
+              return [
+                id,
+                {
+                  goodCount: progress?.goodCount ?? 0,
+                  scrapCount: progress?.scrapCount ?? 0,
+                  quantity: progress?.quantity ?? 0,
+                  remaining: progress?.remaining ?? 0,
+                  pausedAt: last?.endedAt ?? null,
+                  pausedBy: last?.endedByName ?? null,
+                  runs: runs.length,
+                },
+              ] as const;
+            }),
+          ),
+        );
         return {
           id: machineId,
           name: terminal.machineNames[i] ?? machineId,
@@ -182,6 +208,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
           current,
           history,
           orders,
+          paused,
           faultCodes: codes.filter((c) => c.isActive).map((c) => ({ id: c.id, code: c.code, name: c.name })),
           recentReports: reports.rows.map((r) => ({ id: r.id, faultCode: r.faultCode, faultName: r.faultName, status: r.status, reportedAt: r.reportedAt, reportedBy: r.reportedByEmail })),
         };
@@ -233,23 +260,140 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
     return undefined;
   }
 
-  async function changeStatus(request: TerminalRequest, reply: FastifyReply, to: "in_progress" | "completed") {
+  app.post<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/start", async (request, reply) => {
     const terminal = await terminalOf(request, reply);
     if (!terminal) return reply;
-    const worker = await workerFor(request, reply, terminal.id, to === "in_progress" ? "terminal.start_work_order" : "terminal.complete_work_order");
+    const worker = await workerFor(request, reply, terminal.id, "terminal.start_work_order");
     if (!worker) return reply;
-    const workOrderId = request.params.workOrderId!;
+    const workOrderId = request.params.workOrderId;
+    // Only on a machine of this terminal the order is scheduled on: a paused order is resumed where it is planned.
     const assignment = await orderOnTerminal(terminal, workOrderId);
     if (!assignment) return fail(reply, 404, "this work order is not scheduled on this terminal's machines");
-    const allowedFrom = to === "in_progress" ? ["planned", "released"] : ["in_progress"];
-    if (!allowedFrom.includes(assignment.workOrderStatus)) {
-      return fail(reply, 409, to === "in_progress" ? "this work order cannot be started (it is not planned or released)" : "only a running work order can be completed");
+    if (!["planned", "released", "paused"].includes(assignment.workOrderStatus)) {
+      return fail(reply, 409, "this work order cannot be started (it is not planned, released or paused)");
     }
-    if (to === "completed") {
+    const resumed = assignment.workOrderStatus === "paused";
+    const change = await patchWorkOrder(workOrderId, { status: "in_progress" });
+    if (!change) return fail(reply, 404, "unknown work order");
+    await openRun({ workOrderId, machineId: assignment.machineId, user: { id: worker.user.id, name: worker.user.name } });
+    await recordAuditEvent({
+      actorId: worker.user.id,
+      actorEmail: worker.user.name,
+      action: "work_order_updated",
+      target: workOrderId,
+      details: { status: "in_progress", resumed, machineId: assignment.machineId, changes: change.changes, terminalId: terminal.id, terminal: terminal.name },
+      ipAddress: request.ip,
+    });
+    await onWorkOrderStarted(workOrderId, assignment.machineId);
+    return { success: true, status: "in_progress", resumed, workerExpiresAt: worker.expiresAt };
+  });
+
+  /** The open run of a running order (one is opened from the first start for an order running since before runs). */
+  async function openRunOf(workOrderId: string, machineId: string) {
+    const open = await getOpenRun(workOrderId);
+    if (open) return open;
+    const legacy = await getWorkOrderProgress(workOrderId);
+    await pool.query(
+      `INSERT INTO work_order_runs (id, work_order_id, machine_id, started_at, started_by_name) VALUES ($1, $2, $3, COALESCE($4::timestamptz, now()), $5)
+       ON CONFLICT (work_order_id) WHERE ended_at IS NULL DO NOTHING`,
+      [randomUUID(), workOrderId, machineId, legacy?.startedAt ?? null, legacy?.operatorEmail ?? null],
+    );
+    return (await getOpenRun(workOrderId))!;
+  }
+
+  // What the report dialog starts from: the machine's count of this run, the earlier runs, the scrap reasons.
+  app.get<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/report-draft", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    const workOrderId = request.params.workOrderId;
+    const assignment = await orderOnTerminal(terminal, workOrderId);
+    if (!assignment) return fail(reply, 404, "this work order is not scheduled on this terminal's machines");
+    if (assignment.workOrderStatus !== "in_progress") return fail(reply, 409, "only a running work order can be reported");
+    const wo = (
+      await pool.query<{ quantity: number; count_overproduction: boolean; completion_mode: string }>(
+        `SELECT quantity, count_overproduction, completion_mode FROM work_orders WHERE id = $1`,
+        [workOrderId],
+      )
+    ).rows[0]!;
+    const run = await openRunOf(workOrderId, assignment.machineId);
+    const runs = await listRuns(workOrderId);
+    const previous = closedTotals(runs);
+    const live = await liveCounts(run, runs, wo.quantity, wo.count_overproduction);
+    const machineId = run.machineId ?? assignment.machineId;
+    return {
+      workOrderId,
+      orderNumber: assignment.orderNumber,
+      partName: assignment.partName,
+      quantity: wo.quantity,
+      completionMode: wo.completion_mode,
+      machineId,
+      scrapMode: (await getScrapMode(machineId)) ?? "reclassify",
+      previous: { good: previous.good, scrap: previous.scrap, runs: runs.length - 1 },
+      run: { startedAt: run.startedAt, startedBy: run.startedByName, good: live.good, scrap: live.scrap, byReason: live.byReason },
+      scrapReasons: reasonsForMachine(await listScrapReasons(), machineId).map((r) => ({ id: r.id, code: r.code, name: r.name })),
+    };
+  });
+
+  /**
+   * Reports the order off the machine: the good count and the new scrap by reason. With all the good parts made
+   * (and no pause asked) the order completes — the last-piece check first —, otherwise it is paused and can be
+   * resumed on its machine. Without a good count (older screens) it completes with the machine's count.
+   */
+  app.post<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/complete", async (request, reply) => {
+    const terminal = await terminalOf(request, reply);
+    if (!terminal) return reply;
+    const worker = await workerFor(request, reply, terminal.id, "terminal.complete_work_order");
+    if (!worker) return reply;
+    const workOrderId = request.params.workOrderId;
+    const assignment = await orderOnTerminal(terminal, workOrderId);
+    if (!assignment) return fail(reply, 404, "this work order is not scheduled on this terminal's machines");
+    if (assignment.workOrderStatus !== "in_progress") return fail(reply, 409, "only a running work order can be completed or paused");
+
+    const body = (request.body ?? {}) as { good?: unknown; scrap?: unknown; pause?: unknown; skipLastPiece?: unknown };
+    const pause = body.pause === true;
+    let good: number | undefined;
+    if (body.good !== undefined && body.good !== null) {
+      good = typeof body.good === "number" ? body.good : Number(body.good);
+      if (!Number.isInteger(good) || good < 0 || good > MAX_REPORTED_GOOD) return fail(reply, 400, `the good count is a whole number from 0 to ${MAX_REPORTED_GOOD}`, { code: "good" });
+    }
+    const run = await openRunOf(workOrderId, assignment.machineId);
+    const machineId = run.machineId ?? assignment.machineId;
+    const reasons = reasonsForMachine(await listScrapReasons(), machineId);
+    const lines: { reason: (typeof reasons)[number]; quantity: number }[] = [];
+    if (body.scrap !== undefined) {
+      if (!Array.isArray(body.scrap) || body.scrap.length > 50) return fail(reply, 400, "scrap is a list of {reasonId, quantity}", { code: "scrap" });
+      for (const item of body.scrap as { reasonId?: unknown; quantity?: unknown }[]) {
+        const quantity = typeof item?.quantity === "number" ? item.quantity : Number(item?.quantity);
+        if (!Number.isInteger(quantity) || quantity < 0 || quantity > MAX_BOOKING_QUANTITY) {
+          return fail(reply, 400, `a scrap quantity is a whole number from 0 to ${MAX_BOOKING_QUANTITY}`, { code: "quantity" });
+        }
+        if (quantity === 0) continue;
+        const reason = reasons.find((r) => r.id === item.reasonId);
+        if (!reason) return fail(reply, 400, "unknown scrap reason for this machine", { code: "reason" });
+        const same = lines.find((l) => l.reason.id === reason.id);
+        if (same) same.quantity += quantity;
+        else lines.push({ reason, quantity });
+      }
+    }
+    const newScrap = lines.reduce((a, l) => a + l.quantity, 0);
+    if (newScrap > MAX_BOOKING_QUANTITY) return fail(reply, 400, `at most ${MAX_BOOKING_QUANTITY} scrap parts at once`, { code: "quantity" });
+
+    const wo = (await pool.query<{ quantity: number; count_overproduction: boolean }>(`SELECT quantity, count_overproduction FROM work_orders WHERE id = $1`, [workOrderId])).rows[0]!;
+    const runs = await listRuns(workOrderId);
+    const previous = closedTotals(runs);
+    const before = await liveCounts(run, runs, wo.quantity, wo.count_overproduction);
+    const mode = (await getScrapMode(machineId)) ?? "reclassify";
+    if (mode === "reclassify" && newScrap > before.good) {
+      return fail(reply, 409, `only ${before.good} good parts are counted in this run`, { code: "too_many", good: before.good });
+    }
+    const reportedGood = good ?? before.good - (mode === "reclassify" ? newScrap : 0);
+    const completing = reportOutcome({ previousGood: previous.good, good: good === undefined ? undefined : reportedGood, quantity: wo.quantity, pause }) === "completed";
+
+    if (completing) {
       // The last-piece check: a gating one must pass first; an optional one is offered and may be skipped.
-      const gate = await lastPieceGate(workOrderId, assignment.machineId);
+      const gate = await lastPieceGate(workOrderId, machineId);
       if (!gate.ok) {
-        const skip = (request.body as { skipLastPiece?: unknown } | undefined)?.skipLastPiece === true;
+        const skip = body.skipLastPiece === true;
         if (gate.gating) return fail(reply, 409, "the last-piece check has to pass before this order can be completed", { code: "quality_check_required", checkId: gate.checkId });
         if (!skip) return fail(reply, 409, "a last-piece check is planned for this order", { code: "quality_check_offered", checkId: gate.checkId });
         await skipCheck(gate.checkId, { id: worker.user.id, name: worker.user.name });
@@ -263,32 +407,67 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
         });
       }
     }
-    const change = await patchWorkOrder(workOrderId, { status: to });
+
+    // The new scrap is booked like any scrap report: the machine's counts, the shift and the OEE see it too.
+    for (const line of lines) {
+      const booking = await bookScrap({
+        machineId,
+        workOrderId,
+        reason: line.reason,
+        quantity: line.quantity,
+        note: completing ? "Lejelentés — lezárás" : "Lejelentés — szüneteltetés",
+        mode,
+        user: { id: worker.user.id, name: worker.user.name },
+        terminal: { id: terminal.id, name: terminal.name },
+      });
+      await recordAuditEvent({
+        actorId: worker.user.id,
+        actorEmail: worker.user.name,
+        action: "scrap_booked",
+        target: booking.id,
+        details: { machineId, workOrderId, orderNumber: assignment.orderNumber, reason: line.reason.code, reasonName: line.reason.name, quantity: line.quantity, mode, report: true, terminalId: terminal.id, terminal: terminal.name },
+        ipAddress: request.ip,
+      });
+    }
+    const after = lines.length > 0 ? await liveCounts(run, runs, wo.quantity, wo.count_overproduction) : before;
+    const status = completing ? "completed" : "paused";
+    await closeRun({
+      runId: run.id,
+      endReason: status,
+      counted: { good: after.good, scrap: after.scrap },
+      reported: { good: reportedGood, scrap: after.scrap },
+      breakdown: after.byReason,
+      manual: good !== undefined,
+      user: { id: worker.user.id, name: worker.user.name },
+      terminal: { id: terminal.id, name: terminal.name },
+    });
+    const change = await patchWorkOrder(workOrderId, { status });
     if (!change) return fail(reply, 404, "unknown work order");
-    // computeWorkOrderProgress reads the start from this event (details.status = in_progress).
+    const report = {
+      good: reportedGood,
+      scrap: after.scrap,
+      countedGood: after.good,
+      newScrap: lines.map((l) => ({ code: l.reason.code, name: l.reason.name, quantity: l.quantity })),
+      totalGood: previous.good + reportedGood,
+      quantity: wo.quantity,
+      pauseAsked: pause,
+    };
     await recordAuditEvent({
       actorId: worker.user.id,
       actorEmail: worker.user.name,
       action: "work_order_updated",
       target: workOrderId,
-      details: { status: to, changes: change.changes, terminalId: terminal.id, terminal: terminal.name },
+      details: { status, report, changes: change.changes, terminalId: terminal.id, terminal: terminal.name },
       ipAddress: request.ip,
     });
-    if (to === "completed") {
+    if (completing) {
       await generateLotForWorkOrder(workOrderId);
       await onWorkOrderClosed(workOrderId);
     } else {
-      await onWorkOrderStarted(workOrderId, assignment.machineId);
+      await onWorkOrderPaused(workOrderId);
     }
-    return { success: true, status: to, workerExpiresAt: worker.expiresAt };
-  }
-
-  app.post<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/start", (request, reply) =>
-    changeStatus(request, reply, "in_progress"),
-  );
-  app.post<{ Params: { terminalId: string; workOrderId: string } }>("/api/terminal/:terminalId/work-orders/:workOrderId/complete", (request, reply) =>
-    changeStatus(request, reply, "completed"),
-  );
+    return { success: true, status, report, workerExpiresAt: worker.expiresAt };
+  });
 
   app.post<{ Params: { terminalId: string } }>("/api/terminal/:terminalId/fault-reports", async (request, reply) => {
     const terminal = await terminalOf(request, reply);

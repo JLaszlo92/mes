@@ -460,7 +460,10 @@ export async function listChecksForWorkOrder(workOrderId: string): Promise<Check
 // ---------- the engine ----------
 
 /** When the order was started (the first in_progress change in the audit log, as computeWorkOrderProgress reads it). */
+/** When the order (its current run, after a pause) started on the machine. */
 async function startedAt(workOrderId: string): Promise<Date | null> {
+  const run = await pool.query<{ started_at: Date }>(`SELECT started_at FROM work_order_runs WHERE work_order_id = $1 AND ended_at IS NULL`, [workOrderId]);
+  if (run.rows[0]) return run.rows[0].started_at;
   const result = await pool.query<{ occurred_at: Date }>(
     `SELECT occurred_at FROM audit_log WHERE action = 'work_order_updated' AND target = $1 AND details->>'status' = 'in_progress' ORDER BY occurred_at LIMIT 1`,
     [workOrderId],
@@ -526,6 +529,15 @@ export async function lastPieceGate(workOrderId: string, machineId?: string | nu
 }
 
 /** The order is closed: checks still open were not done. */
+/**
+ * The order was paused (reported off the machine): a pending spot check lapses; the first- and last-piece checks
+ * and a failed check stay for when it is resumed (a paused order holds no count).
+ */
+export async function onWorkOrderPaused(workOrderId: string): Promise<number> {
+  const result = await pool.query(`UPDATE quality_checks SET status = 'missed', closed_at = now() WHERE work_order_id = $1 AND kind = 'spot' AND status = 'open'`, [workOrderId]);
+  return result.rowCount ?? 0;
+}
+
 export async function onWorkOrderClosed(workOrderId: string): Promise<number> {
   const result = await pool.query(`UPDATE quality_checks SET status = 'missed', closed_at = now() WHERE work_order_id = $1 AND status IN ('open', 'failed')`, [workOrderId]);
   return result.rowCount ?? 0;

@@ -37,6 +37,7 @@ const PUBLIC_ROUTES = new Set<string>([
   "POST /api/terminal/:terminalId/lock",
   "POST /api/terminal/:terminalId/work-orders/:workOrderId/start",
   "POST /api/terminal/:terminalId/work-orders/:workOrderId/complete",
+  "GET /api/terminal/:terminalId/work-orders/:workOrderId/report-draft",
   "POST /api/terminal/:terminalId/fault-reports",
   "POST /api/terminal/:terminalId/machines/:machineId/status",
   "POST /api/terminal/:terminalId/work-orders/:workOrderId/instruction",

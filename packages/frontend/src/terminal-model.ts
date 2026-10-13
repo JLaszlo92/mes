@@ -45,6 +45,18 @@ export function waitingOrders(m: TerminalMachine): TerminalAssignment[] {
   return m.current.filter((a) => a.workOrderStatus !== "in_progress");
 }
 
+export function isPaused(a: TerminalAssignment): boolean {
+  return a.workOrderStatus === "paused";
+}
+
+/** One line about a waiting order: "WO-1 · szüneteltetve · 5 / 10 db kész" or "WO-1 · 400 db · 20:30". */
+export function waitingText(m: TerminalMachine, a: TerminalAssignment): string {
+  const p = m.paused?.[a.workOrderId];
+  if (isPaused(a) && p) return `${a.orderNumber} · szüneteltetve · ${int(p.goodCount)} / ${int(p.quantity)} db kész`;
+  if (isPaused(a)) return `${a.orderNumber} · szüneteltetve`;
+  return `${a.orderNumber} · ${int(a.quantity)} db · ${plannedText(a.plannedStart)}`;
+}
+
 export type AttentionKind = "quality_failed" | "first_piece" | "spot_overdue" | "check_due" | "fault_open";
 export interface Attention {
   kind: AttentionKind;

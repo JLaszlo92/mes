@@ -6,7 +6,7 @@ export interface Choice {
   sub?: string;
   /** A small colour mark (status colour). */
   color?: string | null;
-  tone?: "alarm" | "neutral";
+  tone?: "alarm" | "warn" | "neutral";
 }
 
 /**

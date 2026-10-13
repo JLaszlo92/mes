@@ -14,6 +14,8 @@ import {
   sinceText,
   statusView,
   waitingOrders,
+  waitingText,
+  isPaused,
   type Attention,
 } from "./terminal-model.js";
 import { IconCheck, IconClock, IconDoc, IconFault, IconHistory, IconPause, IconPlay, IconPulse, IconRuler, IconStop, IconTrash, IconX, StateIcon } from "./TerminalIcons.js";
@@ -55,9 +57,9 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
     <RailButton key="measure" icon={<IconRuler />} label="Mérés" sub={activeChecks === 0 ? (quality?.planVersion != null ? "szúrópróba most" : "nincs nyitott") : undefined} badge={activeChecks || undefined} primary={measureFirst} disabled={busy || (activeChecks === 0 && quality?.planVersion == null)} onClick={actions.measure} />
   );
   const primaryButton = run ? (
-    <RailButton key="primary" icon={<IconStop />} label="Befejezés" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
+    <RailButton key="primary" icon={<IconStop />} label="Befejezés" sub="vagy szüneteltetés" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
   ) : (
-    <RailButton key="primary" icon={<IconPlay />} label="Indítás" sub={waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
+    <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
   );
 
   return (
@@ -148,11 +150,17 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
               <span className="tx-job-part">Nincs futó rendelés</span>
               {waiting[0] ? (
                 <>
-                  <span className="tx-muted">Következő a sorban:</span>
+                  <span className="tx-muted">{isPaused(waiting[0]) ? "Szüneteltetett megbízás — ezen a gépen folytatható:" : "Következő a sorban:"}</span>
                   <span className="tx-next-big">
-                    {waiting[0].partName} <span className="tx-muted">· {waiting[0].orderNumber} · {int(waiting[0].quantity)} db · {plannedText(waiting[0].plannedStart)}</span>
+                    {waiting[0].partName} <span className="tx-muted">· {waitingText(m, waiting[0])}</span>
                   </span>
-                  <span className="tx-muted">Indítás a jobb oldali gombbal.</span>
+                  {isPaused(waiting[0]) && m.paused[waiting[0].workOrderId]?.pausedAt && (
+                    <span className="tx-muted">
+                      Lejelentve {hhmm(m.paused[waiting[0].workOrderId]!.pausedAt!)}
+                      {m.paused[waiting[0].workOrderId]!.pausedBy ? ` · ${m.paused[waiting[0].workOrderId]!.pausedBy}` : ""} · még {int(m.paused[waiting[0].workOrderId]!.remaining)} db hiányzik
+                    </span>
+                  )}
+                  <span className="tx-muted">{isPaused(waiting[0]) ? "Folytatás" : "Indítás"} a jobb oldali gombbal.</span>
                 </>
               ) : (
                 <span className="tx-muted">Erre a gépre nincs ütemezett rendelés.</span>
@@ -199,11 +207,9 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
           <section className="tx-next" aria-label="Következő rendelések">
             <span className="tx-muted tx-next-label">Következő</span>
             {(run ? waiting : waiting.slice(1)).slice(0, 2).map((a) => (
-              <div key={a.id} className="tx-next-item">
+              <div key={a.id} className="tx-next-item" data-paused={isPaused(a) ? "true" : undefined}>
                 <strong>{a.partName}</strong>
-                <span className="tx-muted">
-                  {a.orderNumber} · {int(a.quantity)} db · {plannedText(a.plannedStart)}
-                </span>
+                <span className="tx-muted">{waitingText(m, a)}</span>
               </div>
             ))}
             {(run ? waiting : waiting.slice(1)).length === 0 && <span className="tx-muted tx-next-none">nincs több ütemezett rendelés</span>}

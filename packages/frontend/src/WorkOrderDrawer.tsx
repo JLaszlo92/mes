@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import WorkOrderQualitySection from "./WorkOrderQualitySection.js";
 import WorkOrderScrapSection from "./WorkOrderScrapSection.js";
+import WorkOrderRunsSection from "./WorkOrderRunsSection.js";
 import Drawer from "./ui/Drawer.js";
 import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
@@ -10,12 +11,13 @@ import InstructionViewer from "./InstructionViewer.js";
 import { useAuth } from "./auth-context.js";
 import { instructionForOrder, listInstructions, type WorkInstruction } from "./work-instructions.js";
 
-export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
+export type WorkOrderStatus = "planned" | "released" | "in_progress" | "paused" | "completed" | "cancelled";
 
 export const STATUS_LABEL: Record<WorkOrderStatus, string> = {
   planned: "Planned",
   released: "Released",
   in_progress: "In progress",
+  paused: "Paused",
   completed: "Completed",
   cancelled: "Cancelled",
 };
@@ -386,6 +388,7 @@ export default function WorkOrderDrawer({
           }}
         />
       )}
+      {!creating && <WorkOrderRunsSection workOrderId={target.workOrder.id} quantity={target.workOrder.quantity} status={target.workOrder.status} />}
       {!creating && <WorkOrderQualitySection workOrderId={target.workOrder.id} />}
       {!creating && <WorkOrderScrapSection workOrderId={target.workOrder.id} />}
       {preview && <InstructionViewer instruction={preview} subtitle="Preview: what the operator sees" onClose={() => setPreview(null)} />}

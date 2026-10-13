@@ -121,8 +121,53 @@ export interface TerminalMachine {
       plannedCycleSeconds: number | null;
     }
   >;
+  /** Paused orders of this machine (reported off, waiting to be resumed here): how far they got. */
+  paused: Record<string, PausedOrder>;
   faultCodes: { id: string; code: string; name: string }[];
   recentReports: { id: string; faultCode: string; faultName: string; status: string; reportedAt: string; reportedBy: string | null }[];
+}
+
+export interface PausedOrder {
+  goodCount: number;
+  scrapCount: number;
+  quantity: number;
+  remaining: number;
+  pausedAt: string | null;
+  pausedBy: string | null;
+  runs: number;
+}
+
+export interface ScrapLine {
+  code: string | null;
+  name: string;
+  quantity: number;
+}
+
+/** What the report dialog starts from (the machine's count of the current run, the earlier runs). */
+export interface ReportDraft {
+  workOrderId: string;
+  orderNumber: string;
+  partName: string;
+  quantity: number;
+  completionMode: "manual" | "auto";
+  machineId: string;
+  scrapMode: "reclassify" | "additional";
+  previous: { good: number; scrap: number; runs: number };
+  run: { startedAt: string; startedBy: string | null; good: number; scrap: number; byReason: ScrapLine[] };
+  scrapReasons: { id: string; code: string; name: string }[];
+}
+
+/** The report sent when an order is taken off the machine: the good count and the new scrap by reason. */
+export interface OrderReport {
+  good: number;
+  scrap: { reasonId: string; quantity: number }[];
+  pause: boolean;
+}
+
+export interface ReportResult {
+  status: "completed" | "paused";
+  report: { good: number; scrap: number; totalGood: number; quantity: number };
+  workerExpiresAt: number;
 }
 
 export interface OrderQuality {
@@ -159,9 +204,15 @@ export const terminalApi = {
   },
   lock: (id: string, ticket: string) => request(id, "/lock", { method: "POST", body: {}, ticket }).catch(() => undefined),
   start: (id: string, ticket: string, workOrderId: string) =>
-    request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/start`, { method: "POST", body: {}, ticket }),
-  complete: (id: string, ticket: string, workOrderId: string, skipLastPiece = false) =>
-    request<{ workerExpiresAt: number }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, { method: "POST", body: skipLastPiece ? { skipLastPiece: true } : {}, ticket }),
+    request<{ workerExpiresAt: number; resumed: boolean }>(id, `/work-orders/${encodeURIComponent(workOrderId)}/start`, { method: "POST", body: {}, ticket }),
+  reportDraft: (id: string, workOrderId: string) => request<ReportDraft>(id, `/work-orders/${encodeURIComponent(workOrderId)}/report-draft`),
+  /** Reports the order off the machine: completes it (all good parts made) or pauses it. */
+  complete: (id: string, ticket: string, workOrderId: string, report: OrderReport, skipLastPiece = false) =>
+    request<ReportResult>(id, `/work-orders/${encodeURIComponent(workOrderId)}/complete`, {
+      method: "POST",
+      body: { ...report, ...(skipLastPiece ? { skipLastPiece: true } : {}) },
+      ticket,
+    }),
   reportScrap: (id: string, ticket: string, machineId: string, body: { reasonId: string; quantity: number; workOrderId?: string }) =>
     request<{ id: string; mode: string; workerExpiresAt: number }>(id, `/machines/${encodeURIComponent(machineId)}/scrap`, { method: "POST", body, ticket }),
   qualityCheck: (id: string, checkId: string) => request<CheckDetail>(id, `/quality-checks/${encodeURIComponent(checkId)}`),

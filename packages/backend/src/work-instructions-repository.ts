@@ -72,7 +72,7 @@ export async function listCurrentInstructions(): Promise<WorkInstruction[]> {
   const result = await pool.query<WorkInstructionRow>(
     `SELECT ${COLUMNS},
             (SELECT count(*) FROM work_orders wo
-              WHERE wo.status IN ('planned', 'released', 'in_progress')
+              WHERE wo.status IN ('planned', 'released', 'in_progress', 'paused')
                 AND ${INSTRUCTION_NAME_OF_ORDER} = wi.part_name) AS open_work_orders
      ${JOINS}
      WHERE wi.is_current

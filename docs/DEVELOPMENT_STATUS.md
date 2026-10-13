@@ -1896,6 +1896,53 @@ Migration **052**. Backend `scrap-repository.ts`, `scrap-routes.ts`, `count-sql.
 - Not done: correcting / cancelling a report (a supervisor action), scrap reason asked when the machine sends scrap
   without a code.
 
+## Pausing a work order, the final count, resuming — Oct 13 (night)
+
+Migration **053**. Backend `work-order-runs.ts`, `terminal-routes.ts` (start / report-draft / complete),
+`work-orders-repository.ts` (progress), `scrap-repository.ts` (order analysis), `quality-repository.ts`
+(`onWorkOrderPaused`, spot anchor); frontend `TerminalReportSheet`, `WorkOrderRunsSection`, terminal views.
+
+- **New status `paused`** (CHECK on `work_orders.status` replaced once, guarded by its definition). Paused orders count as
+  open (filters, instruction usage), can be cancelled in bulk, can be rescheduled (also to another machine — the runs keep
+  their own machine).
+- **Runs** (`work_order_runs`): every start / resume opens a run on the machine, every report closes it. A closed run keeps
+  what the machine counted (`counted_*`), what the worker reported (`reported_*`), the scrap by reason
+  (`scrap_breakdown`), who, when, which terminal, and whether the numbers were entered by hand. At most one open run per
+  order (unique partial index). Orders running at migration time got an open run from their first start (marker
+  `053_runs_backfill`).
+- **Progress** = reported good / scrap of the closed runs + the machine's count of the open run (from its start, capped at
+  what is still missing unless overproduction counts). Orders with no runs (closed before 053) keep the old rule. Lots,
+  the terminal, the dashboard and the per-order scrap analysis all use this; the raw-event retention keeps the events from
+  the oldest open run.
+- **Terminal — "Befejezés" (or pause)** opens **"Lejelentés a gépről"**: the good count of this run (starts from the
+  machine's count, editable with − / + or typed; "vissza" restores it), the total on the order with the earlier
+  reports, and the **scrap by reason**: every reason of the machine with what is already recorded in this run and a
+  stepper for new scrap; machine scrap without a code is shown as "Ok nélkül". New scrap is booked like a normal scrap
+  report (bookings + events, the machine's counting mode; in reclassify mode it is taken off the good count shown).
+  - All good parts there (earlier runs + this report) → **Lezárás** (completes; the last-piece check comes first and
+    carries the report through the measurement). Fewer → the order is **paused** ("még N db hiányzik … később ezen a
+    gépen folytatható"). **Szüneteltetés** is always offered, also with all parts made.
+  - Shown also for orders in automatic completion when the worker reports them off by hand; auto-completion itself closes
+    the run with the machine's count, no dialog.
+- **Resume**: a paused order shows on its machine ("Szüneteltetett megbízás … 10 / 20 db kész · lejelentve 21:35 · Nagy
+  Éva"), the rail button reads **Folytatás**; start from `paused` is allowed only at a terminal of a machine it is
+  scheduled on. A new run starts; the first-piece check is not opened again (once per order); a pending spot check lapses
+  at the pause, a failed or first/last-piece check stays. Overview tiles / list show paused orders with their progress.
+- **Dashboard**: status **Paused** (warning pill, in the Open filter); the work order panel has **Production runs** (per
+  run: machine, start → report with who and where, good — "machine counted X, corrected" when edited —, scrap by reason).
+  A status change on the dashboard (pause, complete, cancel, resume) opens / closes the run with the machine's count.
+- **API**: `GET /api/terminal/:terminalId/work-orders/:id/report-draft` (device token); `POST …/complete`
+  `{ good, scrap: [{reasonId, quantity}], pause, skipLastPiece? }` → `{ status: completed | paused, report }` (without
+  `good` it completes with the machine's count, as before); `POST …/start` also from paused (`resumed: true`);
+  `GET /api/work-orders/:id/runs`; terminal state `paused[workOrderId]` per machine. Audit: `work_order_updated` with
+  `details.report`, `scrap_booked` with `report: true`.
+- Tested: unit (outcome rule, closed totals, status / bulk rules; backend 359); live: start → 6 good + 1 machine scrap →
+  draft 6/1 → refusals (more scrap than good, unknown reason, negative) → report 5 good + 1 new scrap = paused (run stored
+  5/5/2, terminal shows 5 / 10) → parts while paused not counted → resume → cap at the missing quantity → short report
+  pauses again → explicit pause with all parts → complete at 11 (lot 11 / 2, order scrap analysis from the runs) →
+  dashboard pause closes the run with the count → bulk cancel from paused → auto-complete closes its run; Chromium:
+  report dialog, pause, paused machine screen and list, resume, complete, runs in the work order panel.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

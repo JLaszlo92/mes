@@ -6,7 +6,7 @@
  */
 import type { ValidationResult } from "./machine-input.js";
 
-export const WORK_ORDER_STATUSES = ["planned", "released", "in_progress", "completed", "cancelled"] as const;
+export const WORK_ORDER_STATUSES = ["planned", "released", "in_progress", "paused", "completed", "cancelled"] as const;
 export type WorkOrderStatusValue = (typeof WORK_ORDER_STATUSES)[number];
 
 export interface WorkOrderPatch {
@@ -178,5 +178,5 @@ export function parseWorkOrderBulk(body: unknown): ValidationResult<WorkOrderBul
 /** Melyik státuszból mehet tömegesen az adott művelet. */
 export const BULK_ELIGIBLE: Record<WorkOrderBulk["action"], { from: WorkOrderStatusValue[]; to: WorkOrderStatusValue }> = {
   release: { from: ["planned"], to: "released" },
-  cancel: { from: ["planned", "released"], to: "cancelled" },
+  cancel: { from: ["planned", "released", "paused"], to: "cancelled" },
 };

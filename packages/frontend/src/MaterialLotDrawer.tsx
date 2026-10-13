@@ -51,6 +51,7 @@ const STATUS: Record<string, string> = {
   planned: "Planned",
   released: "Released",
   in_progress: "In progress",
+  paused: "Paused",
   completed: "Completed",
   cancelled: "Cancelled",
 };

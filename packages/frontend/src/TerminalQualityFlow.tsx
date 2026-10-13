@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { VIEWER_LABELS_HU } from "./InstructionViewer.js";
 import { fmt, KIND_LABEL_HU, type CheckDetail } from "./quality.js";
-import { terminalApi, type Worker } from "./terminal-api.js";
+import { terminalApi, type OrderReport, type Worker } from "./terminal-api.js";
 
 const PdfViewer = lazy(() => import("./ui/PdfViewer.js"));
 
@@ -12,7 +12,8 @@ export interface FlowAction {
 }
 
 /** What the flow is for: an ordinary check, or the last piece before completing the order. */
-export type FlowPurpose = { kind: "check" } | { kind: "complete"; workOrderId: string; gating: boolean };
+/** "complete": the last-piece check before completing; the report the worker gave goes with the completion at the end. */
+export type FlowPurpose = { kind: "check" } | { kind: "complete"; workOrderId: string; gating: boolean; report: OrderReport };
 
 const hu = (n: number | null) => (n === null ? "—" : fmt(n).replace(".", ","));
 
@@ -118,7 +119,7 @@ export default function TerminalQualityFlow({
       title: skip ? `Utolsó darab kihagyása, lezárás: ${orderNumber}` : `Rendelés lezárása: ${orderNumber}`,
       permission: "terminal.complete_work_order",
       run: async (w) => {
-        const r = await terminalApi.complete(terminalId, w.ticket, purpose.workOrderId, skip);
+        const r = await terminalApi.complete(terminalId, w.ticket, purpose.workOrderId, purpose.report, skip);
         onClose();
         return r.workerExpiresAt;
       },

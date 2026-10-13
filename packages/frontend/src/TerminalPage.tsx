@@ -12,10 +12,11 @@ import TerminalQualityFlow, { type FlowPurpose } from "./TerminalQualityFlow.js"
 import TerminalMachineView, { type MachineActions } from "./TerminalMachineView.js";
 import TerminalOverview from "./TerminalOverview.js";
 import TerminalScrapSheet from "./TerminalScrapSheet.js";
+import TerminalReportSheet from "./TerminalReportSheet.js";
 import { IconChevronLeft, IconLock, IconMoon, IconSun } from "./TerminalIcons.js";
 import { KIND_LABEL_HU } from "./quality.js";
-import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
-import { hhmm, int, plannedText, runningOrder, shortTime, statusView, waitingOrders } from "./terminal-model.js";
+import { forgetDeviceToken, readDeviceToken, takePairingToken, terminalApi, TerminalError, type OrderReport, type TerminalAssignment, type TerminalMachine, type TerminalState, type Worker } from "./terminal-api.js";
+import { hhmm, int, isPaused, plannedText, runningOrder, shortTime, statusView, waitingOrders, waitingText } from "./terminal-model.js";
 import type { WorkInstruction } from "./work-instructions.js";
 
 /**
@@ -38,7 +39,8 @@ interface Action {
 
 type Sheet =
   | { kind: "fault" | "status" | "history" | "scrap"; machineId: string }
-  | { kind: "start" | "complete" | "measure"; machineId: string };
+  | { kind: "start" | "complete" | "measure"; machineId: string }
+  | { kind: "report"; machineId: string; workOrderId: string };
 
 const PERMISSION_TEXT: Record<string, string> = {
   "terminal.start_work_order": "rendelést indítani",
@@ -220,30 +222,41 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   // ---- machine actions ----
 
   function startOrder(a: TerminalAssignment) {
+    const resume = isPaused(a);
     act({
-      title: `Rendelés indítása: ${a.orderNumber} — ${a.partName}`,
+      title: `${resume ? "Megbízás folytatása" : "Rendelés indítása"}: ${a.orderNumber} — ${a.partName}`,
       permission: "terminal.start_work_order",
       run: async (w) => {
         const r = await terminalApi.start(terminalUiId, w.ticket, a.workOrderId);
-        flash("ok", `Elindítva: ${a.orderNumber} (${w.name})`);
+        flash("ok", `${resume ? "Folytatva" : "Elindítva"}: ${a.orderNumber} (${w.name})`);
         return r.workerExpiresAt;
       },
     });
   }
 
-  function completeOrder(a: TerminalAssignment) {
+  /** Befejezés: the report dialog first (good count, scrap by reason); it completes or pauses the order. */
+  function completeOrder(a: TerminalAssignment, machineId: string) {
+    setSheet({ kind: "report", machineId, workOrderId: a.workOrderId });
+  }
+
+  function sendReport(a: TerminalAssignment, report: OrderReport, outcome: "completed" | "paused") {
     act({
-      title: `Rendelés lezárása: ${a.orderNumber} — ${a.partName}`,
+      title: `${outcome === "completed" ? "Lezárás" : "Szüneteltetés"}: ${a.orderNumber} — ${int(report.good)} jó${report.scrap.length ? `, +${int(report.scrap.reduce((x, l) => x + l.quantity, 0))} selejt` : ""}`,
       permission: "terminal.complete_work_order",
       run: async (w) => {
         try {
-          const r = await terminalApi.complete(terminalUiId, w.ticket, a.workOrderId);
-          flash("ok", `Lezárva: ${a.orderNumber} (${w.name})`);
+          const r = await terminalApi.complete(terminalUiId, w.ticket, a.workOrderId, report);
+          flash(
+            "ok",
+            r.status === "completed"
+              ? `Lezárva: ${a.orderNumber} — ${int(r.report.totalGood)} / ${int(r.report.quantity)} db (${w.name})`
+              : `Szüneteltetve: ${a.orderNumber} — ${int(r.report.totalGood)} / ${int(r.report.quantity)} db kész (${w.name})`,
+          );
           return r.workerExpiresAt;
         } catch (err) {
-          // A last-piece check comes first: the measurement opens; it closes the order at the end.
+          // A last-piece check comes first: the measurement opens; it completes the order at the end with this report.
           if (err instanceof TerminalError && (err.code === "quality_check_required" || err.code === "quality_check_offered") && typeof err.data.checkId === "string") {
-            setFlow({ checkId: err.data.checkId, orderNumber: a.orderNumber, purpose: { kind: "complete", workOrderId: a.workOrderId, gating: err.code === "quality_check_required" } });
+            setFlow({ checkId: err.data.checkId, orderNumber: a.orderNumber, purpose: { kind: "complete", workOrderId: a.workOrderId, gating: err.code === "quality_check_required", report } });
             return;
           }
           throw err;
@@ -291,7 +304,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
     return {
       primary: () => {
         const running = m.current.filter((a) => a.workOrderStatus === "in_progress");
-        if (running.length === 1) return completeOrder(running[0]!);
+        if (running.length === 1) return completeOrder(running[0]!, m.id);
         if (running.length > 1) return setSheet({ kind: "complete", machineId: m.id });
         const waiting = waitingOrders(m);
         if (waiting.length === 1) return startOrder(waiting[0]!);
@@ -431,7 +444,25 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         ) : null;
       })()}
 
-      {sheet && sheet.kind !== "scrap" && state && (
+      {sheet?.kind === "report" && state && (() => {
+        const m = state.machines.find((x) => x.id === sheet.machineId);
+        const a = m?.current.find((x) => x.workOrderId === sheet.workOrderId);
+        return m && a ? (
+          <TerminalReportSheet
+            terminalId={terminalUiId}
+            machineName={m.name}
+            order={a}
+            busy={busy}
+            onCancel={() => setSheet(null)}
+            onSubmit={(report, outcome) => {
+              setSheet(null);
+              sendReport(a, report, outcome);
+            }}
+          />
+        ) : null;
+      })()}
+
+      {sheet && sheet.kind !== "scrap" && sheet.kind !== "report" && state && (
         <MachineSheet sheet={sheet} state={state} close={() => setSheet(null)} act={act} terminalId={terminalUiId} flash={flash} start={startOrder} complete={completeOrder} openCheck={(checkId, orderNumber) => setFlow({ checkId, orderNumber, purpose: { kind: "check" } })} />
       )}
 
@@ -501,7 +532,7 @@ function MachineSheet({
   terminalId: string;
   flash: (kind: "ok" | "error", text: string) => void;
   start: (a: TerminalAssignment) => void;
-  complete: (a: TerminalAssignment) => void;
+  complete: (a: TerminalAssignment, machineId: string) => void;
   openCheck: (checkId: string, orderNumber: string) => void;
 }) {
   const m = state.machines.find((x) => x.id === sheet.machineId);
@@ -536,15 +567,15 @@ function MachineSheet({
     const list = sheet.kind === "start" ? waitingOrders(m) : m.current.filter((a) => a.workOrderStatus === "in_progress");
     return (
       <TerminalChoiceSheet
-        title={`${sheet.kind === "start" ? "Melyik rendelést indítod?" : "Melyik rendelést zárod le?"} — ${m.name}`}
+        title={`${sheet.kind === "start" ? "Melyik rendelést indítod vagy folytatod?" : "Melyik rendelést jelented le?"} — ${m.name}`}
         emptyText="Nincs ilyen rendelés."
-        choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: `${a.orderNumber} · ${int(a.quantity)} db · ${plannedText(a.plannedStart)}` }))}
+        choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: waitingText(m, a), tone: isPaused(a) ? ("warn" as const) : undefined }))}
         onCancel={close}
         onChoose={(id) => {
           const a = list.find((x) => x.workOrderId === id)!;
           close();
           if (sheet.kind === "start") start(a);
-          else complete(a);
+          else complete(a, m.id);
         }}
       />
     );

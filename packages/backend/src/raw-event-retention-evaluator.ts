@@ -70,11 +70,13 @@ export async function computeCutoff(retentionDays: number): Promise<Date | null>
     `SELECT LEAST(
        now() - make_interval(days => $1),
        now() - make_interval(days => $2),
+       -- the open run of a running order is counted from the raw events (053); an order without runs from its first start
+       COALESCE((SELECT min(r.started_at) - interval '1 day' FROM work_order_runs r WHERE r.ended_at IS NULL), 'infinity'::timestamptz),
        COALESCE((
          SELECT min(al.occurred_at) - interval '1 day'
          FROM work_orders wo
          JOIN audit_log al ON al.target = wo.id AND al.action = 'work_order_updated' AND al.details->>'status' = 'in_progress'
-         WHERE wo.status = 'in_progress'
+         WHERE wo.status = 'in_progress' AND NOT EXISTS (SELECT 1 FROM work_order_runs r WHERE r.work_order_id = wo.id)
        ), 'infinity'::timestamptz)
      ) AS cutoff`,
     [retentionDays, MIN_AGE_DAYS],

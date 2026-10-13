@@ -1,10 +1,10 @@
-import { goodCountSql, scrapCountSql } from "./count-sql.js";
+import { closedTotals, countWindow, listRuns, liveCounts } from "./work-order-runs.js";
 import { randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import { pool } from "./db.js";
 import { BULK_ELIGIBLE, type WorkOrderBulk, type WorkOrderPatch } from "./work-order-input.js";
 
-export type WorkOrderStatus = "planned" | "released" | "in_progress" | "completed" | "cancelled";
+export type WorkOrderStatus = "planned" | "released" | "in_progress" | "paused" | "completed" | "cancelled";
 export type CompletionMode = "manual" | "auto";
 
 export interface WorkOrder {
@@ -317,6 +317,27 @@ export async function computeWorkOrderProgress(
   quantity: number,
   countOverproduction: boolean,
 ): Promise<WorkOrderProgress> {
+  const runs = await listRuns(workOrderId);
+  if (runs.length > 0) {
+    // Closed runs count with what was reported at the terminal; the open one with the machine's count.
+    const closed = closedTotals(runs);
+    const open = runs.find((r) => r.endedAt === null);
+    const live = open ? await liveCounts(open, runs, quantity, countOverproduction) : { good: 0, scrap: 0 };
+    const goodCount = closed.good + live.good;
+    const last = open ?? runs[runs.length - 1]!;
+    return {
+      workOrderId,
+      machineId: last.machineId,
+      machineName: last.machineName,
+      operatorEmail: runs[0]!.startedByName,
+      startedAt: runs[0]!.startedAt,
+      goodCount,
+      scrapCount: closed.scrap + live.scrap,
+      targetReached: goodCount >= quantity,
+    };
+  }
+
+  // Orders closed before runs existed (053): from the first start in the audit log on the scheduled machine.
   const assignmentResult = await pool.query<{ machine_id: string; machine_name: string }>(
     `SELECT woa.machine_id, m.name AS machine_name
      FROM work_order_assignments woa
@@ -341,50 +362,16 @@ export async function computeWorkOrderProgress(
   if (!machineId || !startedAt) {
     return { workOrderId, machineId, machineName, operatorEmail, startedAt, goodCount: 0, scrapCount: 0, targetReached: false };
   }
-
-  let cappedAtTimestamp: string | null = null;
-  if (!countOverproduction && quantity > 0) {
-    // Parts booked as scrap from the good ones (reclassify) do not count towards the target: the cap moves by them.
-    const reclassified = await pool.query<{ n: string }>(
-      `SELECT count(*) AS n FROM events WHERE type = 'production_count' AND machine_id = $1 AND "timestamp" >= $2
-       AND payload->>'result' = 'scrap' AND payload->>'reclassified' = 'true'`,
-      [machineId, startedAt],
-    );
-    const nthGoodResult = await pool.query<{ timestamp: string }>(
-      `SELECT "timestamp" FROM events
-       WHERE type = 'production_count' AND machine_id = $1 AND payload->>'result' = 'good' AND "timestamp" >= $2
-       ORDER BY "timestamp" ASC
-       OFFSET $3 LIMIT 1`,
-      [machineId, startedAt, quantity - 1 + Number(reclassified.rows[0]?.n ?? 0)],
-    );
-    cappedAtTimestamp = nthGoodResult.rows[0]?.timestamp ?? null;
-  }
-
-  const countsResult = await pool.query<{ good_count: string; scrap_count: string }>(
-    `SELECT
-       ${goodCountSql()} AS good_count,
-       ${scrapCountSql()} AS scrap_count
-     FROM events
-     WHERE type = 'production_count' AND machine_id = $1
-       AND "timestamp" >= $2 AND (
-         "timestamp" <= COALESCE($3::timestamptz, now())
-         -- a booking made after the target was reached still belongs to this order
-         OR (payload->>'workOrderId' = $4)
-       )`,
-    [machineId, startedAt, cappedAtTimestamp, workOrderId],
-  );
-  const goodCount = Number(countsResult.rows[0]?.good_count ?? 0);
-  const scrapCount = Number(countsResult.rows[0]?.scrap_count ?? 0);
-
+  const counts = await countWindow(machineId, startedAt, !countOverproduction && quantity > 0 ? quantity : null, workOrderId);
   return {
     workOrderId,
     machineId,
     machineName,
     operatorEmail,
     startedAt,
-    goodCount,
-    scrapCount,
-    targetReached: goodCount >= quantity,
+    goodCount: counts.good,
+    scrapCount: counts.scrap,
+    targetReached: counts.good >= quantity,
   };
 }
 

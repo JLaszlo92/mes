@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { MachineEvent } from "@mes/shared";
 import { pool } from "./db.js";
 import { goodCountSql } from "./count-sql.js";
+import { listRuns, liveCounts, type ScrapLine } from "./work-order-runs.js";
 import { insertEvent } from "./events-repository.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
@@ -189,6 +190,62 @@ async function workOrderWindow(workOrderId: string): Promise<Window | undefined>
   return { machineId: r.machine_id, from: r.started, to: r.ended };
 }
 
+/**
+ * One order's scrap from its runs (053): a closed run with what was reported, the open one with the machine's
+ * count. Undefined for an order without runs (closed before runs existed): then its time window is used.
+ */
+async function orderScrapFromRuns(workOrderId: string): Promise<ScrapAnalysis | undefined> {
+  const runs = await listRuns(workOrderId);
+  if (runs.length === 0) return undefined;
+  const wo = await pool.query<{ quantity: number; count_overproduction: boolean }>(`SELECT quantity, count_overproduction FROM work_orders WHERE id = $1`, [workOrderId]);
+  const machines = new Map<string, { machineId: string; machineName: string; good: number; scrap: number; reasons: Map<string, ScrapByReason> }>();
+  const all = new Map<string, ScrapByReason>();
+  for (const run of runs) {
+    if (!run.machineId) continue;
+    let good: number;
+    let lines: ScrapLine[];
+    if (run.endedAt) {
+      good = run.reportedGood ?? 0;
+      lines = run.scrapBreakdown;
+    } else {
+      const live = await liveCounts(run, runs, wo.rows[0]?.quantity ?? 0, wo.rows[0]?.count_overproduction ?? false);
+      good = live.good;
+      lines = live.byReason;
+    }
+    const m = machines.get(run.machineId) ?? { machineId: run.machineId, machineName: run.machineName ?? run.machineId, good: 0, scrap: 0, reasons: new Map() };
+    machines.set(run.machineId, m);
+    m.good += good;
+    for (const line of lines) {
+      if (line.quantity <= 0) continue;
+      const key = line.code ?? "\u0000none";
+      m.scrap += line.quantity;
+      for (const map of [m.reasons, all]) {
+        const agg = map.get(key) ?? { code: line.code, name: line.name, quantity: 0, booked: 0 };
+        agg.quantity += line.quantity;
+        map.set(key, agg);
+      }
+    }
+  }
+  const booked = await pool.query<{ code: string; n: string }>(`SELECT reason_code AS code, sum(quantity) AS n FROM scrap_bookings WHERE work_order_id = $1 GROUP BY reason_code`, [workOrderId]);
+  for (const b of booked.rows) {
+    const agg = all.get(b.code);
+    if (agg) agg.booked = Math.min(agg.quantity, Number(b.n));
+  }
+  const byMachine = [...machines.values()].map((m) => ({
+    machineId: m.machineId,
+    machineName: m.machineName,
+    good: m.good,
+    scrap: m.scrap,
+    byReason: [...m.reasons.values()].sort((a, b) => b.quantity - a.quantity),
+  }));
+  return {
+    totalScrap: byMachine.reduce((a, m) => a + m.scrap, 0),
+    totalGood: byMachine.reduce((a, m) => a + m.good, 0),
+    byReason: [...all.values()].sort((a, b) => b.quantity - a.quantity),
+    byMachine,
+  };
+}
+
 export interface ScrapByReason {
   code: string | null;
   name: string;
@@ -213,6 +270,8 @@ export async function scrapAnalysis(f: ScrapFilter): Promise<ScrapAnalysis> {
   let from = f.from;
   let to = f.to ?? null;
   if (f.workOrderId) {
+    const byRuns = await orderScrapFromRuns(f.workOrderId);
+    if (byRuns) return byRuns;
     const w = await workOrderWindow(f.workOrderId);
     if (!w) return { totalScrap: 0, totalGood: 0, byReason: [], byMachine: [] };
     machineIds = [w.machineId];

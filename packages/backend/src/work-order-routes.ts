@@ -11,7 +11,8 @@ import {
   type WorkOrderChange,
 } from "./work-orders-repository.js";
 import { getCurrentInstructionForPart } from "./work-instructions-repository.js";
-import { lastPieceGate, onWorkOrderClosed, onWorkOrderStarted } from "./quality-repository.js";
+import { lastPieceGate, onWorkOrderClosed, onWorkOrderPaused, onWorkOrderStarted } from "./quality-repository.js";
+import { listRuns, syncRunsOnStatusChange } from "./work-order-runs.js";
 import { parseWorkOrderBulk, parseWorkOrderCreate, parseWorkOrderPatch } from "./work-order-input.js";
 
 /**
@@ -47,11 +48,16 @@ async function afterChange(request: FastifyRequest, change: WorkOrderChange, det
     details: { ...details, changes: change.changes },
     ipAddress: request.ip,
   });
+  if (change.changes.status) {
+    // Without a report: the open run closes with the machine's count (a terminal report is the other way).
+    await syncRunsOnStatusChange({ workOrderId: change.current.id, to: change.current.status, user: { id: request.user!.id, name: request.user!.name ?? null } });
+  }
   if (change.changes.status && change.current.status === "completed") {
     await generateLotForWorkOrder(change.current.id);
   }
   if (change.changes.status) {
     if (change.current.status === "in_progress") await onWorkOrderStarted(change.current.id);
+    if (change.current.status === "paused") await onWorkOrderPaused(change.current.id);
     if (change.current.status === "completed" || change.current.status === "cancelled") await onWorkOrderClosed(change.current.id);
   }
 }
@@ -68,6 +74,13 @@ export default async function workOrderRoutes(app: FastifyInstance): Promise<voi
     const workOrder = await getWorkOrder(request.params.id);
     if (!workOrder) return fail(reply, 404, "unknown work order");
     return workOrder;
+  });
+
+  // The order's runs: each start / resume until it was reported off the machine (053).
+  app.get<{ Params: { id: string } }>("/api/work-orders/:id/runs", async (request, reply) => {
+    const workOrder = await getWorkOrder(request.params.id);
+    if (!workOrder) return fail(reply, 404, "unknown work order");
+    return listRuns(request.params.id);
   });
 
   app.post("/api/work-orders", async (request, reply) => {

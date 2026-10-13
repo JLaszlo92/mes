@@ -10,7 +10,7 @@ import { useScope } from "./scope.js";
 import WorkOrderDrawer, { isLate, STATUS_LABEL, type WorkOrder, type WorkOrderStatus, type WorkOrderTarget } from "./WorkOrderDrawer.js";
 
 type StatusFilter = "open" | "all" | WorkOrderStatus;
-const OPEN: WorkOrderStatus[] = ["planned", "released", "in_progress"];
+const OPEN: WorkOrderStatus[] = ["planned", "released", "in_progress", "paused"];
 
 /**
  * Gyártási rendelések: kereshető, szűrhető táblázat ütemezési oszlopokkal
@@ -202,8 +202,15 @@ export default function WorkOrdersPanel() {
     {
       id: "status",
       header: "Status",
-      sortValue: (w) => ["in_progress", "released", "planned", "completed", "cancelled"].indexOf(w.status),
-      cell: (w) => (w.status === "in_progress" ? <span className="ui-pill ui-pill-accent">{STATUS_LABEL[w.status]}</span> : STATUS_LABEL[w.status]),
+      sortValue: (w) => ["in_progress", "paused", "released", "planned", "completed", "cancelled"].indexOf(w.status),
+      cell: (w) =>
+        w.status === "in_progress" ? (
+          <span className="ui-pill ui-pill-accent">{STATUS_LABEL[w.status]}</span>
+        ) : w.status === "paused" ? (
+          <span className="ui-pill ui-pill-warning">{STATUS_LABEL[w.status]}</span>
+        ) : (
+          STATUS_LABEL[w.status]
+        ),
     },
   ];
 
