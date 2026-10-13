@@ -1954,6 +1954,13 @@ Migration **053**. Backend `work-order-runs.ts`, `terminal-routes.ts` (start / r
   the one it runs, and reloads when nobody is signed in and nothing is open (a terminal used to keep the old code until
   someone refreshed it — that is why the new buttons did not show after the first install).
 
+### Follow-up — a paused order does not block the next one
+
+- On the terminal a paused order no longer jumps to the front: the waiting list is the planned orders in planned order,
+  then the paused ones. With more than one waiting order "Indítás" opens the choice ("N rendelés közül"), paused ones
+  with a yellow frame and their progress; the empty order card names the next planned order and lists the paused ones.
+  Starting another order while one is paused was already allowed by the API; only the screen pushed the paused one.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

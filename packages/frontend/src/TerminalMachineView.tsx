@@ -61,7 +61,7 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
   const primaryButton = run ? (
     <RailButton key="primary" icon={<IconStop />} label="Befejezés" sub="lejelentés, lezárás" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
   ) : (
-    <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
+    <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting.length > 1 ? `${waiting.length} rendelés közül` : waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
   );
 
   return (
@@ -165,7 +165,18 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
                       {m.paused[waiting[0].workOrderId]!.pausedBy ? ` · ${m.paused[waiting[0].workOrderId]!.pausedBy}` : ""} · még {int(m.paused[waiting[0].workOrderId]!.remaining)} db hiányzik
                     </span>
                   )}
-                  <span className="tx-muted">{isPaused(waiting[0]) ? "Folytatás" : "Indítás"} a jobb oldali gombbal.</span>
+                  {!isPaused(waiting[0]) && waiting.some(isPaused) && (
+                    <span className="tx-muted">
+                      Szüneteltetve:{" "}
+                      {waiting
+                        .filter(isPaused)
+                        .map((a) => `${a.partName} (${int(m.paused[a.workOrderId]?.goodCount ?? 0)} / ${int(m.paused[a.workOrderId]?.quantity ?? a.quantity)} db)`)
+                        .join(", ")}
+                    </span>
+                  )}
+                  <span className="tx-muted">
+                    {waiting.length > 1 ? "Az Indítás gombbal választhatsz: új rendelés vagy a szüneteltetett folytatása." : `${isPaused(waiting[0]) ? "Folytatás" : "Indítás"} a jobb oldali gombbal.`}
+                  </span>
                 </>
               ) : (
                 <span className="tx-muted">Erre a gépre nincs ütemezett rendelés.</span>

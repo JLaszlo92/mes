@@ -40,9 +40,13 @@ export function runningOrder(m: TerminalMachine): TerminalAssignment | undefined
   return m.current.find((a) => a.workOrderStatus === "in_progress");
 }
 
-/** Orders waiting on the machine, in planned order. */
+/**
+ * Orders waiting on the machine: the planned ones in planned order first, then the paused ones — a paused order is set
+ * aside, it does not jump ahead of the plan (it can still be chosen to resume).
+ */
 export function waitingOrders(m: TerminalMachine): TerminalAssignment[] {
-  return m.current.filter((a) => a.workOrderStatus !== "in_progress");
+  const waiting = m.current.filter((a) => a.workOrderStatus !== "in_progress");
+  return [...waiting.filter((a) => a.workOrderStatus !== "paused"), ...waiting.filter((a) => a.workOrderStatus === "paused")];
 }
 
 export function isPaused(a: TerminalAssignment): boolean {

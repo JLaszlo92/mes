@@ -3651,9 +3651,7 @@ body {
   border-color: var(--t-warn-border, #b7871c);
   background: var(--t-warn-bg, transparent);
 }
-.tx-next-item[data-paused="true"] strong::after {
-  content: " · szüneteltetve";
-  font-weight: 600;
+.tx-next-item[data-paused="true"] strong {
   color: var(--t-warn-icon);
 }
 .tx-report {

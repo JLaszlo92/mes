@@ -596,6 +596,7 @@ function MachineSheet({
     return (
       <TerminalChoiceSheet
         title={`${sheet.kind === "start" ? "Melyik rendelést indítod vagy folytatod?" : "Melyik rendelést jelented le?"} — ${m.name}`}
+        subtitle={sheet.kind === "start" && list.some(isPaused) ? "A sárga keretesek szüneteltetett megbízások: koppintásra ott folytatódnak, ahol abbahagyták." : undefined}
         emptyText="Nincs ilyen rendelés."
         choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: waitingText(m, a), tone: isPaused(a) ? ("warn" as const) : undefined }))}
         onCancel={close}
