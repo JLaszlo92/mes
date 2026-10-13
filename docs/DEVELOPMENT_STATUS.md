@@ -1961,8 +1961,27 @@ Migration **053**. Backend `work-order-runs.ts`, `terminal-routes.ts` (start / r
   with a yellow frame and their progress; the empty order card names the next planned order and lists the paused ones.
   Starting another order while one is paused was already allowed by the API; only the screen pushed the paused one.
 
+## One-command deploy (`ops/deploy.sh`); first piece again on resume — Oct 13 (night)
+
+- **`ops/deploy.sh [--no-push] [patch ...]`** (root, on node-dc): restores a local change of
+  `docs/DEVELOPMENT_STATUS.md`, refuses other local changes or a half-done `git am`, applies the patches (`git am
+  --3way`; one that does not apply → all rolled back, nothing changed; an already applied one is a no-op), runs
+  `pnpm install --frozen-lockfile` when a `package.json` / the lockfile changed, builds (failure → the new commits rolled
+  back, the running system untouched), copies the frontend to `/var/www/mes` (assets first, `index.html` last and atomic;
+  build files older than 14 days that the build no longer has are removed), restarts `mes-backend` and waits for
+  `/health?db=1` (journal shown if it does not come up), then pushes. Without a patch it rebuilds and redeploys the
+  current state. Runs from a temporary copy, so a patch may change the script itself. Settings: `MES_WEB_ROOT`,
+  `MES_SERVICE`, `MES_HEALTH_URL`, `MES_HEALTH_WAIT`. Tested: a deploy with two patches (docs edit restored), a
+  conflicting patch (rolled back, clean tree), a build-breaking patch (rolled back), a dirty tree (refused).
+- **Quality plan → First piece → "Again when a paused order is resumed"** (migration **054**:
+  `quality_plans.first_piece_on_resume`, default off; check trigger `resume`). When on, resuming a paused order (terminal
+  or dashboard) opens a new first-piece check for the new run; with "Parts are counted only after it passes" the count is
+  held until it passes. Off: once per order, as before. Tested live both ways (backend 362 unit tests).
+
 ## Practical notes for whoever (or whatever session) picks this up
 
+- **Deploy with `ops/deploy.sh /root/<patch>.patch`** on node-dc — it does the build, the copy to `/var/www/mes`
+  (nginx serves that, not `packages/frontend/dist`) and the restart; the terminals reload themselves within 2 minutes.
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;
   pause it (`enabled=false`) while a form or drawer holds unsaved input.
 - All notes from previous revisions still apply: build on node-dc not

@@ -350,8 +350,7 @@ export default function QualityPlanDrawer({
               {draft.firstEnabled && (
                 <label className="ui-check q-sub-option">
                   <input type="checkbox" checked={draft.firstOnResume} onChange={(e) => set("firstOnResume", e.target.checked)} />
-                  Again when a paused order is resumed
-                  <span className="ui-sub"> — e.g. after a re-setup; otherwise once per order</span>
+                  Again when a paused order is resumed (e.g. after a re-setup); otherwise once per order
                 </label>
               )}
               {err("first") && <p className="ui-field-error">{err("first")}</p>}

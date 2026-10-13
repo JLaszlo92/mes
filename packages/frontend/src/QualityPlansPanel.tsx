@@ -70,7 +70,7 @@ export default function QualityPlansPanel() {
       cell: (p) => (
         <span>
           {[
-            p.firstPiece.enabled && `First piece${p.firstPiece.gatesCounting ? " (holds counting)" : ""}`,
+            p.firstPiece.enabled && `First piece${[p.firstPiece.gatesCounting && "holds counting", p.firstPiece.onResume && "again on resume"].filter(Boolean).map((x) => ` (${x})`).join("")}`,
             p.lastPiece.enabled && `Last piece${p.lastPiece.gatesCompletion ? " (holds completion)" : ""}`,
             p.spot.enabled &&
               `Spot ${[p.spot.everyParts && `every ${p.spot.everyParts} pcs`, p.spot.maxMinutes && `≤ ${p.spot.maxMinutes} min`].filter(Boolean).join(", ")}`,
