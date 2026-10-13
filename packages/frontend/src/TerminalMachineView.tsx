@@ -22,6 +22,8 @@ import { IconCheck, IconClock, IconDoc, IconFault, IconHistory, IconPause, IconP
 
 export interface MachineActions {
   primary: () => void;
+  /** Report the running order off the machine (pause), with the final count dialog. */
+  pause: () => void;
   fault: () => void;
   status: () => void;
   measure: () => void;
@@ -57,7 +59,7 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
     <RailButton key="measure" icon={<IconRuler />} label="Mérés" sub={activeChecks === 0 ? (quality?.planVersion != null ? "szúrópróba most" : "nincs nyitott") : undefined} badge={activeChecks || undefined} primary={measureFirst} disabled={busy || (activeChecks === 0 && quality?.planVersion == null)} onClick={actions.measure} />
   );
   const primaryButton = run ? (
-    <RailButton key="primary" icon={<IconStop />} label="Befejezés" sub="vagy szüneteltetés" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
+    <RailButton key="primary" icon={<IconStop />} label="Befejezés" sub="lejelentés, lezárás" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
   ) : (
     <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
   );
@@ -124,6 +126,9 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
                     {[order?.instruction && `Munkautasítás v${order.instruction.version}`, quality?.planVersion != null && `Minőségterv v${quality.planVersion}`].filter(Boolean).join(" · ")}
                   </span>
                 )}
+                <button type="button" className="tx-pause-btn" disabled={busy} onClick={actions.pause}>
+                  <IconPause size={22} /> Szüneteltetés
+                </button>
               </div>
               <div className="tx-counter" data-paused={paused ? "true" : undefined}>
                 <span className="tx-counter-value">{int(progress.goodCount)}</span>

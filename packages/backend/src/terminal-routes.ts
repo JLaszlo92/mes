@@ -10,7 +10,7 @@ import { PERMISSIONS, type Permission } from "./permissions.js";
 import { getCurrentShiftSummaryForMachine } from "./shift-summary-repository.js";
 import { findTerminalByDeviceToken, type TerminalUi } from "./terminal-uis-repository.js";
 import { findUserByPin, getUserById, isPinFormat, type User } from "./users-repository.js";
-import { listAssignmentsForMachine } from "./work-order-assignments-repository.js";
+import { listAssignmentsForMachine, mergeBlocks } from "./work-order-assignments-repository.js";
 import { getInstructionFile, getInstructionForWorkOrder, instructionFileExists, recordView } from "./work-instructions-repository.js";
 import { getWorkOrderProgress, patchWorkOrder } from "./work-orders-repository.js";
 import { workerTickets } from "./terminal-workers.js";
@@ -132,7 +132,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
     const machines = await Promise.all(
       terminal.machineIds.map(async (machineId, i) => {
         const [assignments, codes, reports, shift, status, manual, rate] = await Promise.all([
-          listAssignmentsForMachine(machineId),
+          listAssignmentsForMachine(machineId).then(mergeBlocks),
           listFaultCodes(machineId),
           listFaultReportsPage({ machineIds: [machineId], limit: 5, offset: 0 }),
           getCurrentShiftSummaryForMachine(machineId).catch(() => undefined),

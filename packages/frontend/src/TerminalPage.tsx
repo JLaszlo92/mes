@@ -40,7 +40,7 @@ interface Action {
 type Sheet =
   | { kind: "fault" | "status" | "history" | "scrap"; machineId: string }
   | { kind: "start" | "complete" | "measure"; machineId: string }
-  | { kind: "report"; machineId: string; workOrderId: string };
+  | { kind: "report"; machineId: string; workOrderId: string; intent: "complete" | "pause" };
 
 const PERMISSION_TEXT: Record<string, string> = {
   "terminal.start_work_order": "rendelést indítani",
@@ -60,6 +60,8 @@ const WORKER_IDLE_MS = 60_000;
 /** With several machines, an open machine screen goes back to the overview after this long without a touch. */
 const BACK_TO_OVERVIEW_MS = 90_000;
 const THEME_KEY = "mes-terminal-theme";
+/** How often the screen looks for a new version of itself. */
+const VERSION_CHECK_MS = 120_000;
 
 function readTheme(): "dark" | "light" {
   try {
@@ -123,6 +125,27 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [paired, load]);
+
+  // A new version on the server (after an update): the screen reloads itself when nobody is using it, so a
+  // terminal never keeps running old code for days.
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => {
+    const loaded = [...document.querySelectorAll<HTMLScriptElement>("script[src]")].map((x) => x.src.match(/\/assets\/index-[\w-]+\.js/)?.[0]).find(Boolean);
+    if (!loaded) return;
+    const check = () =>
+      fetch(`${window.location.origin}/?v=${Date.now()}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.text() : ""))
+        .then((html) => {
+          const current = html.match(/\/assets\/index-[\w-]+\.js/)?.[0];
+          if (current && current !== loaded) setUpdateReady(true);
+        })
+        .catch(() => undefined);
+    const timer = setInterval(check, VERSION_CHECK_MS);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    if (updateReady && !worker && !pending && !sheet && !flow && !viewer) window.location.reload();
+  }, [updateReady, worker, pending, sheet, flow, viewer]);
 
   // The clock (and the worker's countdown, every second while someone is signed in).
   useEffect(() => {
@@ -235,8 +258,8 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
   }
 
   /** Befejezés: the report dialog first (good count, scrap by reason); it completes or pauses the order. */
-  function completeOrder(a: TerminalAssignment, machineId: string) {
-    setSheet({ kind: "report", machineId, workOrderId: a.workOrderId });
+  function completeOrder(a: TerminalAssignment, machineId: string, intent: "complete" | "pause" = "complete") {
+    setSheet({ kind: "report", machineId, workOrderId: a.workOrderId, intent });
   }
 
   function sendReport(a: TerminalAssignment, report: OrderReport, outcome: "completed" | "paused") {
@@ -309,6 +332,10 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
         const waiting = waitingOrders(m);
         if (waiting.length === 1) return startOrder(waiting[0]!);
         if (waiting.length > 1) setSheet({ kind: "start", machineId: m.id });
+      },
+      pause: () => {
+        const running = m.current.filter((a) => a.workOrderStatus === "in_progress");
+        if (running.length >= 1) completeOrder(running[0]!, m.id, "pause");
       },
       fault: () => setSheet({ kind: "fault", machineId: m.id }),
       status: () => setSheet({ kind: "status", machineId: m.id }),
@@ -452,6 +479,7 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
             terminalId={terminalUiId}
             machineName={m.name}
             order={a}
+            intent={sheet.intent}
             busy={busy}
             onCancel={() => setSheet(null)}
             onSubmit={(report, outcome) => {

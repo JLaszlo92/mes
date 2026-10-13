@@ -1943,6 +1943,17 @@ Migration **053**. Backend `work-order-runs.ts`, `terminal-routes.ts` (start / r
   dashboard pause closes the run with the count → bulk cancel from paused → auto-complete closes its run; Chromium:
   report dialog, pause, paused machine screen and list, resume, complete, runs in the work order panel.
 
+### Follow-up — one order on the terminal, a visible pause button, self-updating terminal
+
+- **An order split into blocks by the scheduler** (around off-shift time, one assignment row per block) showed up on the
+  terminal as one entry per block. The terminal state now merges the blocks per order (`mergeBlocks`: from the first
+  block's start to the last block's end); the Gantt still shows the blocks.
+- **Szüneteltetés** is now a button of its own on the running order's card; it opens the same report dialog in pause mode
+  (only pausing offered, filled button). "Befejezés" reads "lejelentés, lezárás".
+- **The terminal reloads itself after an update**: every 2 minutes it compares the script of the served `index.html` with
+  the one it runs, and reloads when nobody is signed in and nothing is open (a terminal used to keep the old code until
+  someone refreshed it — that is why the new buttons did not show after the first install).
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

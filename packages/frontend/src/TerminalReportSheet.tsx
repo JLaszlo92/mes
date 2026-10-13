@@ -18,6 +18,7 @@ export default function TerminalReportSheet({
   terminalId,
   machineName,
   order,
+  intent,
   busy,
   onCancel,
   onSubmit,
@@ -25,6 +26,8 @@ export default function TerminalReportSheet({
   terminalId: string;
   machineName: string;
   order: TerminalAssignment;
+  /** "pause": opened with Szüneteltetés — only pausing is offered. */
+  intent: "complete" | "pause";
   busy: boolean;
   onCancel: () => void;
   onSubmit: (report: OrderReport, outcome: "completed" | "paused") => void;
@@ -99,7 +102,9 @@ export default function TerminalReportSheet({
       <div className="term-sheet tx-report" onClick={(e) => e.stopPropagation()}>
         <div className="term-sheet-head">
           <div>
-            <div className="term-pin-title">Lejelentés a gépről — {machineName}</div>
+            <div className="term-pin-title">
+              {intent === "pause" ? "Szüneteltetés — lejelentés a gépről" : "Lejelentés a gépről"} — {machineName}
+            </div>
             <div className="term-pin-sub">
               {order.partName} · {order.orderNumber}
               {draft && ` · futás ${hhmm(draft.run.startedAt)} óta${draft.run.startedBy ? ` (${draft.run.startedBy})` : ""}`}
@@ -214,16 +219,18 @@ export default function TerminalReportSheet({
 
             <div className="tx-report-foot">
               <div className="tx-report-outcome" data-kind={missing > 0 ? "pause" : "done"}>
-                {missing > 0
-                  ? `Még ${int(missing)} db hiányzik: a megbízás szüneteltetve marad, és később ezen a gépen folytatható.`
-                  : draft.quantity > 0
-                    ? "Az előirányzott jó darabszám megvan: a megbízás lezárható."
-                    : ""}
+                {intent === "pause"
+                  ? `A megbízás szüneteltetve lesz${missing > 0 ? ` (még ${int(missing)} db hiányzik)` : ""}, és később ezen a gépen folytatható.`
+                  : missing > 0
+                    ? `Még ${int(missing)} db hiányzik: a megbízás szüneteltetve marad, és később ezen a gépen folytatható.`
+                    : draft.quantity > 0
+                      ? "Az előirányzott jó darabszám megvan: a megbízás lezárható."
+                      : ""}
               </div>
-              <button type="button" className="term-btn tx-report-pause" disabled={busy || tooMuchScrap} onClick={() => submit(true)}>
+              <button type="button" className="term-btn tx-report-pause" data-main={intent === "pause" || missing > 0 ? "true" : undefined} disabled={busy || tooMuchScrap} onClick={() => submit(true)}>
                 Szüneteltetés
               </button>
-              {missing === 0 && (
+              {intent === "complete" && missing === 0 && (
                 <button type="button" className="term-btn term-btn-done tx-report-main" disabled={busy || tooMuchScrap} onClick={() => submit(false)}>
                   Lezárás
                 </button>

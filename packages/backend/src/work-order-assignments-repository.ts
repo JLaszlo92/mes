@@ -73,6 +73,26 @@ export async function listAssignmentsForMachine(machineId: string): Promise<Assi
   return result.rows.map(toAssignment);
 }
 
+/**
+ * One entry per work order: the scheduler splits a long order into blocks around off-shift time (one assignment
+ * row each), but on the shop floor it is one order — from the start of its first block to the end of its last.
+ * Keeps the order of the first blocks.
+ */
+export function mergeBlocks<T extends Pick<Assignment, "workOrderId" | "plannedStart" | "plannedEnd">>(assignments: readonly T[]): (T & { blocks: number })[] {
+  const byOrder = new Map<string, T & { blocks: number }>();
+  for (const a of assignments) {
+    const seen = byOrder.get(a.workOrderId);
+    if (!seen) {
+      byOrder.set(a.workOrderId, { ...a, blocks: 1 });
+      continue;
+    }
+    seen.blocks += 1;
+    if (new Date(a.plannedStart).getTime() < new Date(seen.plannedStart).getTime()) seen.plannedStart = a.plannedStart;
+    if (new Date(a.plannedEnd).getTime() > new Date(seen.plannedEnd).getTime()) seen.plannedEnd = a.plannedEnd;
+  }
+  return [...byOrder.values()].sort((x, y) => new Date(x.plannedStart).getTime() - new Date(y.plannedStart).getTime());
+}
+
 export interface CreateAssignmentInput {
   workOrderId: string;
   machineId: string;

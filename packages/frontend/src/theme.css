@@ -3878,3 +3878,29 @@ body {
 .tx[data-theme="light"] .tx-paused-tag {
   color: #8a6510;
 }
+.tx-report-pause[data-main="true"] {
+  background: var(--t-warn-icon);
+  border-color: var(--t-warn-icon);
+  color: #1b1405;
+}
+.tx-pause-btn {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 52px;
+  padding: 0 18px;
+  border: 2px solid var(--t-warn-icon);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.tx-pause-btn:disabled {
+  opacity: 0.5;
+}
