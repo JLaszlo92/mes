@@ -19,6 +19,7 @@ import {
 } from "./quality-repository.js";
 import { checkPdfUpload, MAX_PDF_BYTES, sanitizePdfFileName } from "./work-instruction-input.js";
 import { storeInstructionFile } from "./work-instructions-repository.js";
+import { spcSeries, spcSummary, type SpcFilter } from "./spc-repository.js";
 
 /**
  * Minőségellenőrzés a dashboardon.
@@ -33,6 +34,8 @@ import { storeInstructionFile } from "./work-instructions-repository.js";
  *   GET  /api/quality-checks/:id                  minden mérés, minden próbálkozás
  *   POST /api/quality-checks/:id/release          feloldás indoklással (quality.release)
  *   GET  /api/work-orders/:id/quality-checks      egy rendelés összes ellenőrzése részletesen
+ *   GET  /api/quality/spc                         képesség jellemzőnként (from, to, machineIds, kinds, attempts)
+ *   GET  /api/quality/spc/series                  I-MR kártya egy jellemzőre (+ partName, name)
  *
  * A mérés maga a terminálon történik (terminal-routes.ts).
  */
@@ -152,4 +155,40 @@ export default async function qualityRoutes(app: FastifyInstance): Promise<void>
   });
 
   app.get<{ Params: { id: string } }>("/api/work-orders/:id/quality-checks", async (request) => listChecksForWorkOrder(request.params.id));
+
+  type SpcQuery = { from?: string; to?: string; machineIds?: string; kinds?: string; attempts?: string; partName?: string; name?: string };
+  function spcFilter(q: SpcQuery): { ok: true; value: SpcFilter } | { ok: false; error: string; field: string } {
+    const from = q.from ? new Date(q.from) : new Date(Date.now() - 30 * 24 * 3600_000);
+    if (isNaN(from.getTime())) return { ok: false, field: "from", error: "from is not a date" };
+    const to = q.to ? new Date(q.to) : undefined;
+    if (to && isNaN(to.getTime())) return { ok: false, field: "to", error: "to is not a date" };
+    const kinds = q.kinds ? q.kinds.split(",").filter(Boolean) : undefined;
+    if (kinds?.some((k) => !CHECK_KINDS.includes(k as CheckKind))) return { ok: false, field: "kinds", error: "unknown check kind" };
+    if (q.attempts && q.attempts !== "all" && q.attempts !== "first") return { ok: false, field: "attempts", error: "attempts is all or first" };
+    return {
+      ok: true,
+      value: {
+        from,
+        to,
+        machineIds: q.machineIds ? q.machineIds.split(",").filter(Boolean).slice(0, 1000) : undefined,
+        kinds: kinds as CheckKind[] | undefined,
+        attempts: q.attempts === "first" ? "first" : "all",
+      },
+    };
+  }
+
+  app.get<{ Querystring: SpcQuery }>("/api/quality/spc", async (request, reply) => {
+    const f = spcFilter(request.query);
+    if (!f.ok) return fail(reply, 400, f.error, f.field);
+    return spcSummary(f.value);
+  });
+
+  app.get<{ Querystring: SpcQuery }>("/api/quality/spc/series", async (request, reply) => {
+    const f = spcFilter(request.query);
+    if (!f.ok) return fail(reply, 400, f.error, f.field);
+    const { partName, name } = request.query;
+    if (!partName || !name) return fail(reply, 400, "partName and name are required", "partName");
+    const series = await spcSeries(f.value, partName, name);
+    return series ?? fail(reply, 404, "no measurements of this characteristic in the period");
+  });
 }

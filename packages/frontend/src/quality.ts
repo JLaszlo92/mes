@@ -175,3 +175,87 @@ export function releaseCheck(id: string, reason: string): Promise<QualityCheck> 
     body: JSON.stringify({ reason }),
   }).then((r) => readJsonOrThrow<QualityCheck>(r));
 }
+
+// ---------- SPC ----------
+
+export type SignalRule = "beyond" | "run" | "trend";
+export type CapabilityGrade = "capable" | "marginal" | "not_capable" | "unknown";
+
+export interface SpcSummary {
+  partName: string;
+  name: string;
+  unit: string | null;
+  lsl: number | null;
+  usl: number | null;
+  nominal: number | null;
+  n: number;
+  mean: number | null;
+  sigmaWithin: number | null;
+  sigmaOverall: number | null;
+  capability: { cp: number | null; cpk: number | null; pp: number | null; ppk: number | null };
+  grade: CapabilityGrade;
+  stable: boolean;
+  reliable: boolean;
+  outOfSpec: number;
+  signalPoints: number;
+  lastValue: number | null;
+  lastAt: string | null;
+}
+
+export interface SpcPoint {
+  id: string;
+  at: string;
+  value: number;
+  mr: number | null;
+  passed: boolean;
+  lsl: number | null;
+  usl: number | null;
+  attempt: number;
+  kind: CheckKind;
+  checkId: string;
+  workOrderId: string;
+  orderNumber: string;
+  machineName: string | null;
+  measuredByName: string | null;
+  signals: SignalRule[];
+}
+
+export interface SpcSeries {
+  summary: SpcSummary;
+  stats: { n: number; mean: number; sigmaOverall: number | null; mrBar: number | null; sigmaWithin: number | null; ucl: number | null; lcl: number | null; mrUcl: number | null };
+  points: SpcPoint[];
+  truncated: boolean;
+  limitsChanged: boolean;
+  planVersion: number | null;
+}
+
+export const GRADE_LABEL: Record<CapabilityGrade, string> = { capable: "Capable", marginal: "Marginal", not_capable: "Not capable", unknown: "—" };
+export const SIGNAL_LABEL: Record<SignalRule, string> = {
+  beyond: "beyond the control limits",
+  run: "7 in a row on one side of the mean",
+  trend: "6 in a row rising or falling",
+};
+
+export function spcQuery(params: Record<string, string | undefined>): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) q.set(k, v);
+  return q.toString();
+}
+
+export function getSpcSummary(params: Record<string, string | undefined>): Promise<SpcSummary[]> {
+  return apiFetch(`${API_BASE}/api/quality/spc?${spcQuery(params)}`).then((r) => readJsonOrThrow<SpcSummary[]>(r));
+}
+
+export function getSpcSeries(params: Record<string, string | undefined>): Promise<SpcSeries> {
+  return apiFetch(`${API_BASE}/api/quality/spc/series?${spcQuery(params)}`).then((r) => readJsonOrThrow<SpcSeries>(r));
+}
+
+/** A capability index: two decimals, "—" when there is none. */
+export function fmtIndex(v: number | null): string {
+  return v === null || !Number.isFinite(v) ? "—" : v.toFixed(2);
+}
+
+/** A measured value with enough decimals for its spread. */
+export function fmtValue(v: number | null, digits = 4): string {
+  return v === null || !Number.isFinite(v) ? "—" : String(Number(v.toFixed(digits)));
+}

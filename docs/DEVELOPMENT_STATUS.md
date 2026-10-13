@@ -1783,6 +1783,35 @@ Migration **051**. Backend (`quality-input.ts`, `quality-repository.ts`, `qualit
 - Not done yet (ideas): measurements entered in the dashboard (a lab PC), SPC chart / Cpk per characteristic, a check
   bound to a specific machine or shift change, a picture as evidence.
 
+## SPC and capability (Cp, Cpk, Pp, Ppk) — Oct 13
+
+No migration. Backend `spc.ts` (pure maths, unit-tested), `spc-repository.ts`, two routes in `quality-routes.ts`; frontend
+`SpcPanel.tsx`, `SpcCharts.tsx` (plain SVG, no chart library), Quality → **SPC and capability**.
+
+- **Data**: the measured values (not OK / not OK) of the quality checks. A characteristic is **part + measurement name**
+  (its id changes with every plan version, the name does not). Filters: period (7 days … 12 months, default 30 days),
+  check kind, **every measurement / first attempts only** (re-measurements after a failure left out), and the global
+  site / machine scope.
+- **Maths**: individual values, subgroup size 1, so an **I-MR chart**: σ short-term = MR̄ / 1.128, UCL / LCL = x̄ ± 3σ,
+  MR UCL = 3.267 · MR̄. **Cp, Cpk** with the short-term σ, **Pp, Ppk** with the overall (sample) σ; one-sided limits give
+  no Cp / Pp and Cpk / Ppk to that side. Limits: the part's current plan (else the latest measurement's); a note shows if
+  points were measured against other limits. **Signals**: a point beyond UCL / LCL, 7 in a row on one side of the mean, 6
+  in a row rising or falling.
+- **Judgement**: on the **lower of Cpk and Ppk** (≥ 1.33 capable, 1.00–1.33 marginal, < 1.00 not capable), because a
+  drifting process can have a good Cpk and still make bad parts; **"Not stable"** when any signal is present (the indices
+  then only describe the past); "few values — indicative" under 25 values.
+- **Screen**: a table of every characteristic (n, mean, Cpk, Ppk, capability, out of tolerance / signal points, last),
+  worst Cpk first; a row opens tiles (n, mean, σ, Cp, Cpk, Pp, Ppk, capability, out of tolerance), the **I chart** (tolerance
+  lines, dashed control limits, mean; out-of-tolerance points as red squares, rule breaks as amber diamonds; hover tooltip
+  with value, time, order, check, machine, who, rule), the **MR chart**, a **histogram** with LSL / USL / mean, a short
+  "reading it" guide, the values as a table (a row opens its quality check) and CSV export. The latest 1,000 values of the
+  period are drawn.
+- **API**: `GET /api/quality/spc` and `GET /api/quality/spc/series?partName=&name=` (both: `from`, `to`, `machineIds`,
+  `kinds`, `attempts`).
+- Tested: unit tests (I-MR, capability two- and one-sided, grades, the three rules; backend 350); 70 seeded checks with a
+  tool-wear drift and an out-of-tolerance part (Cpk 1.51 but Ppk 0.80 → "Not capable, Not stable"; it read "Capable" before the
+  lower-of rule); Chromium: table, detail, tooltip, histogram, values table → check drawer, first attempts only, narrow screen.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

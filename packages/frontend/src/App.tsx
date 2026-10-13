@@ -26,6 +26,7 @@ import PreventiveSchedulesPanel from "./PreventiveSchedulesPanel.js";
 import MachineStatusDefinitionsPanel from "./MachineStatusDefinitionsPanel.js";
 import QualityChecksPanel from "./QualityChecksPanel.js";
 import QualityPlansPanel from "./QualityPlansPanel.js";
+import SpcPanel from "./SpcPanel.js";
 import EdgeNodesPanel from "./EdgeNodesPanel";
 import DowntimePeriodsPanel from "./DowntimePeriodsPanel";
 import MachineHistoryPanel from "./MachineHistoryPanel";
@@ -100,6 +101,7 @@ const NAV: GroupDef[] = [
       { id: "work-instructions", label: "Work instructions", permission: "instructions.manage" },
       { id: "checks", label: "Quality checks" },
       { id: "plans", label: "Quality plans" },
+      { id: "spc", label: "SPC and capability" },
     ],
   },
   {
@@ -198,6 +200,8 @@ function renderView(groupId: string, viewId: string, liveState: Record<string, M
       return <QualityChecksPanel />;
     case "quality/plans":
       return <QualityPlansPanel />;
+    case "quality/spc":
+      return <SpcPanel />;
     case "maintenance/work-orders":
       return <MaintenanceWorkOrdersPanel />;
     case "maintenance/preventive":
