@@ -651,8 +651,10 @@ function MachineSheet({
       title={`Státusz — ${m.name}`}
       subtitle={
         manual
-          ? "A kézi állapot addig marad, amíg le nem zárod; ha nem tiltja a gyártást, a gép első gyártási jelére is véget ér."
-          : "Ha az állapot nem tiltja a gyártást, a gép első gyártási jelére véget ér; ha tiltja, csak lezárással."
+          ? "Az új állapot mostantól számít (az előző eddig tartott). A kézi állapot addig marad, amíg le nem zárod; ha nem tiltja a gyártást, a gép első gyártási jelére is véget ér."
+          : m.status && m.status.code !== "running" && m.status.code !== "off_shift"
+            ? `A kiválasztott állapot a megállástól (${hhmm(m.status.since)}) számít. Ha nem tiltja a gyártást, a gép első gyártási jelére véget ér; ha tiltja, csak lezárással.`
+            : "Ha az állapot nem tiltja a gyártást, a gép első gyártási jelére véget ér; ha tiltja, csak lezárással."
       }
       emptyText="Nincs beállítható állapot (Admin → Status definitions)."
       choices={m.statusOptions.map((o) => ({

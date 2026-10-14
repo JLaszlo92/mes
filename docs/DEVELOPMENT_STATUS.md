@@ -1978,6 +1978,27 @@ Migration **053**. Backend `work-order-runs.ts`, `terminal-routes.ts` (start / r
   or dashboard) opens a new first-piece check for the new run; with "Parts are counted only after it passes" the count is
   held until it passes. Off: once per order, as before. Tested live both ways (backend 362 unit tests).
 
+## Manual status counts from the stop — Oct 14
+
+Migration **055** (`machine_manual_status.selected_at`). Backend `manual-status.ts` (`backdateFor`, `stopStart`).
+
+- When the machine stands on its own signal (latest status event from the machine or `manual_end`, not running, not
+  off shift) and has no manual status, a status chosen at the terminal **counts from the stop**: from the first status
+  event after the last "anchor" (running, or a status set by the terminal / shift / a part), or from just after the last
+  part made since then; at most 24 h back. `set_at` is that moment, `selected_at` when it was chosen.
+- The machine's status events since then become `machine_status_signal` (`coveredByManualStatus` = the manual status
+  id), closed "down" periods inside that time without a fault report are removed from `downtime_periods`, and the hourly
+  status rollup is recomputed from that hour at once. So there is no unattributed stop between the stop and the
+  operator's choice.
+- **Replacing** a manual status with another counts **from the moment of the change** (the first lasts until then), as
+  before. A status chosen for a running machine counts from now.
+- Terminal: the Státusz list says "A kiválasztott állapot a megállástól (HH:MM) számít" for a stopped machine, and "Az
+  új állapot mostantól számít" when replacing.
+- Tested: unit (`backdateFor`: stop, after a part, after `manual_end`, running / off shift / set by someone → now,
+  24 h cap; backend 367); live over MQTT: running → down → idle → status 1 = since the stop, down + idle kept as signals;
+  status 2 = since its selection; timeline status 1 → status 2; running ends it; on a running machine from now; after a
+  part from just after the part; hourly rollup has the status.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
 - **Deploy with `ops/deploy.sh /root/<patch>.patch`** on node-dc — it does the build, the copy to `/var/www/mes`

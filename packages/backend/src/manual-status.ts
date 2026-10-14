@@ -4,6 +4,7 @@ import { pool } from "./db.js";
 import { insertEvent } from "./events-repository.js";
 import { publishToHub } from "./hub.js";
 import { stateStore } from "./state.js";
+import { rollupMachineStatus } from "./status-rollup-evaluator.js";
 
 /**
  * Kézzel beállított gépállapot (terminál → "Státusz").
@@ -18,6 +19,11 @@ import { stateStore } from "./state.js";
  *  - a műszak véget nem ér (off-shift),
  *  - vagy egy másik kézi állapot le nem váltja.
  *
+ * Kezdete: ha a gép a jele szerint áll (és nincs kézi állapota), a kézi
+ * állapot a megállástól érvényes — a megállás és a kiválasztás közti idő így
+ * nem marad "kezeletlen" leállás; ha már van kézi állapot, az új a
+ * kiválasztástól számít (backdateFor).
+ *
  * Közben a gép többi jele (down, idle…) `machine_status_signal` típusként
  * tárolódik: megmarad a nyers adatban, de minden nézet, összesítő és az OEE
  * a kézi állapotot látja, mert azok a `machine_status` eseményekből dolgoznak.
@@ -28,7 +34,10 @@ export interface ManualStatus {
   machineId: string;
   statusCode: string;
   setByName: string | null;
+  /** From when the status counts (the stop, when it was chosen for a stopped machine). */
   setAt: string;
+  /** When it was chosen at the terminal. */
+  selectedAt: string;
   signalStatus: string | null;
   /** From the status definition (the machine's own, else the global one), read live. */
   blocksProduction: boolean;
@@ -40,6 +49,7 @@ type Row = {
   status_code: string;
   set_by_name: string | null;
   set_at: string | Date;
+  selected_at: string | Date | null;
   signal_status: string | null;
   blocks_production: boolean | null;
 };
@@ -51,6 +61,7 @@ function toManual(r: Row): ManualStatus {
     statusCode: r.status_code,
     setByName: r.set_by_name,
     setAt: new Date(r.set_at).toISOString(),
+    selectedAt: new Date(r.selected_at ?? r.set_at).toISOString(),
     signalStatus: r.signal_status,
     blocksProduction: r.blocks_production === true,
   };
@@ -127,13 +138,83 @@ async function lastSignalStatus(machineId: string): Promise<string | null> {
   return result.rows[0]?.status ?? null;
 }
 
+/** Sources of a status event that stand for the machine's own signal (manual_end puts the signal back). */
+const SIGNAL_SOURCES = ["machine", "manual_end"];
+/** A status chosen for a stopped machine counts from the stop, but at most this far back. */
+export const MAX_BACKDATE_HOURS = 24;
+
+/**
+ * Pure: from when a status chosen now counts. Given the machine's status events since its last "anchor" (running,
+ * or set by someone — terminal, shift, a part) and its last counted part, the stop is the first event after the
+ * anchor; with a part made after it, the moment after that part. Null: the status counts from now (the machine
+ * runs, it is off shift, or nothing stopped it).
+ */
+export function backdateFor(input: {
+  /** The machine's latest status event. */
+  latest: { status: string; source: string; timestamp: string } | null;
+  /** The first status event after the last anchor (the stop), if the latest is not an anchor. */
+  stop: { timestamp: string } | null;
+  /** The last counted part after the stop. */
+  lastPart: string | null;
+  now: Date;
+}): string | null {
+  const { latest, stop } = input;
+  if (!latest || !stop) return null;
+  if (!SIGNAL_SOURCES.includes(latest.source) || latest.status === "running" || latest.status === "off_shift") return null;
+  let from = new Date(stop.timestamp).getTime();
+  if (input.lastPart) from = Math.max(from, new Date(input.lastPart).getTime() + 1);
+  from = Math.max(from, input.now.getTime() - MAX_BACKDATE_HOURS * 3600_000);
+  return from < input.now.getTime() ? new Date(from).toISOString() : null;
+}
+
+/** The stop of a machine that stands without a manual status: from when a status chosen now counts (or null). */
+async function stopStart(machineId: string, now: Date): Promise<string | null> {
+  const latest = await pool.query<{ status: string; source: string; ts: Date }>(
+    `SELECT payload->>'status' AS status, COALESCE(payload->>'source', 'machine') AS source, "timestamp" AS ts
+     FROM events WHERE machine_id = $1 AND type = 'machine_status' ORDER BY "timestamp" DESC LIMIT 1`,
+    [machineId],
+  );
+  const l = latest.rows[0];
+  if (!l) return null;
+  const stop = await pool.query<{ ts: Date }>(
+    `SELECT min(e."timestamp") AS ts FROM events e
+     WHERE e.machine_id = $1 AND e.type = 'machine_status'
+       AND e."timestamp" > COALESCE((
+         SELECT max(a."timestamp") FROM events a
+         WHERE a.machine_id = $1 AND a.type = 'machine_status'
+           AND (a.payload->>'status' = 'running' OR COALESCE(a.payload->>'source', 'machine') <> ALL($2::text[]))
+       ), '-infinity'::timestamptz)`,
+    [machineId, SIGNAL_SOURCES],
+  );
+  const stopTs = stop.rows[0]?.ts ?? null;
+  const part = stopTs
+    ? await pool.query<{ ts: Date | null }>(
+        `SELECT max("timestamp") AS ts FROM events WHERE machine_id = $1 AND type = 'production_count' AND "timestamp" >= $2
+           AND COALESCE(payload->>'reclassified', 'false') <> 'true'`,
+        [machineId, stopTs],
+      )
+    : undefined;
+  return backdateFor({
+    latest: { status: l.status, source: l.source, timestamp: new Date(l.ts).toISOString() },
+    stop: stopTs ? { timestamp: new Date(stopTs).toISOString() } : null,
+    lastPart: part?.rows[0]?.ts ? new Date(part.rows[0].ts).toISOString() : null,
+    now,
+  });
+}
+
 /**
  * Sets a manual status (ending an earlier one as "replaced"). Writes the
  * machine_status event, so the live view and every report see it at once.
+ *
+ * For a stopped machine without a manual status it counts from the stop: the machine's status events since then
+ * become signals (machine_status_signal) and the hourly status rollup is recomputed from there. Replacing a manual
+ * status counts from now.
  */
 export async function setManualStatus(input: { machineId: string; statusCode: string; userId: string; userName: string; terminalId: string }): Promise<ManualStatus> {
   const previous = await getActiveManualStatus(input.machineId);
   const signal = previous ? previous.signalStatus : await lastSignalStatus(input.machineId);
+  const now = new Date();
+  const from = previous ? null : await stopStart(input.machineId, now);
   const client = await pool.connect();
   let created: ManualStatus;
   try {
@@ -142,11 +223,22 @@ export async function setManualStatus(input: { machineId: string; statusCode: st
       input.machineId,
       input.userId,
     ]);
+    const id = randomUUID();
     const result = await client.query<Row>(
-      `INSERT INTO machine_manual_status (id, machine_id, status_code, set_by, set_by_name, terminal_id, signal_status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [randomUUID(), input.machineId, input.statusCode, input.userId, input.userName, input.terminalId, signal],
+      `INSERT INTO machine_manual_status (id, machine_id, status_code, set_by, set_by_name, terminal_id, signal_status, set_at, selected_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, $9::timestamptz), $9::timestamptz) RETURNING *`,
+      [id, input.machineId, input.statusCode, input.userId, input.userName, input.terminalId, signal, from, now.toISOString()],
     );
+    if (from) {
+      // The machine's own status events since the stop are covered by this status now: kept as signals.
+      await client.query(
+        `UPDATE events SET type = 'machine_status_signal', payload = payload || jsonb_build_object('type', 'machine_status_signal', 'coveredByManualStatus', $3::text)
+         WHERE machine_id = $1 AND type = 'machine_status' AND "timestamp" >= $2 AND COALESCE(payload->>'source', 'machine') = ANY($4::text[])`,
+        [input.machineId, from, id, SIGNAL_SOURCES],
+      );
+      // A "down" period already closed inside that time (down, then idle) is no longer a stop of its own.
+      await client.query(`DELETE FROM downtime_periods WHERE machine_id = $1 AND started_at >= $2 AND fault_report_id IS NULL`, [input.machineId, from]);
+    }
     await client.query("COMMIT");
     created = toManual(result.rows[0]!);
   } catch (err) {
@@ -155,7 +247,13 @@ export async function setManualStatus(input: { machineId: string; statusCode: st
   } finally {
     client.release();
   }
-  await emitStatus(input.machineId, input.statusCode, { source: "terminal", setBy: input.userName });
+  await emitStatus(input.machineId, input.statusCode, { source: "terminal", setBy: input.userName, ...(from ? { selectedAt: now.toISOString() } : {}) }, from ?? now.toISOString());
+  if (from) {
+    // The past hours changed: recompute them now rather than at the next rollup tick.
+    const hour = new Date(from);
+    hour.setMinutes(0, 0, 0);
+    await rollupMachineStatus(hour).catch(() => undefined);
+  }
   return created;
 }
 
