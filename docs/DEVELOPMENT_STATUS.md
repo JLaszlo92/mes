@@ -1999,8 +1999,44 @@ Migration **055** (`machine_manual_status.selected_at`). Backend `manual-status.
   status 2 = since its selection; timeline status 1 → status 2; running ends it; on a running machine from now; after a
   part from just after the part; hourly rollup has the status.
 
+## Every list handles 0, 1, a few and very many items — Oct 15
+
+Frontend `ui/lists.tsx` (new) plus the places below; backend only the terminal state. Tables were already paged
+(`DataTable`, Oct 12); this covers the lists outside tables, the selects and the terminal.
+
+- **Shared pieces** (`ui/lists.tsx`): `CappedList` / `useCapped` / `Capped` — the first N items, then "Show all N (M
+  more)" / "Show fewer" (a list just one item over the limit is shown whole), with an empty text; `FilterSelect` — from
+  15 options a search field above the select, at most 200 listed ("… N more — type to narrow"), the chosen option always
+  kept; `CheckList` — from 10 items search, "Select all / found", "Clear", "N of M selected", scrolling box;
+  `matches()` — case- and accent-insensitive, every word must match ("hegeszto" finds "Hegesztő").
+- **Capped lists**: material lot "Where used" (10), quality plan versions (5), work instruction versions (5) and
+  terminal openings (5; "the latest 20" note), work order quality checks (10 — first/last piece first, then spot checks
+  newest first), work order scrap reports (10; "latest 50" note), production runs (latest 5), fault report corrective
+  actions (6), maintenance labor and parts (8 each), lot / work order materials (8), edge node channels (8 per node).
+  Scrap and downtime Pareto: top 10 reasons, the tail one click away.
+- **SPC values table** is a `DataTable` (25 per page, sortable) instead of up to 1000 rows at once.
+- **Searchable selects**: work order — work instruction, material lot, schedule machine; maintenance job — machine,
+  assignee; alert rule machine; fault report — machine and fault code; machine data source — unassigned channel.
+  Filter selects in toolbars stay native (type-ahead works, machines are at most a few hundred).
+- **Checkbox list**: the machines of a new terminal (`CheckList`).
+- **Gantt pool**: counts in the headers, a search field from 8 items (order, part, task, machine), each list scrolls
+  (40vh).
+- **Overview tiles**: from 12 machines a search and "Only down or without data", "N of M machines"; the KPIs still count
+  all.
+- **Terminal**: lists with 12+ choices (fault codes, waiting orders, status, measurements) and the scrap reasons get a
+  large search field with a clear button and the match count; the list scrolls under a fixed header. The report dialog
+  gets a search from 8 scrap rows; rows with new scrap stay visible, recorded reasons come first, the order never
+  changes while counting. "Következő" shows 2 orders and "+N további" (opens the start choice, or the queue when an order
+  runs). The terminal state sends running and paused orders and only the **next 30 planned** per machine
+  (`MAX_WAITING`), plus `waitingMore`; the start list says "the nearest 30 are shown, N more are scheduled".
+- Tested in Chromium with 40 fault codes, 40 scrap reasons, 45 planned orders on one machine and 61 unscheduled orders:
+  fault search (8 matches), start list 30 + note, "+42 további", scrap and report search, Gantt pool search, terminal
+  machine checklist, work order drawer, SPC page; backend 367 tests.
+
 ## Practical notes for whoever (or whatever session) picks this up
 
+- **Lists outside tables use `ui/lists.tsx`** (`CappedList`, `FilterSelect`, `CheckList`, `matches`); terminal lists use
+  `TerminalSearch` from `TerminalChoiceSheet.tsx` from `SEARCH_FROM` (12) items.
 - **Deploy with `ops/deploy.sh /root/<patch>.patch`** on node-dc — it does the build, the copy to `/var/www/mes`
   (nginx serves that, not `packages/frontend/dist`) and the restart; the terminals reload themselves within 2 minutes.
 - **New list pages that show changing data use `usePolling`** (`ui/usePolling.ts`), not a one-off `useEffect` load;

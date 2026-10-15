@@ -5,6 +5,7 @@ import DataTable, { type Column } from "./ui/DataTable.js";
 import Drawer from "./ui/Drawer.js";
 import { formatDateTime } from "./ui/format.js";
 import Field from "./ui/Field.js";
+import { CheckList } from "./ui/lists.js";
 
 interface Machine {
   id: string;
@@ -75,10 +76,6 @@ export default function TerminalUisPanel() {
   }
 
   useEffect(load, []);
-
-  function toggleMachine(id: string) {
-    setSelectedMachineIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
-  }
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -175,13 +172,14 @@ export default function TerminalUisPanel() {
         </Field>
         <fieldset style={{ border: "none", margin: 0, padding: 0, minWidth: 0 }}>
           <legend className="ui-field-label">Machines</legend>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 16px", maxWidth: 640, marginTop: 4 }}>
-            {machines.map((m) => (
-              <label key={m.id} className="ui-check">
-                <input type="checkbox" checked={selectedMachineIds.includes(m.id)} onChange={() => toggleMachine(m.id)} />
-                {m.name}
-              </label>
-            ))}
+          <div style={{ maxWidth: 640, marginTop: 4 }}>
+            <CheckList
+              ariaLabel="Machines of the terminal"
+              items={machines.map((m) => ({ id: m.id, label: m.name }))}
+              selected={selectedMachineIds}
+              onChange={setSelectedMachineIds}
+              empty="No machines yet (Admin → Machines)."
+            />
           </div>
         </fieldset>
         <button type="submit" className="ui-btn ui-btn-primary" disabled={submitting} style={{ alignSelf: "flex-end" }}>

@@ -1,4 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { TerminalSearch } from "./TerminalChoiceSheet.js";
+import { matches } from "./ui/lists.js";
+
+/** From this many scrap rows on, the report gets a search field. */
+const REPORT_SEARCH_FROM = 8;
 import { terminalApi, type OrderReport, type ReportDraft, type TerminalAssignment } from "./terminal-api.js";
 import { hhmm, int } from "./terminal-model.js";
 
@@ -78,8 +83,14 @@ export default function TerminalReportSheet({
       if (l.code !== null && draft.scrapReasons.some((r) => r.code === l.code)) continue;
       out.push({ key: `rec:${l.code ?? ""}`, reasonId: null, code: l.code, name: l.code === null ? "Ok nélkül (a gép jelezte)" : l.name, recorded: l.quantity });
     }
-    return out;
+    // What was recorded in this run first (biggest first), then the other reasons in their order; the order does not
+    // change while the worker adds scrap, so a row never jumps away under the finger.
+    return out.map((r, i) => ({ r, i })).sort((a, b) => b.r.recorded - a.r.recorded || a.i - b.i).map((x) => x.r);
   }, [draft]);
+  const [query, setQuery] = useState("");
+  const manyRows = rows.length >= REPORT_SEARCH_FROM;
+  // A row with new scrap on it stays in view whatever the search.
+  const shownRows = manyRows && query ? rows.filter((r) => (r.reasonId && (added[r.reasonId] ?? 0) > 0) || matches(`${r.name} ${r.code ?? ""}`, query)) : rows;
 
   function setGood(n: number) {
     const v = Math.max(0, Math.min(1_000_000, Math.round(n)));
@@ -176,8 +187,10 @@ export default function TerminalReportSheet({
                 {rows.length === 0 ? (
                   <p className="term-sub">Ehhez a géphez nincs selejtok felvéve (Admin → Scrap reasons).</p>
                 ) : (
+                  <>
+                  {manyRows && <TerminalSearch value={query} onChange={setQuery} total={rows.length} found={shownRows.length} />}
                   <div className="tx-report-rows">
-                    {rows.map((r) => {
+                    {shownRows.map((r) => {
                       const add = r.reasonId ? (added[r.reasonId] ?? 0) : 0;
                       return (
                         <div key={r.key} className="tx-report-row" data-active={add > 0 ? "true" : undefined}>
@@ -205,6 +218,7 @@ export default function TerminalReportSheet({
                       );
                     })}
                   </div>
+                  </>
                 )}
                 <div className="tx-report-hint">
                   Selejt összesen: <strong>{int(draft.run.scrap + newScrap)} db</strong>

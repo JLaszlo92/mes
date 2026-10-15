@@ -3,6 +3,7 @@ import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
 import { navigate } from "./router.js";
 import type { Machine } from "./master-data.js";
+import { matches } from "./ui/lists.js";
 
 interface CurrentShift {
   machineId: string;
@@ -49,6 +50,8 @@ function tileState(live: LiveState | undefined): TileState {
 }
 
 const STATE_RANK: Record<TileState, number> = { alarm: 0, warning: 1, normal: 2, inactive: 3 };
+/** From this many machines on, the tiles get a search and an attention filter. */
+const TILE_FILTER_FROM = 12;
 
 function pct(v: number | null | undefined): string {
   return v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
@@ -64,6 +67,9 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
   const { machines: allMachines, hierarchy, isInScope, scope } = useScope();
   const [shiftByMachine, setShiftByMachine] = useState<Record<string, CurrentShift>>({});
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  // Many machines: a search and "only the ones that need attention" (the KPIs above still count all of them).
+  const [tileQuery, setTileQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
 
   const machines = useMemo(() => allMachines.filter((m) => m.isActive && isInScope(m.id)), [allMachines, isInScope]);
 
@@ -132,7 +138,10 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
     const areaName = new Map(hierarchy.areas.map((a) => [a.id, a.name]));
     const lineName = new Map(hierarchy.lines.map((l) => [l.id, l.name]));
     const map = new Map<string, { key: string; title: string; machines: Machine[] }>();
-    for (const m of machines) {
+    const shown = machines.filter(
+      (m) => matches(m.name, tileQuery) && (!attentionOnly || STATE_RANK[tileState(liveState[m.id])] <= STATE_RANK.warning),
+    );
+    for (const m of shown) {
       const key = m.lineId ?? `area:${m.areaId}`;
       const area = areaName.get(m.areaId) ?? "";
       const title = m.lineId ? `${scope.areaId ? "" : `${area} / `}${lineName.get(m.lineId) ?? ""}` : `${area}, no line`;
@@ -144,7 +153,8 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
       g.machines.sort((a, b) => STATE_RANK[tileState(liveState[a.id])] - STATE_RANK[tileState(liveState[b.id])] || a.name.localeCompare(b.name));
     }
     return list.sort((a, b) => a.title.localeCompare(b.title));
-  }, [machines, hierarchy, liveState, scope.areaId]);
+  }, [machines, hierarchy, liveState, scope.areaId, tileQuery, attentionOnly]);
+  const tilesShown = groups.reduce((n, g) => n + g.machines.length, 0);
 
   const shiftName = Object.values(shiftByMachine)[0]?.shiftName;
 
@@ -195,6 +205,20 @@ export default function MachineOverviewPanel({ liveState }: { liveState: Record<
       </div>
 
       {machines.length === 0 && <p className="ui-message ui-message-info">No active machines in the selected site, area or line.</p>}
+
+      {machines.length > TILE_FILTER_FROM && (
+        <div className="ui-toolbar" style={{ margin: "12px 0 4px" }}>
+          <input className="ui-input ui-search" type="search" placeholder="Search machine…" value={tileQuery} onChange={(e) => setTileQuery(e.target.value)} aria-label="Search machines" />
+          <label className="ui-check">
+            <input type="checkbox" checked={attentionOnly} onChange={(e) => setAttentionOnly(e.target.checked)} />
+            Only down or without data
+          </label>
+          <span className="ui-field-hint">
+            {tilesShown === machines.length ? `${machines.length} machines` : `${tilesShown} of ${machines.length} machines`}
+          </span>
+        </div>
+      )}
+      {machines.length > 0 && tilesShown === 0 && <p className="ui-field-hint">{attentionOnly && !tileQuery ? "Every machine is running or off shift." : "No machine matches."}</p>}
 
       {groups.map((g) => (
         <div key={g.key} className="tile-group">

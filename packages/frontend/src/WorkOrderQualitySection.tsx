@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { formatDateTime } from "./ui/format.js";
 import QualityCheckDetail, { StatusPill } from "./QualityCheckDetail.js";
 import { KIND_LABEL, listWorkOrderChecks, type CheckDetail } from "./quality.js";
+import { CappedList } from "./ui/lists.js";
 
 /** The quality checks of one work order, each opening to every measurement (in the work order's side panel). */
 export default function WorkOrderQualitySection({ workOrderId }: { workOrderId: string }) {
@@ -28,8 +29,7 @@ export default function WorkOrderQualitySection({ workOrderId }: { workOrderId: 
           None yet. If the part has a quality plan, the first-piece check opens when the order is started.
         </p>
       ) : (
-        <ul className="q-wo-checks">
-          {checks.map((c) => (
+        <CappedList items={ordered(checks)} limit={10} className="q-wo-checks" empty="" render={(c) => (
             <li key={c.id}>
               <button type="button" className="q-wo-check" aria-expanded={open === c.id} onClick={() => setOpen(open === c.id ? null : c.id)}>
                 <span>
@@ -43,9 +43,14 @@ export default function WorkOrderQualitySection({ workOrderId }: { workOrderId: 
                 </div>
               )}
             </li>
-          ))}
-        </ul>
+        )} />
       )}
     </section>
   );
+}
+
+/** First and last piece first, then the spot checks newest first (an order may have hundreds of them). */
+function ordered<T extends { kind: string; createdAt: string }>(checks: readonly T[]): T[] {
+  const rank = (c: T) => (c.kind === "first_piece" ? 0 : c.kind === "last_piece" ? 1 : 2);
+  return [...checks].sort((a, b) => rank(a) - rank(b) || (rank(a) === 2 ? b.createdAt.localeCompare(a.createdAt) : a.createdAt.localeCompare(b.createdAt)));
 }

@@ -5,6 +5,7 @@ import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow } from "./master-data.js";
 import { formatDateTime } from "./ui/format.js";
 import { openLot, scrapRate, type MaterialLot, type MaterialLotUsage } from "./traceability.js";
+import { CappedList } from "./ui/lists.js";
 
 export type MaterialLotTarget = { mode: "create" } | { mode: "edit"; lot: MaterialLot };
 
@@ -256,8 +257,7 @@ export default function MaterialLotDrawer({
               Not used on any work order yet. Choose it in a work order's Material section.
             </p>
           ) : (
-            <ul className="ui-mini-list">
-              {(usage ?? []).map((u) => (
+            <CappedList items={(usage ?? [])} limit={10} className="ui-mini-list" empty="Not used on any work order yet." render={(u) => (
                 <li key={u.workOrderId} style={{ alignItems: "center" }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     {u.orderNumber} · {u.partName}
@@ -273,8 +273,7 @@ export default function MaterialLotDrawer({
                     </button>
                   )}
                 </li>
-              ))}
-            </ul>
+            )} />
           )}
         </section>
       )}

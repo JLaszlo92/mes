@@ -6,6 +6,7 @@ import { ApiError, readJsonOrThrow } from "./master-data.js";
 import { formatDateTime } from "./ui/format.js";
 import InstructionViewer, { type ViewerTab } from "./InstructionViewer.js";
 import { formatBytes, pdfFileProblem, uploadInstructionPdf, type InstructionView, type WorkInstruction } from "./work-instructions.js";
+import { CappedList } from "./ui/lists.js";
 
 export type InstructionTarget = { mode: "create" } | { mode: "edit"; instruction: WorkInstruction };
 
@@ -312,8 +313,7 @@ export default function WorkInstructionDrawer({
             {versions === null ? (
               <p className="ui-field-hint">Loading…</p>
             ) : (
-              <ul className="ui-mini-list">
-                {versions.map((v) => (
+              <CappedList items={versions} limit={5} className="ui-mini-list" empty="No versions." render={(v) => (
                   <li key={v.id} style={{ alignItems: "center" }}>
                     <span className="num" style={{ minWidth: 34 }}>
                       v{v.version}
@@ -327,8 +327,7 @@ export default function WorkInstructionDrawer({
                       View
                     </button>
                   </li>
-                ))}
-              </ul>
+              )} />
             )}
             <p className="ui-field-hint" style={{ margin: 0 }}>
               Saving never overwrites: every change is a new version, and the terminal always shows the current one.
@@ -346,8 +345,7 @@ export default function WorkInstructionDrawer({
                 No operator has opened this instruction yet.
               </p>
             ) : (
-              <ul className="ui-mini-list">
-                {views.map((v) => (
+              <CappedList items={views} limit={5} className="ui-mini-list" empty="No operator has opened this instruction yet." footer={views.length >= 20 ? <span className="ui-field-hint">The latest 20 openings — all of them are in Admin → Audit log.</span> : undefined} render={(v) => (
                   <li key={v.id}>
                     <span className="num" style={{ minWidth: 34 }}>
                       v{v.version}
@@ -358,8 +356,7 @@ export default function WorkInstructionDrawer({
                     </span>
                     <span className="ui-sub">{formatDateTime(v.viewedAt)}</span>
                   </li>
-                ))}
-              </ul>
+              )} />
             )}
           </section>
         )}

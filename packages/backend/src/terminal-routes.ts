@@ -81,6 +81,8 @@ async function workerFor(request: TerminalRequest, reply: FastifyReply, terminal
 }
 
 const HISTORY_PER_MACHINE = 10;
+/** Planned orders sent to the terminal per machine (the nearest ones). */
+export const MAX_WAITING = 30;
 
 /**
  * How fast the machine makes parts now: parts in the last hour, and the average cycle of the latest (up to 20)
@@ -141,7 +143,14 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
           machineRate(machineId),
         ]);
         const done = (s: string) => s === "completed" || s === "cancelled";
-        const current = assignments.filter((a) => !done(a.workOrderStatus));
+        // Running and paused orders always; of the planned ones only the next MAX_WAITING (a machine can be planned
+        // months ahead — the screen and the start list stay light), the rest only counted.
+        const open = assignments.filter((a) => !done(a.workOrderStatus));
+        const planned = open.filter((a) => a.workOrderStatus === "planned" || a.workOrderStatus === "released");
+        const current = [...open.filter((a) => !planned.includes(a)), ...planned.slice(0, MAX_WAITING)].sort(
+          (x, y) => new Date(x.plannedStart).getTime() - new Date(y.plannedStart).getTime(),
+        );
+        const waitingMore = Math.max(0, planned.length - MAX_WAITING);
         const history = assignments.filter((a) => done(a.workOrderStatus)).slice(-HISTORY_PER_MACHINE).reverse();
         const runningAssignments = current.filter((a) => a.workOrderStatus === "in_progress");
         const running = [...new Set(runningAssignments.map((a) => a.workOrderId))];
@@ -207,6 +216,7 @@ export default async function terminalRoutes(app: FastifyInstance): Promise<void
           rate,
           current,
           history,
+          waitingMore,
           orders,
           paused,
           faultCodes: codes.filter((c) => c.isActive).map((c) => ({ id: c.id, code: c.code, name: c.name })),

@@ -4,6 +4,7 @@ import Field from "./ui/Field.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { ApiError, readJsonOrThrow, type Machine } from "./master-data.js";
 import { formatDateTime, formatDuration, fromLocalInput, toLocalInput } from "./ui/format.js";
+import { CappedList, FilterSelect } from "./ui/lists.js";
 
 export type MaintenanceStatus = "open" | "assigned" | "in_progress" | "closed";
 export type MaintenancePriority = "low" | "normal" | "high" | "urgent";
@@ -232,14 +233,14 @@ export default function MaintenanceDrawer({
             <h3 className="ui-section-title">Job</h3>
             <div className="ui-grid-2">
               <Field label="Machine" error={fieldError("machineId")}>
-                <select className="ui-select" value={draft.machineId} onChange={(e) => set("machineId", e.target.value)} disabled={closed}>
-                  {machineOptions.length === 0 && <option value="">No active machines</option>}
-                  {machineOptions.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
-                </select>
+                <FilterSelect
+                  ariaLabel="Machine"
+                  value={draft.machineId}
+                  onChange={(v) => set("machineId", v)}
+                  disabled={closed}
+                  placeholder={machineOptions.length === 0 ? "No active machines" : undefined}
+                  options={machineOptions.map((m) => ({ value: m.id, label: m.name }))}
+                />
               </Field>
               <Field label="Priority" error={fieldError("priority")}>
                 <select className="ui-select" value={draft.priority} onChange={(e) => set("priority", e.target.value as MaintenancePriority)}>
@@ -265,15 +266,16 @@ export default function MaintenanceDrawer({
             <h3 className="ui-section-title">Responsibility</h3>
             <div className="ui-grid-2">
               <Field label="Assigned to" error={fieldError("assignedTo")} hint={creating || draft.status === "open" ? "Assigning someone moves an open job to Assigned." : undefined}>
-                <select className="ui-select" value={draft.assignedTo} onChange={(e) => set("assignedTo", e.target.value)}>
-                  <option value="">Nobody yet</option>
-                  {order?.assignedTo && !users.some((u) => u.id === order.assignedTo) && <option value={order.assignedTo}>{order.assignedToEmail ?? "Unknown user"}</option>}
-                  {users.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.email}
-                    </option>
-                  ))}
-                </select>
+                <FilterSelect
+                  ariaLabel="Assigned to"
+                  value={draft.assignedTo}
+                  onChange={(v) => set("assignedTo", v)}
+                  placeholder="Nobody yet"
+                  options={[
+                    ...(order?.assignedTo && !users.some((u) => u.id === order.assignedTo) ? [{ value: order.assignedTo, label: order.assignedToEmail ?? "Unknown user" }] : []),
+                    ...users.map((u) => ({ value: u.id, label: u.email ?? u.id })),
+                  ]}
+                />
               </Field>
               {!creating && (
                 <Field label="Status" error={fieldError("status")}>
@@ -389,8 +391,7 @@ function WorkLog({ order, canLogLabor, canLogParts, onLogged }: { order: Mainten
           No hours logged.
         </p>
       ) : (
-        <ul className="ui-mini-list">
-          {labor.map((l) => (
+        <CappedList items={labor} limit={8} className="ui-mini-list" empty="" render={(l) => (
             <li key={l.id}>
               <span className="num" style={{ width: 56 }}>
                 {l.hours} h
@@ -400,8 +401,7 @@ function WorkLog({ order, canLogLabor, canLogParts, onLogged }: { order: Mainten
                 {l.performedByEmail ?? "—"}, {formatDateTime(l.loggedAt)}
               </span>
             </li>
-          ))}
-        </ul>
+        )} />
       )}
       {canLogLabor && (
         <form
@@ -428,8 +428,7 @@ function WorkLog({ order, canLogLabor, canLogParts, onLogged }: { order: Mainten
           No parts logged.
         </p>
       ) : (
-        <ul className="ui-mini-list">
-          {parts.map((p) => (
+        <CappedList items={parts} limit={8} className="ui-mini-list" empty="" render={(p) => (
             <li key={p.id}>
               <span className="num" style={{ width: 56 }}>
                 {p.quantity} ×
@@ -437,8 +436,7 @@ function WorkLog({ order, canLogLabor, canLogParts, onLogged }: { order: Mainten
               <span style={{ flex: 1 }}>{p.partName}</span>
               <span className="ui-sub">{formatDateTime(p.loggedAt)}</span>
             </li>
-          ))}
-        </ul>
+        )} />
       )}
       {canLogParts && (
         <form

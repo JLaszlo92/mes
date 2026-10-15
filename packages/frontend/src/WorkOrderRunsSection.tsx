@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { apiFetch, API_BASE } from "./api.js";
 import { readJsonOrThrow } from "./master-data.js";
 import { formatDateTime } from "./ui/format.js";
+import { Capped } from "./ui/lists.js";
 
 interface Run {
   id: string;
@@ -49,8 +50,11 @@ export default function WorkOrderRunsSection({ workOrderId, quantity, status }: 
           <span className="ui-pill ui-pill-warning">Paused</span> {reported} of {quantity} good parts reported — it can be resumed at the terminal of its machine.
         </p>
       )}
+      <Capped items={runs} limit={5} fromEnd>
+      {(shown) => (
       <ol className="wo-runs">
-        {runs.map((r, i) => {
+        {shown.map((r) => {
+          const i = runs.indexOf(r);
           const corrected = r.reportedManually && r.countedGood !== null && r.reportedGood !== r.countedGood;
           return (
             <li key={r.id} className="wo-run">
@@ -89,6 +93,8 @@ export default function WorkOrderRunsSection({ workOrderId, quantity, status }: 
           );
         })}
       </ol>
+      )}
+      </Capped>
     </section>
   );
 }

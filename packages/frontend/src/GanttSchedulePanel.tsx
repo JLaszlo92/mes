@@ -3,6 +3,11 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { useAuth } from "./auth-context.js";
 import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
+import { matches } from "./ui/lists.js";
+
+/** From this many unscheduled items on, the pool gets a search field; each list scrolls on its own. */
+const POOL_SEARCH_FROM = 8;
+const POOL_LIST_STYLE = { maxHeight: "40vh", overflowY: "auto" as const };
 
 interface Machine {
   id: string;
@@ -262,6 +267,7 @@ export default function GanttSchedulePanel() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [maintenance, setMaintenance] = useState<MaintenanceOrder[]>([]);
   const [daysToShow, setDaysToShow] = useState(3);
+  const [poolQuery, setPoolQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -423,6 +429,8 @@ export default function GanttSchedulePanel() {
   const unscheduled = workOrders.filter(
     (wo) => !groups.has(wo.id) && (wo.status === "planned" || wo.status === "released"),
   );
+  const poolOrders = unscheduled.filter((wo) => matches(`${wo.orderNumber} ${wo.partName}`, poolQuery));
+  const poolMaintenance = unplannedMaintenance.filter((mt) => matches(`${mt.title} ${machineNameById.get(mt.machineId) ?? ""}`, poolQuery));
 
   async function apiRequest(path: string, init: RequestInit): Promise<void> {
     const res = await apiFetch(`${API_BASE}${path}`, {
@@ -737,10 +745,23 @@ export default function GanttSchedulePanel() {
       <div style={{ display: "flex", gap: 20, alignItems: "flex-start" }}>
         <div data-pool="true" style={{ width: 200, flexShrink: 0, minHeight: 400 }}>
           <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 6 }}>
-            Unscheduled work orders — drag onto a machine row; drag a scheduled bar back here to remove it
+            Unscheduled work orders{unscheduled.length > 0 ? ` (${unscheduled.length})` : ""} — drag onto a machine row; drag a scheduled bar back here to remove it
           </div>
+          {unscheduled.length + unplannedMaintenance.length > POOL_SEARCH_FROM && (
+            <input
+              className="ui-input"
+              type="search"
+              placeholder="Search order, part, task…"
+              value={poolQuery}
+              onChange={(e) => setPoolQuery(e.target.value)}
+              aria-label="Search unscheduled work"
+              style={{ width: "100%", boxSizing: "border-box", marginBottom: 6 }}
+            />
+          )}
           {unscheduled.length === 0 && <p style={{ fontSize: 12, color: COLORS.muted }}>None.</p>}
-          {unscheduled.map((wo) => (
+          {unscheduled.length > 0 && poolOrders.length === 0 && <p style={{ fontSize: 12, color: COLORS.muted }}>Nothing matches.</p>}
+          <div style={POOL_LIST_STYLE}>
+          {poolOrders.map((wo) => (
             <div
               key={wo.id}
               onMouseDown={(e) => {
@@ -776,12 +797,15 @@ export default function GanttSchedulePanel() {
               )}
             </div>
           ))}
+          </div>
 
           <div style={{ fontSize: 12, color: COLORS.muted, margin: "18px 0 6px" }}>
-            Maintenance to plan — drag onto its machine's row ({formatDuration(DEFAULT_MAINTENANCE_MS)}, resize afterwards)
+            Maintenance to plan{unplannedMaintenance.length > 0 ? ` (${unplannedMaintenance.length})` : ""} — drag onto its machine's row ({formatDuration(DEFAULT_MAINTENANCE_MS)}, resize afterwards)
           </div>
           {unplannedMaintenance.length === 0 && <p style={{ fontSize: 12, color: COLORS.muted }}>None.</p>}
-          {unplannedMaintenance.map((mt) => (
+          {unplannedMaintenance.length > 0 && poolMaintenance.length === 0 && <p style={{ fontSize: 12, color: COLORS.muted }}>Nothing matches.</p>}
+          <div style={POOL_LIST_STYLE}>
+          {poolMaintenance.map((mt) => (
             <div
               key={mt.id}
               onMouseDown={(e) => {
@@ -805,6 +829,7 @@ export default function GanttSchedulePanel() {
               <div style={{ color: COLORS.muted }}>{machineNameById.get(mt.machineId) ?? mt.machineId}</div>
             </div>
           ))}
+          </div>
         </div>
 
         <div style={{ flex: 1, minWidth: 0 }}>

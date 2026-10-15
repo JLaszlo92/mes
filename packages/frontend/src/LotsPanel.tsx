@@ -8,6 +8,7 @@ import { downloadCsv } from "./ui/csv.js";
 import { formatDate, formatDateTime, formatDuration } from "./ui/format.js";
 import { usePolling } from "./ui/usePolling.js";
 import { openMaterialLot, scrapRate, takeOpenParam, type Lot } from "./traceability.js";
+import { CappedList } from "./ui/lists.js";
 
 type Period = "7" | "30" | "90" | "all";
 
@@ -290,8 +291,7 @@ function LotDrawer({ lot, onClose }: { lot: Lot; onClose: () => void }) {
             orders), even afterwards.
           </p>
         ) : (
-          <ul className="ui-mini-list">
-            {lot.materials.map((m) => (
+          <CappedList items={lot.materials} limit={8} className="ui-mini-list" empty="" render={(m) => (
               <li key={m.materialLotId} style={{ alignItems: "center" }}>
                 <span style={{ flex: 1, minWidth: 0 }}>
                   {m.materialName}
@@ -305,8 +305,7 @@ function LotDrawer({ lot, onClose }: { lot: Lot; onClose: () => void }) {
                   Where else used
                 </button>
               </li>
-            ))}
-          </ul>
+          )} />
         )}
       </section>
     </Drawer>

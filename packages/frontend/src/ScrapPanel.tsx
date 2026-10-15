@@ -3,6 +3,7 @@ import DataTable, { type Column } from "./ui/DataTable.js";
 import Pager from "./ui/Pager.js";
 import { downloadCsv } from "./ui/csv.js";
 import { formatDateTime } from "./ui/format.js";
+import { useCapped } from "./ui/lists.js";
 import { useServerList } from "./ui/useServerList.js";
 import { useScope } from "./scope.js";
 import { MODE_LABEL, scrapApi, type ScrapAnalysis, type ScrapBooking, type ScrapByReason } from "./scrap.js";
@@ -180,8 +181,11 @@ export default function ScrapPanel() {
 /** Horizontal Pareto bars: the biggest reason on top, the share and the running total beside each. */
 export function Pareto({ rows, total }: { rows: ScrapByReason[]; total: number }) {
   const max = Math.max(1, ...rows.map((r) => r.quantity));
+  // The biggest reasons are what matters; a long tail (dozens of reasons) is one click away.
+  const { visible, toggle } = useCapped(rows, 10);
   let running = 0;
   return (
+    <>
     <div className="sc-pareto" role="table" aria-label="Scrap by reason">
       <div className="sc-pareto-row sc-pareto-head" role="row">
         <span role="columnheader">Reason</span>
@@ -193,7 +197,7 @@ export function Pareto({ rows, total }: { rows: ScrapByReason[]; total: number }
           Cumulative
         </span>
       </div>
-      {rows.map((r) => {
+      {visible.map((r) => {
         running += r.quantity;
         return (
           <div key={r.code ?? "none"} className="sc-pareto-row" role="row" title={`${r.name}: ${r.quantity} (${r.booked} reported at a terminal, ${r.quantity - r.booked} from the machine)`}>
@@ -215,5 +219,7 @@ export function Pareto({ rows, total }: { rows: ScrapByReason[]; total: number }
         );
       })}
     </div>
+    {toggle && <div className="ui-more-row">{toggle}</div>}
+    </>
   );
 }

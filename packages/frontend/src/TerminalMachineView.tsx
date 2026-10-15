@@ -30,6 +30,8 @@ export interface MachineActions {
   instruction: () => void;
   scrap: () => void;
   history: () => void;
+  /** Every waiting order (planned and paused), when more are waiting than the screen shows. */
+  queue: () => void;
   attention: (item: Attention) => void;
 }
 
@@ -61,7 +63,7 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
   const primaryButton = run ? (
     <RailButton key="primary" icon={<IconStop />} label="Befejezés" sub="lejelentés, lezárás" primary={!measureFirst} disabled={busy} onClick={actions.primary} />
   ) : (
-    <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting.length > 1 ? `${waiting.length} rendelés közül` : waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
+    <RailButton key="primary" icon={<IconPlay />} label={waiting[0] && isPaused(waiting[0]) ? "Folytatás" : "Indítás"} sub={waiting.length > 1 ? `${int(waiting.length + (m.waitingMore ?? 0))} rendelés közül` : waiting[0] ? waiting[0].orderNumber : "nincs rendelés"} primary={!measureFirst && waiting.length > 0} disabled={busy || waiting.length === 0} onClick={actions.primary} />
   );
 
   return (
@@ -175,7 +177,11 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
                     </span>
                   )}
                   <span className="tx-muted">
-                    {waiting.length > 1 ? "Az Indítás gombbal választhatsz: új rendelés vagy a szüneteltetett folytatása." : `${isPaused(waiting[0]) ? "Folytatás" : "Indítás"} a jobb oldali gombbal.`}
+                    {waiting.length > 1
+                      ? waiting.some(isPaused)
+                        ? "Az Indítás gombbal választhatsz: új rendelés vagy a szüneteltetett folytatása."
+                        : "Az Indítás gombbal választhatsz a várakozó rendelések közül."
+                      : `${isPaused(waiting[0]) ? "Folytatás" : "Indítás"} a jobb oldali gombbal.`}
                   </span>
                 </>
               ) : (
@@ -229,6 +235,11 @@ export default function TerminalMachineView({ m, busy, now, actions }: { m: Term
               </div>
             ))}
             {(run ? waiting : waiting.slice(1)).length === 0 && <span className="tx-muted tx-next-none">nincs több ütemezett rendelés</span>}
+            {(run ? waiting : waiting.slice(1)).length + (m.waitingMore ?? 0) > 2 && (
+              <button type="button" className="tx-ghost-btn" onClick={actions.queue}>
+                +{(run ? waiting : waiting.slice(1)).length - 2 + (m.waitingMore ?? 0)} további
+              </button>
+            )}
             {m.history.length > 0 && (
               <button type="button" className="tx-ghost-btn" onClick={actions.history}>
                 <IconHistory size={20} /> Korábbiak ({m.history.length})

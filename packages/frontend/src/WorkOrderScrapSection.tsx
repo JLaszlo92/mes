@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { formatDateTime } from "./ui/format.js";
 import { Pareto } from "./ScrapPanel.js";
 import { scrapApi, type ScrapAnalysis, type ScrapBooking } from "./scrap.js";
+import { CappedList } from "./ui/lists.js";
 
 /** Scrap of one work order (its machine, from its start to its end) by reason, and the reports made at the terminal. */
 export default function WorkOrderScrapSection({ workOrderId }: { workOrderId: string }) {
@@ -28,13 +29,11 @@ export default function WorkOrderScrapSection({ workOrderId }: { workOrderId: st
         <>
           <Pareto rows={analysis.byReason} total={analysis.totalScrap} />
           {bookings.length > 0 && (
-            <ul className="sc-bookings">
-              {bookings.map((b) => (
+            <CappedList items={bookings} limit={10} className="sc-bookings" empty="" footer={bookings.length >= 50 ? <span className="ui-field-hint">The latest 50 reports — all of them under Quality → Scrap.</span> : undefined} render={(b) => (
                 <li key={b.id}>
                   <strong className="num">{b.quantity}</strong> {b.reasonName} <span className="ui-sub">{formatDateTime(b.bookedAt)} · {b.bookedByName ?? "—"} · {b.terminalName ?? ""}</span>
                 </li>
-              ))}
-            </ul>
+            )} />
           )}
         </>
       )}

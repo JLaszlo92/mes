@@ -110,7 +110,10 @@ export interface TerminalMachine {
   } | null;
   /** Parts in the last hour; the average cycle of the latest parts (null when no parts came lately). */
   rate: { partsLastHour: number; cycleSeconds: number | null; idealCycleSeconds: number | null };
+  /** Running and paused orders, then the next planned ones (at most a few dozen). */
   current: TerminalAssignment[];
+  /** Planned orders after the ones in `current` (not sent, so the screen stays light). */
+  waitingMore?: number;
   history: TerminalAssignment[];
   orders: Record<
     string,

@@ -2,6 +2,7 @@ import { usePolling } from "./ui/usePolling.js";
 import { useEffect, useState } from "react";
 import { apiFetch, API_BASE } from "./api.js";
 import { useScope } from "./scope.js";
+import { useCapped } from "./ui/lists.js";
 
 type ParetoKind = "code" | "unexplained" | "micro";
 
@@ -99,6 +100,8 @@ export default function DowntimeParetoPanel() {
 
   const maxSeconds = Math.max(1, ...(pareto?.items.map((i) => i.seconds) ?? [1]));
   const coverage = pareto && pareto.explainableSeconds > 0 ? pareto.explainedSeconds / pareto.explainableSeconds : null;
+  // The biggest causes first; a long tail of reasons is one click away.
+  const { visible: topItems, toggle } = useCapped(pareto?.items ?? [], 10);
   let cumulative = 0;
 
   return (
@@ -134,7 +137,7 @@ export default function DowntimeParetoPanel() {
 
       {pareto && pareto.items.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          {pareto.items.map((item) => {
+          {topItems.map((item) => {
             cumulative += item.seconds;
             const share = pareto.totalSeconds > 0 ? item.seconds / pareto.totalSeconds : 0;
             const cumShare = pareto.totalSeconds > 0 ? cumulative / pareto.totalSeconds : 0;
@@ -167,6 +170,7 @@ export default function DowntimeParetoPanel() {
               </div>
             );
           })}
+          {toggle && <div className="ui-more-row">{toggle}</div>}
           <div style={{ display: "flex", gap: 14, marginTop: 8, fontSize: 11, color: "#898781" }}>
             <span><span style={{ color: COLORS.code }}>■</span> reason given</span>
             <span><span style={{ color: COLORS.unexplained }}>■</span> no (accepted) reason yet</span>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import Field from "./ui/Field.js";
 import { ApiError } from "./master-data.js";
+import { FilterSelect } from "./ui/lists.js";
 import {
   FIELDS,
   PROTOCOLS,
@@ -241,14 +242,15 @@ export default function MachineDataSourceSection({ machineId }: { machineId: str
         <div style={{ ...rowStyle, borderTop: mine.length ? "1px solid #f0efeb" : "none" }}>
           {free.length > 0 && (
             <>
-              <select className="ui-select" aria-label="Unassigned channel" value={assignId} onChange={(e) => setAssignId(e.target.value)} style={{ maxWidth: 340 }}>
-                <option value="">Connect an unassigned channel…</option>
-                {free.map(({ node, channel }) => (
-                  <option key={channel.id} value={channel.id}>
-                    {node.name} · {protocolLabel(channel.signalSource)} · {describeConnection(channel)}
-                  </option>
-                ))}
-              </select>
+              <span style={{ maxWidth: 340, flex: 1 }}>
+                <FilterSelect
+                  ariaLabel="Unassigned channel"
+                  value={assignId}
+                  onChange={setAssignId}
+                  placeholder="Connect an unassigned channel…"
+                  options={free.map(({ node, channel }) => ({ value: channel.id, label: `${node.name} · ${protocolLabel(channel.signalSource)} · ${describeConnection(channel)}` }))}
+                />
+              </span>
               <button type="button" className="ui-btn" disabled={busy || !assignId} onClick={assign}>Connect</button>
             </>
           )}

@@ -1,4 +1,5 @@
 import { usePolling } from "./ui/usePolling.js";
+import { Capped } from "./ui/lists.js";
 import { useEffect, useState, type Dispatch, type FormEvent, type SetStateAction } from "react";
 import { useAuth } from "./auth-context.js";
 import { ApiError } from "./master-data.js";
@@ -468,7 +469,8 @@ export default function EdgeNodesPanel() {
           <NodeSettings key={`${n.id}-${n.settings?.catchupMaxMinutes ?? 10}`} node={n} onSaved={load} />
 
           <div style={{ marginTop: 10, paddingLeft: 26 }}>
-            {n.channels.map((c) =>
+            <Capped items={n.channels} limit={8}>
+            {(channels) => channels.map((c) =>
               editingChannel === c.id ? (
                 <form
                   key={c.id}
@@ -510,6 +512,7 @@ export default function EdgeNodesPanel() {
                 </div>
               ),
             )}
+            </Capped>
 
             {addingChannelFor === n.id ? (
               <form onSubmit={(e) => addChannel(n.id, e)} style={{ marginTop: 10, padding: 10, background: "#f7f7f5", borderRadius: 8 }}>

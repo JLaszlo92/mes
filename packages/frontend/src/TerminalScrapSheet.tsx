@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { SEARCH_FROM, TerminalSearch } from "./TerminalChoiceSheet.js";
+import { matches } from "./ui/lists.js";
 import type { TerminalMachine } from "./terminal-api.js";
 import { int, runningOrder } from "./terminal-model.js";
 
@@ -31,6 +33,10 @@ export default function TerminalScrapSheet({
   }, [onCancel]);
 
   const blocked = m.scrapMode === "reclassify" && !run;
+  // Many reasons: a search; the chosen one always stays in view.
+  const [query, setQuery] = useState("");
+  const many = m.scrapReasons.length >= SEARCH_FROM;
+  const reasons = many && query ? m.scrapReasons.filter((r) => r.id === reasonId || matches(`${r.name} ${r.code}`, query)) : m.scrapReasons;
   const add = (n: number) => setQty((q) => Math.max(1, Math.min(Math.max(1, max), q + n)));
 
   return (
@@ -55,8 +61,9 @@ export default function TerminalScrapSheet({
         ) : (
           <>
             <div className="tx-scrap-label">1. Mi a selejt oka?</div>
-            <div className="term-sheet-grid" role="radiogroup" aria-label="Selejtok">
-              {m.scrapReasons.map((r) => (
+            {many && <TerminalSearch value={query} onChange={setQuery} total={m.scrapReasons.length} found={reasons.length} />}
+            <div className="term-sheet-grid tx-scrap-grid" role="radiogroup" aria-label="Selejtok">
+              {reasons.map((r) => (
                 <button key={r.id} type="button" role="radio" aria-checked={r.id === reasonId} className="term-choice tx-scrap-reason" data-selected={r.id === reasonId ? "true" : undefined} onClick={() => setReasonId(r.id)}>
                   <span className="term-choice-label">{r.name}</span>
                   <span className="term-choice-sub">{r.code}</span>

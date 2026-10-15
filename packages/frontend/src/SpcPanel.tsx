@@ -323,43 +323,52 @@ function SpcDetail({ summary, params, onClose }: { summary: SpcSummary; params: 
             </div>
           </div>
           {showTable && (
-            <div className="ui-table-wrap" style={{ marginTop: 12 }}>
-              <table className="ui-table" aria-label={`Values of ${s.name}`}>
-                <thead>
-                  <tr>
-                    <th>Measured</th>
-                    <th style={{ textAlign: "right" }}>Value</th>
-                    <th style={{ textAlign: "right" }}>MR</th>
-                    <th>Check</th>
-                    <th>Work order</th>
-                    <th>Machine / by</th>
-                    <th>Signals</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...pts].reverse().map((p) => (
-                    <tr key={p.id} onClick={() => setOpenCheck(p.checkId)} style={{ cursor: "pointer" }}>
-                      <td>{formatDateTime(p.at)}</td>
-                      <td className="num" style={{ textAlign: "right" }}>
+            <div style={{ marginTop: 12 }}>
+              <DataTable
+                ariaLabel={`Values of ${s.name}`}
+                rows={[...pts].reverse()}
+                getRowId={(p) => p.id}
+                onRowClick={(p) => setOpenCheck(p.checkId)}
+                paging={{ resetKey: s.name, pageSize: 25 }}
+                emptyText="No values in the period."
+                columns={[
+                  { id: "at", header: "Measured", cell: (p) => formatDateTime(p.at), sortValue: (p) => p.at },
+                  {
+                    id: "value",
+                    header: "Value",
+                    align: "right",
+                    sortValue: (p) => p.value,
+                    cell: (p) => (
+                      <span className="num">
                         {fmtValue(p.value)} {!p.passed && <span className="ui-pill ui-pill-alarm">Out</span>}
-                      </td>
-                      <td className="num" style={{ textAlign: "right" }}>
-                        {fmtValue(p.mr)}
-                      </td>
-                      <td>
+                      </span>
+                    ),
+                  },
+                  { id: "mr", header: "MR", align: "right", sortValue: (p) => p.mr, cell: (p) => <span className="num">{fmtValue(p.mr)}</span> },
+                  {
+                    id: "check",
+                    header: "Check",
+                    cell: (p) => (
+                      <>
                         {KIND_LABEL[p.kind]}
                         {p.attempt > 1 ? <span className="ui-sub">attempt {p.attempt}</span> : null}
-                      </td>
-                      <td>{p.orderNumber}</td>
-                      <td>
+                      </>
+                    ),
+                  },
+                  { id: "order", header: "Work order", sortValue: (p) => p.orderNumber, cell: (p) => p.orderNumber },
+                  {
+                    id: "machine",
+                    header: "Machine / by",
+                    cell: (p) => (
+                      <>
                         {p.machineName ?? "—"}
                         <span className="ui-sub">{p.measuredByName ?? "—"}</span>
-                      </td>
-                      <td>{p.signals.length ? p.signals.map((r) => SIGNAL_LABEL[r]).join("; ") : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </>
+                    ),
+                  },
+                  { id: "signals", header: "Signals", cell: (p) => (p.signals.length ? p.signals.map((r) => SIGNAL_LABEL[r]).join("; ") : "—") },
+                ]}
+              />
             </div>
           )}
         </>

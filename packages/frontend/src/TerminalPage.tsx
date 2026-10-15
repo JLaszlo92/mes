@@ -38,7 +38,7 @@ interface Action {
 }
 
 type Sheet =
-  | { kind: "fault" | "status" | "history" | "scrap"; machineId: string }
+  | { kind: "fault" | "status" | "history" | "scrap" | "queue"; machineId: string }
   | { kind: "start" | "complete" | "measure"; machineId: string }
   | { kind: "report"; machineId: string; workOrderId: string; intent: "complete" | "pause" };
 
@@ -343,6 +343,8 @@ export default function TerminalPage({ terminalUiId }: { terminalUiId: string })
       instruction: () => openInstruction(m),
       scrap: () => setSheet({ kind: "scrap", machineId: m.id }),
       history: () => setSheet({ kind: "history", machineId: m.id }),
+      // Without a running order the list is the start choice; with one it only shows what comes next.
+      queue: () => setSheet({ kind: runningOrder(m) ? "queue" : "start", machineId: m.id }),
       attention: (item) => item.checkId && setFlow({ checkId: item.checkId, orderNumber: item.orderNumber ?? "", purpose: { kind: "check" } }),
     };
   }
@@ -596,7 +598,16 @@ function MachineSheet({
     return (
       <TerminalChoiceSheet
         title={`${sheet.kind === "start" ? "Melyik rendelést indítod vagy folytatod?" : "Melyik rendelést jelented le?"} — ${m.name}`}
-        subtitle={sheet.kind === "start" && list.some(isPaused) ? "A sárga keretesek szüneteltetett megbízások: koppintásra ott folytatódnak, ahol abbahagyták." : undefined}
+        subtitle={
+          sheet.kind === "start"
+            ? [
+                list.some(isPaused) && "A sárga keretesek szüneteltetett megbízások: koppintásra ott folytatódnak, ahol abbahagyták.",
+                m.waitingMore && `A legközelebbi ${list.length} látszik; utána még ${m.waitingMore} van ütemezve (a tervezőben láthatók).`,
+              ]
+                .filter(Boolean)
+                .join(" ") || undefined
+            : undefined
+        }
         emptyText="Nincs ilyen rendelés."
         choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: waitingText(m, a), tone: isPaused(a) ? ("warn" as const) : undefined }))}
         onCancel={close}
@@ -629,6 +640,20 @@ function MachineSheet({
           close();
           openCheck(found.c.id, found.a.orderNumber);
         }}
+      />
+    );
+  }
+
+  if (sheet.kind === "queue") {
+    const list = waitingOrders(m);
+    return (
+      <TerminalChoiceSheet
+        title={`Következő rendelések — ${m.name}`}
+        subtitle={`Indítás a futó rendelés lejelentése után.${m.waitingMore ? ` A legközelebbi ${list.length} látszik, utána még ${m.waitingMore} van ütemezve.` : ""}`}
+        emptyText="Nincs várakozó rendelés."
+        choices={list.map((a) => ({ key: a.workOrderId, label: a.partName, sub: waitingText(m, a), tone: isPaused(a) ? ("warn" as const) : undefined }))}
+        onCancel={close}
+        onChoose={close}
       />
     );
   }

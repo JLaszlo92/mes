@@ -6,6 +6,7 @@ import { PDF_LABELS_EN } from "./ui/pdf-labels.js";
 import { ApiError } from "./master-data.js";
 import { archivePlan, fmt, formatLimits, listPlanVersions, savePlan, uploadPlanPdf, type CharacteristicKind, type QualityPlan } from "./quality.js";
 import { formatBytes, pdfFileProblem } from "./work-instructions.js";
+import { CappedList } from "./ui/lists.js";
 
 const PdfViewer = lazy(() => import("./ui/PdfViewer.js"));
 
@@ -508,8 +509,7 @@ export default function QualityPlanDrawer({
           {versions === null ? (
             <p className="ui-field-hint">Loading…</p>
           ) : (
-            <ul className="q-versions">
-              {versions.map((v) => (
+            <CappedList items={versions} limit={5} className="q-versions" empty="No versions." render={(v) => (
                 <li key={v.id}>
                   <strong>v{v.version}</strong> · {formatDateTime(v.createdAt)} · {v.createdByName ?? "—"}
                   <span className="ui-sub">
@@ -517,8 +517,7 @@ export default function QualityPlanDrawer({
                     {v.characteristics.map((c) => `${c.name} ${formatLimits(c)}`).join("; ")}
                   </span>
                 </li>
-              ))}
-            </ul>
+            )} />
           )}
         </section>
       )}

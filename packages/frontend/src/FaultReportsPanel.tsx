@@ -9,6 +9,7 @@ import Pager from "./ui/Pager.js";
 import { formatDateTime } from "./ui/format.js";
 import { useServerList } from "./ui/useServerList.js";
 import { readJsonOrThrow } from "./master-data.js";
+import { CappedList, FilterSelect } from "./ui/lists.js";
 
 type ReportStatus = "pending" | "confirmed" | "modified" | "rejected";
 
@@ -280,8 +281,7 @@ function FaultReportDrawer({ report, can, onClose, onChanged }: { report: FaultR
               None logged yet.
             </p>
           ) : (
-            <ul className="ui-mini-list">
-              {actions.map((a) => (
+            <CappedList items={actions} limit={6} className="ui-mini-list" empty="" render={(a) => (
                 <li key={a.id}>
                   <span style={{ flex: 1 }}>
                     {a.description}
@@ -304,8 +304,7 @@ function FaultReportDrawer({ report, can, onClose, onChanged }: { report: FaultR
                     <span className="ui-pill ui-pill-warning">Awaiting sign-off</span>
                   )}
                 </li>
-              ))}
-            </ul>
+            )} />
           )}
           <form
             className="ui-inline-form"
@@ -391,23 +390,17 @@ function ReportFaultDrawer({ machines, onClose, onCreated }: { machines: { id: s
           {error && <p className="ui-message ui-message-error">{error}</p>}
           <div className="ui-grid-2">
             <Field label="Machine">
-              <select className="ui-select" value={form.machineId} onChange={(e) => setForm({ ...form, machineId: e.target.value, faultCodeId: "" })}>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
+              <FilterSelect ariaLabel="Machine" value={form.machineId} onChange={(v) => setForm({ ...form, machineId: v, faultCodeId: "" })} options={machines.map((m) => ({ value: m.id, label: m.name }))} />
             </Field>
             <Field label="Fault code" hint={form.machineId && available.length === 0 ? "This machine has no fault codes yet (Admin → Fault codes)." : undefined}>
-              <select className="ui-select" value={form.faultCodeId} onChange={(e) => setForm({ ...form, faultCodeId: e.target.value })} disabled={available.length === 0}>
-                <option value="">Choose…</option>
-                {available.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.code} — {c.name}
-                  </option>
-                ))}
-              </select>
+              <FilterSelect
+                ariaLabel="Fault code"
+                value={form.faultCodeId}
+                onChange={(v) => setForm({ ...form, faultCodeId: v })}
+                disabled={available.length === 0}
+                placeholder="Choose…"
+                options={available.map((c) => ({ value: c.id, label: `${c.code} — ${c.name}` }))}
+              />
             </Field>
             <Field label="Count">
               <input className="ui-input num" inputMode="numeric" value={form.occurrenceCount} onChange={(e) => setForm({ ...form, occurrenceCount: e.target.value })} />

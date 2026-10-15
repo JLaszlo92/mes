@@ -5,6 +5,7 @@ import DataTable, { type Column } from "./ui/DataTable.js";
 import Drawer from "./ui/Drawer.js";
 import Field from "./ui/Field.js";
 import { readJsonOrThrow } from "./master-data.js";
+import { FilterSelect } from "./ui/lists.js";
 
 interface AlertRule {
   id: string;
@@ -173,14 +174,7 @@ function NewRuleDrawer({ machines, onClose, onCreated }: { machines: { id: strin
               <input className="ui-input num" inputMode="decimal" value={form.threshold} onChange={(e) => setForm({ ...form, threshold: e.target.value })} />
             </Field>
             <Field label="Machine">
-              <select className="ui-select" value={form.machineId} onChange={(e) => setForm({ ...form, machineId: e.target.value })}>
-                <option value="">All machines</option>
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
+              <FilterSelect ariaLabel="Machine" value={form.machineId} onChange={(v) => setForm({ ...form, machineId: v })} placeholder="All machines" options={machines.map((m) => ({ value: m.id, label: m.name }))} />
             </Field>
           </div>
           <p className="ui-field-label" style={{ margin: "16px 0 6px" }}>

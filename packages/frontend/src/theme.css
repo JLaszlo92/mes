@@ -3902,3 +3902,114 @@ body {
 .tx-pause-btn:disabled {
   opacity: 0.5;
 }
+
+/* ---- Long lists outside tables (ui/lists.tsx) ---- */
+.ui-more-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.ui-more-row:empty {
+  display: none;
+}
+.ui-more {
+  margin-top: var(--space-1);
+  color: var(--c-accent);
+}
+.ui-empty-line {
+  margin: 0;
+}
+.ui-filter-select {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.ui-checklist {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ui-checklist-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.ui-checklist-bar .ui-input {
+  flex: 1;
+  min-width: 160px;
+}
+.ui-checklist-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+}
+.ui-checklist[data-many="true"] .ui-checklist-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  max-height: 260px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-m);
+}
+
+/* ---- Terminal: long lists (search, scrolling grid) ---- */
+.tx-choice-sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 96vw);
+  overflow: hidden;
+}
+.tx-choice-sheet > .term-sheet-head,
+.tx-choice-sheet > .tx-search,
+.tx-choice-sheet > .term-sheet-foot {
+  flex: none;
+}
+.tx-choice-grid {
+  min-height: 0;
+  overflow-y: auto;
+}
+.tx-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.tx-search input {
+  flex: 1;
+  min-width: 0;
+  height: 56px;
+  box-sizing: border-box;
+  padding: 0 16px;
+  border: 1px solid var(--c-border-strong);
+  border-radius: 12px;
+  background: var(--c-surface-sunken);
+  color: var(--c-text);
+  font: inherit;
+  font-size: 20px;
+}
+.tx-search-count {
+  flex: none;
+  min-width: 90px;
+  text-align: right;
+  color: var(--c-text-muted);
+  font-size: 16px;
+}
+.tx-more-link {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: 1px solid var(--t-border-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--t-text);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.tx-scrap-grid {
+  max-height: 38vh;
+  overflow-y: auto;
+}

@@ -10,6 +10,7 @@ import { endOfDay, formatDateTime, formatDuration, fromLocalInput, toLocalInput 
 import InstructionViewer from "./InstructionViewer.js";
 import { useAuth } from "./auth-context.js";
 import { instructionForOrder, listInstructions, type WorkInstruction } from "./work-instructions.js";
+import { CappedList, FilterSelect } from "./ui/lists.js";
 
 export type WorkOrderStatus = "planned" | "released" | "in_progress" | "paused" | "completed" | "cancelled";
 
@@ -329,18 +330,20 @@ export default function WorkOrderDrawer({
           <section className="ui-section">
             <h3 className="ui-section-title">Work instruction</h3>
             <Field label="Shown at the terminal" error={fieldError("workInstructionName")} hint={instructionHint}>
-              <select className="ui-select" value={draft.workInstructionName} onChange={(e) => set("workInstructionName", e.target.value)} aria-invalid={!!fieldError("workInstructionName")}>
-                <option value="">Automatic (by part name)</option>
-                {/* A chosen instruction stays selectable even while the list is loading. */}
-                {draft.workInstructionName !== "" && !(instructions ?? []).some((i) => i.partName === draft.workInstructionName) && (
-                  <option value={draft.workInstructionName}>{draft.workInstructionName}</option>
-                )}
-                {(instructions ?? []).map((i) => (
-                  <option key={i.partName} value={i.partName}>
-                    {i.partName} (v{i.version})
-                  </option>
-                ))}
-              </select>
+              <FilterSelect
+                ariaLabel="Work instruction"
+                value={draft.workInstructionName}
+                onChange={(v) => set("workInstructionName", v)}
+                invalid={!!fieldError("workInstructionName")}
+                placeholder="Automatic (by part name)"
+                options={[
+                  // A chosen instruction stays selectable even while the list is loading.
+                  ...(draft.workInstructionName !== "" && !(instructions ?? []).some((i) => i.partName === draft.workInstructionName)
+                    ? [{ value: draft.workInstructionName, label: draft.workInstructionName }]
+                    : []),
+                  ...(instructions ?? []).map((i) => ({ value: i.partName, label: `${i.partName} (v${i.version})` })),
+                ]}
+              />
             </Field>
           </section>
 
@@ -445,8 +448,7 @@ function MaterialsSection({ workOrder, canEdit, onChanged }: { workOrder: WorkOr
           No material lot recorded yet. Without it the finished lot cannot be traced back to its material.
         </p>
       ) : (
-        <ul className="ui-mini-list">
-          {workOrder.materials.map((m) => (
+        <CappedList items={workOrder.materials} limit={8} className="ui-mini-list" empty="" render={(m) => (
             <li key={m.materialLotId} style={{ alignItems: "center" }}>
               <span style={{ flex: 1, minWidth: 0 }}>
                 {m.materialName}
@@ -463,23 +465,21 @@ function MaterialsSection({ workOrder, canEdit, onChanged }: { workOrder: WorkOr
                 </button>
               )}
             </li>
-          ))}
-        </ul>
+        )} />
       )}
       {canEdit && (
         <>
           <div className="ui-inline-form">
             <div style={{ flex: 1, minWidth: 200 }}>
               <Field label="Material lot">
-                <select className="ui-select" value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy || lots === null}>
-                  <option value="">{lots === null ? "Loading…" : available.length === 0 ? "No other material lots" : "Choose a material lot…"}</option>
-                  {available.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.materialName} · lot {l.lotNumber}
-                      {l.supplier ? ` · ${l.supplier}` : ""}
-                    </option>
-                  ))}
-                </select>
+                <FilterSelect
+                  ariaLabel="Material lot"
+                  value={choice}
+                  onChange={setChoice}
+                  disabled={busy || lots === null}
+                  placeholder={lots === null ? "Loading…" : available.length === 0 ? "No other material lots" : "Choose a material lot…"}
+                  options={available.map((l) => ({ value: l.id, label: `${l.materialName} · lot ${l.lotNumber}${l.supplier ? ` · ${l.supplier}` : ""}` }))}
+                />
               </Field>
             </div>
             <button
@@ -611,14 +611,14 @@ function ScheduleSection({
         <>
           <div className="ui-grid-2">
             <Field label="Machine" hint={inProgress ? "A running order stays on its machine." : undefined}>
-              <select className="ui-select" value={machineId} onChange={(e) => setMachineId(e.target.value)} disabled={busy || inProgress}>
-                {machines.length === 0 && <option value="">No active machines</option>}
-                {machines.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
+              <FilterSelect
+                ariaLabel="Machine"
+                value={machineId}
+                onChange={setMachineId}
+                disabled={busy || inProgress}
+                placeholder={machines.length === 0 ? "No active machines" : undefined}
+                options={machines.map((m) => ({ value: m.id, label: m.name }))}
+              />
             </Field>
             <Field label="Start">
               <input className="ui-input" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} disabled={busy} />
