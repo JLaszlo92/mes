@@ -53,6 +53,10 @@ describe("validateChannelCreate", () => {
     expect(validateChannelCreate({ signalSource: "opcua", connectionConfig: { endpointUrl: "opc.tcp://10.0.0.7:4840", goodCountNodeId: "ns=2;s=Good" } }).ok).toBe(true);
     expect(validateChannelCreate({ signalSource: "s7", connectionConfig: { plcIp: "10.0.0.8", plcRack: 0, plcSlot: 1, plcPort: 102 } }).ok).toBe(true);
     expect(validateChannelCreate({ signalSource: "gpio", connectionConfig: { goodPin: 17, scrapPin: "GPIO18" } }).ok).toBe(true);
+    // the I/O node: terminals and its input filters
+    expect(validateChannelCreate({ signalSource: "gpio", connectionConfig: { goodPin: 1, statusPin: "DI3", statusDebounceMs: 3000, countDebounceMs: 20 } }).ok).toBe(true);
+    expect(validateChannelCreate({ signalSource: "gpio", connectionConfig: { goodPin: 1, statusDebounceMs: -1 } })).toMatchObject({ ok: false, field: "connectionConfig.statusDebounceMs" });
+    expect(validateChannelCreate({ signalSource: "gpio", connectionConfig: { goodPin: 1, countDebounceMs: 20000 } })).toMatchObject({ ok: false, field: "connectionConfig.countDebounceMs" });
     expect(validateChannelCreate({ signalSource: "simulated" }).ok).toBe(true);
   });
   it("keeps unknown connection keys", () => {

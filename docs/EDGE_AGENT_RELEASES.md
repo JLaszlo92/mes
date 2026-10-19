@@ -6,6 +6,10 @@ talks to the actual machines. This does NOT cover the backend or frontend,
 which deploy differently (direct `git pull` + `pnpm run build` +
 `systemctl restart`, per `DEVELOPMENT_STATUS.md`).
 
+The I/O node (Waveshare ESP32 box) runs its own firmware with the same protocol and its own versions
+(`io-node-vN`): `firmware/io-node-esp32/README.md`. A protocol change here should be made there too
+(`components/mes_core/include/mes_policy.h` names the TypeScript file each rule comes from).
+
 ## Why git tags instead of cryptographic signing
 
 PRD Section 8.6 asks for edge updates to be "staged" (not forced

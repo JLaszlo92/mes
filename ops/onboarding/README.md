@@ -36,6 +36,13 @@ Re-running on an installed node needs `--force`.
 After a restart the backend may answer `409 another instance of this edge
 node is already active` for 1–2 minutes (session lease): that is normal.
 
+**I/O node (Waveshare ESP32 box) instead of a Linux node:** steps 1-3 and 5 are
+the same; step 4 is `firmware/io-node-esp32/tools/provision.sh --bundle
+bundle-<name>.tar.gz --port <USB port>` on the laptop (it asks for the token and
+writes it with the certificate into the box over USB). Its channels are GPIO
+channels whose pins are the terminals DI1..DI8. See
+`firmware/io-node-esp32/README.md`.
+
 ## Revoking a node
 
 ```bash

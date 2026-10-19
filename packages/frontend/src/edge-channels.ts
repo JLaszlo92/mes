@@ -84,10 +84,14 @@ export const FIELDS: Record<SignalSource, FieldDef[]> = {
     { key: "plcSlot", label: "Slot", placeholder: "1", width: 70, kind: "int" },
     { key: "plcPort", label: "Port", placeholder: "102", width: 80, kind: "int" },
   ],
+  // On the I/O node (Waveshare ESP32 box) a pin is its input terminal: 1..8 or "DI3". The two filters are read by the
+  // I/O node only: a part pulse / the status input must hold this long (a current switch flickers: 2000-5000 ms).
   gpio: [
-    { key: "goodPin", label: "Good pin", width: 90, kind: "pin" },
-    { key: "scrapPin", label: "Scrap pin", width: 90, kind: "pin" },
-    { key: "statusPin", label: "Status pin", width: 90, kind: "pin" },
+    { key: "goodPin", label: "Good pin", placeholder: "DI1", width: 90, kind: "pin" },
+    { key: "scrapPin", label: "Scrap pin", placeholder: "DI2", width: 90, kind: "pin" },
+    { key: "statusPin", label: "Status pin", placeholder: "DI3", width: 90, kind: "pin" },
+    { key: "countDebounceMs", label: "Part filter (ms)", placeholder: "20", width: 110, kind: "int" },
+    { key: "statusDebounceMs", label: "Status filter (ms)", placeholder: "1000", width: 120, kind: "int" },
   ],
   simulated: [],
 };

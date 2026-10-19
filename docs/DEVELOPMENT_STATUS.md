@@ -1,6 +1,6 @@
 # Development Status
 
-**Last updated:** October 12, 2026
+**Last updated:** October 19, 2026
 
 ## Where things stand
 
@@ -2032,6 +2032,40 @@ Frontend `ui/lists.tsx` (new) plus the places below; backend only the terminal s
 - Tested in Chromium with 40 fault codes, 40 scrap reasons, 45 planned orders on one machine and 61 unscheduled orders:
   fault search (8 matches), start list 30 + note, "+42 további", scrap and report search, Gantt pool search, terminal
   machine checklist, work order drawer, SPC page; backend 367 tests.
+
+## I/O node firmware for the Waveshare ESP32-S3-ETH-8DI-8RO — Oct 19
+
+New: `firmware/io-node-esp32/` (ESP-IDF 5.3.1, C), version `io-node-v1`. The I/O version of the edge node (8 isolated
+digital inputs, Ethernet, DIN rail) speaks node-gate's protocol, so it is an ordinary edge node with **GPIO** channels
+whose pins are the terminals DI1..DI8. Full description, onboarding and the comparison with node-gate:
+`firmware/io-node-esp32/README.md`.
+
+- **Ported from the edge agent** (same rules, log wording kept): claim with the rejection backoff and the 150 s
+  give-up (v16), offline start from the claim cache (v12), lost lease (v15), restart request and changed revision (v19),
+  release on restart (v5), mutual TLS on 8884 with keepalive 15 / connect timeout 10 s (v11), paced retry (15 s, 300 per
+  4 s sweep) and acks (v11), client certificate expiry (v10), server time (v7/v13: here it **sets** the clock and the
+  battery-backed RTC). ProductionGate, SignalPresenceWatchdog and gpio_bridge.py are one debounced channel logic
+  (`components/mes_core/src/mes_signal.c`) working on the edge timestamps.
+- **Different on purpose**: buffer on flash as append-only segments (no rewrite per ack), limited (4 MB shared), oldest
+  dropped and reported as `data_gap` `buffer_full`; readings before the time is known are stamped once it is
+  (`data_gap` `clock_unknown` beyond 4096); while the claim is refused after a power cut (409 for up to 90 s) the
+  channels collect from the cache but **nothing is published until the lease is granted**; a buffer of a removed
+  channel is still delivered; disk usage is not reported (the 2 GiB rule would always alarm); reboot instead of exit.
+- **Provisioning** over USB: `tools/provision.sh --bundle <new-edge-node.sh bundle> --port ...` writes node name,
+  token, URLs, CA, certificate and key into the `mescfg` NVS partition (same firmware image on every box).
+  `ops/onboarding/README.md` points to it.
+- **Backend / dashboard**: GPIO channels accept `countDebounceMs` (0-10000) and `statusDebounceMs` (0-600000)
+  (validated in `edge-node-channel-input.ts`, fields "Part filter (ms)" and "Status filter (ms)" in the channel form;
+  placeholders DI1/DI2/DI3). `statusInvert` (API only). No migration.
+- **Tests**: 1775 host checks of the core (`make -C firmware/io-node-esp32/components/mes_core/test`); end to end, the
+  same `agent.c` built for Linux (`firmware/io-node-esp32/sim/`) against this backend with Postgres 16 and Mosquitto
+  (mutual TLS): claim, filters, both status modes, kill -9 during counting, broker outage, backend down at boot, restart
+  button, changed setting, lease taken, removed channel, empty RTC with a clock 1 h behind, 800 parts in 48 s; no
+  duplicates, no wrong timestamp. Backend 367 tests. `idf.py build`: 713 KB, 77 % of the app slot free.
+- **Not done**: a test on the real board (pin map from the Waveshare wiki / ESPHome config: check Ethernet, the inputs,
+  the RTC, a real power cut on the first box); over-the-air update (two app slots are reserved); flash/NVS encryption
+  and secure boot (eFuses, irreversible: to decide on a spare board; the key and token are readable over USB until then);
+  RS485 unused; the release (`io-node-vN` tag on node-dc) and the release binaries are not in git.
 
 ## Practical notes for whoever (or whatever session) picks this up
 

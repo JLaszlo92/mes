@@ -67,6 +67,9 @@ const RULES: Record<SignalSource, Rule[]> = {
     { key: "goodPin", kind: "pin" },
     { key: "scrapPin", kind: "pin" },
     { key: "statusPin", kind: "pin" },
+    // Read by the I/O node firmware (firmware/io-node-esp32): how long a part pulse / the status input must hold.
+    { key: "countDebounceMs", kind: "int", min: 0, max: 10000 },
+    { key: "statusDebounceMs", kind: "int", min: 0, max: 600000 },
   ],
   simulated: [],
 };
