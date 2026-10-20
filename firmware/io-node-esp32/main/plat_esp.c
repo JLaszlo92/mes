@@ -42,6 +42,12 @@ void plat_agent_wait(int ms) { ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(ms)); }
 void plat_thread(void (*fn)(void *), const char *name, size_t stack, void *arg) { xTaskCreate(fn, name, (uint32_t)stack, arg, 5, NULL); }
 void plat_sleep_ms(int ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
 
+size_t plat_stack_unused(const char *task)
+{
+    TaskHandle_t h = xTaskGetHandle(task);
+    return h ? (size_t)uxTaskGetStackHighWaterMark(h) : 0; /* ESP-IDF counts in bytes */
+}
+
 int64_t plat_mono_ms(void) { return esp_timer_get_time() / 1000; }
 
 int64_t plat_wall_ms(void)

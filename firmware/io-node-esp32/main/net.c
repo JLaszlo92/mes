@@ -210,7 +210,7 @@ esp_err_t net_mqtt_start(const prov_t *p, net_mqtt_event_fn on_conn, net_mqtt_ac
         .network.timeout_ms = 10000,          /* connectTimeout */
         .buffer.size = 2048,
         .buffer.out_size = 2048,
-        .task.stack_size = 6144,
+        .task.stack_size = 8192, /* TLS handshake with the device certificate */
         .outbox.limit = 256 * 1024,
     };
     s_mqtt = esp_mqtt_client_init(&c);

@@ -4,18 +4,29 @@
  * comes from its provisioning partition (tools/provision.sh). See README.md.
  */
 #include "agent.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hw.h"
 #include "net.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 #include "prov.h"
 
 static const char *TAG = "main";
 
 static prov_t s_prov;
+
+/* The agent is not run on the main task (3.5 KB stack in ESP-IDF's default): its claim handling alone needed 3.7 KB
+ * in io-node-v1, which overflowed the stack and crashed the box at its first claim. */
+#define AGENT_TASK_STACK 16384
+
+static void agent_task(void *arg)
+{
+    agent_run((prov_t *)arg); /* never returns */
+}
 
 static void unprovisioned_forever(void)
 {
@@ -49,5 +60,9 @@ void app_main(void)
 
     hw_storage_mount();
     if (net_eth_start(&s_prov) != ESP_OK) ESP_LOGE(TAG, "Ethernet could not be started; events are buffered until it works (reboot)");
-    agent_run(&s_prov); /* never returns */
+    if (xTaskCreate(agent_task, "agent", AGENT_TASK_STACK, &s_prov, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "the agent task cannot be created (out of memory)");
+        vTaskDelay(pdMS_TO_TICKS(5000));
+        esp_restart();
+    }
 }

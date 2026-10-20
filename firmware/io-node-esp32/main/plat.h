@@ -21,6 +21,8 @@ void plat_agent_notify(void);
 void plat_agent_wait(int ms);
 
 void plat_thread(void (*fn)(void *), const char *name, size_t stack, void *arg);
+/** Bytes of the named task's stack that were never used (its high-water mark); 0 if unknown. */
+size_t plat_stack_unused(const char *task);
 void plat_sleep_ms(int ms);
 
 int64_t plat_mono_ms(void);

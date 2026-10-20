@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.16)
 
 # The firmware version, sent to the backend with the claim and printed at boot.
 # Bump it with every release tag (io-node-vN), like edge-agent-vN for node-gate.
-set(PROJECT_VER "io-node-v1")
+set(PROJECT_VER "io-node-v2")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(mes-io-node)

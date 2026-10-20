@@ -2062,7 +2062,12 @@ whose pins are the terminals DI1..DI8. Full description, onboarding and the comp
   (mutual TLS): claim, filters, both status modes, kill -9 during counting, broker outage, backend down at boot, restart
   button, changed setting, lease taken, removed channel, empty RTC with a clock 1 h behind, 800 parts in 48 s; no
   duplicates, no wrong timestamp. Backend 367 tests. `idf.py build`: 713 KB, 77 % of the app slot free.
-- **Not done**: a test on the real board (pin map from the Waveshare wiki / ESPHome config: check Ethernet, the inputs,
+- **io-node-v2 (Oct 20)**: the first real box (io-weiler) crashed at its first claim: the claim handling needed 3.7 KB of
+  stack on ESP-IDF's 3.5 KB main task. Now the agent has its own 16 KB task, the claim structures are static, the backend
+  and MQTT tasks have 12 / 8 KB, stack canaries and the end-of-stack watchpoint are on, and the status line prints the
+  unused stack per task. Lesson: the Linux simulator cannot show stack sizes; check `entry a1, N` frame sizes
+  (`xtensa-esp32s3-elf-objdump -d build/esp-idf/main/libmain.a`) before a release.
+- **Not done**: a full test on the real board (pin map from the Waveshare wiki / ESPHome config: check Ethernet, the inputs,
   the RTC, a real power cut on the first box); over-the-air update (two app slots are reserved); flash/NVS encryption
   and secure boot (eFuses, irreversible: to decide on a spare board; the key and token are readable over USB until then);
   RS485 unused; the release (`io-node-vN` tag on node-dc) and the release binaries are not in git.

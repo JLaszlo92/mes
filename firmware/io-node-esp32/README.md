@@ -93,7 +93,7 @@ idf.py set-target esp32s3      # once
 idf.py build                   # build/mes-io-node.bin and the files provision.sh --firmware needs
 ```
 
-The version is `PROJECT_VER` in `CMakeLists.txt` (`io-node-v1`); bump it with every release and tag the commit
+The version is `PROJECT_VER` in `CMakeLists.txt` (`io-node-v2`); bump it with every release and tag the commit
 `io-node-vN` on node-dc, like `edge-agent-vN`.
 
 Layout: `components/mes_core` is the portable logic (debounce, status modes, buffer, retry, claim/heartbeat rules,
@@ -116,7 +116,12 @@ cache, event JSON) without ESP-IDF; `main/agent.c` the life cycle on top of `mai
   by someone else (adopted after 90 s), removed channel with buffered events (delivered, buffer deleted), no RTC +
   clock 1 h behind + no backend (stamped correctly afterwards, offset 0), 800 parts in 48 s. No duplicates, no event
   with a wrong timestamp.
-- **Not tested yet: the real board.** The pin map comes from the Waveshare wiki and its ESPHome configuration;
+- **On the real board** (Oct 20, io-weiler): v1 booted, got its address by DHCP and crashed at its first claim — the
+  claim handling needed 3.7 KB of stack on ESP-IDF's 3.5 KB main task (the Linux simulator has 8 MB, so it never
+  showed). v2 runs the agent in its own 16 KB task, keeps the claim structures off the stack (largest frame now 624 B),
+  gives the backend task 12 KB and the MQTT task 8 KB (TLS handshakes), and turns on stack canaries and the end-of-stack
+  watchpoint; the 10-minute status line prints the unused stack of each task.
+- **Not tested yet on the real board:** The pin map comes from the Waveshare wiki and its ESPHome configuration;
   check on the first box: Ethernet link and DHCP, the inputs (`DIx active` in the log while the input is energised),
   the RTC keeps the time over a power cut, a real power cut while counting.
 

@@ -123,6 +123,11 @@ void plat_thread(void (*fn)(void *), const char *name, size_t stack, void *arg)
     pthread_detach(t);
 }
 void plat_sleep_ms(int ms) { usleep((useconds_t)ms * 1000); }
+size_t plat_stack_unused(const char *task)
+{
+    (void)task;
+    return 0;
+}
 
 static int64_t s_mono0 = -1;
 int64_t plat_mono_ms(void)

@@ -43,6 +43,7 @@ static const char *TAG = "agent";
 #define HTTP_HANG_MS 60000
 #define MAX_ORPHANS 8
 #define PRECISE_RTT_MS 1000
+#define HTTP_TASK_STACK 12288
 
 /* ---------------- state ---------------- */
 
@@ -515,33 +516,36 @@ static void adopt_lease(const mes_claim_t *c)
     s_next_heartbeat_at = mono_now() + MES_HEARTBEAT_INTERVAL_MS;
 }
 
+/* 1.8 KB each: kept off the stack (the agent task is the only user). */
+static mes_claim_t s_claim_buf, s_cache_buf;
+
 static void on_claim_answer(const msg_t *m)
 {
-    mes_claim_t c;
-    if (mes_http_ok(m->http.status) && m->http.body && mes_parse_claim(m->http.body, &c)) {
-        apply_server_time(c.has_server_time, c.server_time_ms, m->http.sent_wall, m->http.rtt);
+    mes_claim_t *const c = &s_claim_buf, *const cached = &s_cache_buf;
+    if (mes_http_ok(m->http.status) && m->http.body && mes_parse_claim(m->http.body, c)) {
+        apply_server_time(c->has_server_time, c->server_time_ms, m->http.sent_wall, m->http.rtt);
         if (!s_channels_set) {
-            adopt_lease(&c);
-            ESP_LOGI(TAG, "claimed edge node, starting channels (channelCount %u, catchupMaxMinutes %d)", (unsigned)c.n_channels, c.catchup_max_minutes);
+            adopt_lease(c);
+            ESP_LOGI(TAG, "claimed edge node, starting channels (channelCount %u, catchupMaxMinutes %d)", (unsigned)c->n_channels, c->catchup_max_minutes);
             save_cache(m->http.body);
-            setup_channels(&c);
+            setup_channels(c);
             start_mqtt_once();
             return;
         }
         save_cache(m->http.body);
-        if (!same_channels(&s_active, &c)) {
-            adopt_lease(&c); /* so that the reboot hands it back */
+        if (!same_channels(&s_active, c)) {
+            adopt_lease(c); /* so that the reboot hands it back */
             ESP_LOGW(TAG, "channel configuration changed while the node was offline (before %u, after %u)", (unsigned)s_active.n_channels,
-                     (unsigned)c.n_channels);
+                     (unsigned)c->n_channels);
             restart_box("the channel configuration changed while offline", true);
         }
         bool was_offline_start = s_offline_start, was_holding = s_hold_publish;
-        adopt_lease(&c);
+        adopt_lease(c);
         ESP_LOGI(TAG, "%s (channelCount %u)",
                  was_holding         ? "claimed edge node — lease granted, sending the buffered events"
                  : was_offline_start ? "claimed edge node after an offline start — lease adopted"
                                      : "claimed edge node again after the lease was lost — lease adopted",
-                 (unsigned)c.n_channels);
+                 (unsigned)c->n_channels);
         if (was_holding) {
             for (size_t i = 0; i < s_nch; i++) mes_queue_reset_sent(s_ch[i].q);
         }
@@ -564,14 +568,13 @@ static void on_claim_answer(const msg_t *m)
             /* After a power cut or a crash the old lease stays fresh for up to 90 s and the claim is refused (409). node-gate
              * starts no channel then (its PLC counters are caught up afterwards); this box counts the pulses itself, so it
              * collects into the buffer from the cached configuration meanwhile, but sends nothing until it has the lease. */
-            mes_claim_t cached;
-            if (load_cache(&cached)) {
+            if (load_cache(cached)) {
                 ESP_LOGW(TAG, "the backend rejected the claim (HTTP %d %.120s) — collecting into the buffer from the cached configuration; nothing is sent until the lease is granted (the lease of a crashed instance of this node expires after 90 s)",
                          st, err);
                 s_hold_publish = true;
                 s_background_claim = true;
                 s_has_revision = false;
-                setup_channels(&cached);
+                setup_channels(cached);
                 start_mqtt_once();
                 return;
             }
@@ -587,14 +590,13 @@ static void on_claim_answer(const msg_t *m)
 
     /* unreachable */
     if (!s_channels_set) {
-        mes_claim_t cached;
-        if (load_cache(&cached)) {
+        if (load_cache(cached)) {
             ESP_LOGW(TAG, "backend unreachable — starting channels from the cached configuration WITHOUT a lease; will keep trying to claim (channelCount %u)",
-                     (unsigned)cached.n_channels);
+                     (unsigned)cached->n_channels);
             s_background_claim = true;
             s_offline_start = true;
             s_has_revision = false; /* no revision before a claim: only an explicit restart request restarts the box */
-            setup_channels(&cached);
+            setup_channels(cached);
             start_mqtt_once();
             s_claim_attempt = 0;
             schedule_claim();
@@ -710,6 +712,8 @@ static void log_status(void)
              net_has_ip() ? "yes" : "no", s_has_session ? "yes" : "no", net_mqtt_connected() ? "up" : "down", s_time_trusted ? "known" : "unknown",
              (unsigned)(plat_internal_free() / 1024), (unsigned)(plat_big_free() / 1024),
              (unsigned)(fs_used / 1024), (unsigned)(fs_total / 1024), (unsigned)di_overflows());
+    ESP_LOGI(TAG, "  stack never used: agent %u B, backend %u B, mqtt %u B", (unsigned)plat_stack_unused("agent"), (unsigned)plat_stack_unused("backend"),
+             (unsigned)plat_stack_unused("mqtt_task"));
     for (size_t i = 0; i < s_nch; i++)
         ESP_LOGI(TAG, "  [%s] %s, %u events buffered (%u KiB of %u)", s_ch[i].def.machine_id, s_ch[i].runs ? "running" : "NOT started",
                  (unsigned)mes_queue_pending(s_ch[i].q), (unsigned)(mes_queue_bytes(s_ch[i].q) / 1024), (unsigned)(mes_queue_cap(s_ch[i].q) / 1024));
@@ -761,7 +765,7 @@ void agent_run(prov_t *p)
         plat_sleep_ms(5000);
         plat_restart();
     }
-    plat_thread(http_worker, "backend", 8192, NULL);
+    plat_thread(http_worker, "backend", HTTP_TASK_STACK, NULL); /* a TLS handshake needs 8-10 KB */
     plat_wdt_add();
 
     int64_t next_sweep = 0, next_tick = 0, next_status = mono_now() + 60000, next_led = 0;
